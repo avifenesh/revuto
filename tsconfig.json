@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noImplicitOverride": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "sourceMap": true,
+    "declaration": false,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "agents/common/src/**/*.ts",
+    "agents/curator/src/**/*.ts",
+    "daemon/src/**/*.ts",
+    "ops/src/**/*.ts",
+    "webhook/src/heuristics.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

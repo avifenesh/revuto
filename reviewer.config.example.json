@@ -1,0 +1,13 @@
+{
+  "vaultPath": "~/reviewer-vault",
+  "github": { "tokenEnv": "GH_TOKEN" },
+  "models": {
+    "review":   { "name": "local", "baseURL": "http://localhost:8080/v1", "model": "qwen3.6-27b",       "apiKeyEnv": "LOCAL_API_KEY" },
+    "curator":  { "name": "local", "baseURL": "http://localhost:8080/v1", "model": "qwen3.6-27b",       "apiKeyEnv": "LOCAL_API_KEY" },
+    "distill":  { "name": "local", "baseURL": "http://localhost:8080/v1", "model": "qwen3.6-27b",       "apiKeyEnv": "LOCAL_API_KEY" },
+    "embedder": { "name": "local", "baseURL": "http://localhost:8081/v1", "model": "bge-small-en-v1.5", "apiKeyEnv": "LOCAL_API_KEY" }
+  },
+  "schedules": { "review": "*/12 * * * *", "learn": "0 */4 * * *", "decay": "0 3 * * *" },
+  "review": { "maxSteps": 150, "maxOutputTokens": 32768, "allowWrite": false },
+  "store": { "backend": "surreal", "surreal": { "url": "http://127.0.0.1:8000/rpc", "namespace": "reviewer", "username": "root", "password": "root" } }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "reviewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local, supplier-agnostic, repo-agnostic autonomous PR reviewer. Stands up a learning reviewer for any repo: clone + onboard + PR-history backfill → curated skill, then poll-review + learn loop with skills graduated into an external (Obsidian) vault.",
+  "bin": {
+    "reviewer": "dist/daemon/src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx daemon/src/cli.ts",
+    "start": "node --enable-source-maps dist/daemon/src/cli.js"
+  },
+  "dependencies": {
+    "@agent-sh/harness-core": "^0.2.0",
+    "@agent-sh/harness-tools": "0.2.0",
+    "@ai-sdk/openai-compatible": "^1.0.0",
+    "@octokit/rest": "^22.0.1",
+    "ai": "^5.0.0",
+    "better-sqlite3": "^11.8.0",
+    "gray-matter": "^4.0.3",
+    "node-cron": "^3.0.3",
+    "sqlite-vec": "^0.1.6",
+    "surrealdb": "^2.0.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.14.0",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
