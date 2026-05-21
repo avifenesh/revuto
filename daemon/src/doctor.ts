@@ -8,6 +8,7 @@ import { generateText, embedMany } from 'ai';
 import type { ReviewerConfig, ModelSpec } from '../../agents/common/src/config.js';
 import { buildChatModel, buildEmbeddingModel } from '../../agents/common/src/model.js';
 import { getOctokit } from '../../agents/common/src/github-auth.js';
+import { openStore } from '../../agents/common/src/store/open.js';
 
 export interface ModelProbe {
   readonly roles: string[];
@@ -20,7 +21,8 @@ export interface ModelProbe {
 }
 
 export interface GithubProbe { readonly ok: boolean; readonly login?: string; readonly error?: string; }
-export interface DoctorReport { readonly github: GithubProbe; readonly models: ModelProbe[]; }
+export interface StoreProbe { readonly backend: string; readonly ok: boolean; readonly ms: number; readonly error?: string; }
+export interface DoctorReport { readonly github: GithubProbe; readonly store: StoreProbe; readonly models: ModelProbe[]; }
 
 export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
   // GitHub token
@@ -31,6 +33,20 @@ export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
     github = { ok: true, login: data.login };
   } catch (e) {
     github = { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
+  // Store backend reachable? (opens the per-repo store + a trivial read)
+  let store: StoreProbe;
+  {
+    const t = Date.now();
+    try {
+      const s = await openStore(config, 'revuto/_doctor');
+      await s.getCounter('_probe');
+      await s.close();
+      store = { backend: config.store.backend, ok: true, ms: Date.now() - t };
+    } catch (e) {
+      store = { backend: config.store.backend, ok: false, ms: Date.now() - t, error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   // Dedupe roles that share an endpoint+model.
@@ -67,10 +83,10 @@ export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
     models.push({ roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, kind: g.kind, ok, ms: Date.now() - t, error });
   }
 
-  return { github, models };
+  return { github, store, models };
 }
 
 /** true if everything reachable. */
 export function doctorOk(r: DoctorReport): boolean {
-  return r.github.ok && r.models.every((m) => m.ok);
+  return r.github.ok && r.store.ok && r.models.every((m) => m.ok);
 }

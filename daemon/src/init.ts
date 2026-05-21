@@ -243,6 +243,9 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const { octokit, token } = getOctokit(config.github);
   const botLogin = (await octokit.users.getAuthenticated()).data.login;
 
+  // Fail fast if the store backend is unreachable, before the expensive backfill + LLM work.
+  const store = await openStore(config, repo);
+
   const [owner, name] = repo.split('/');
   const cloneDir = join(config.review.workspaceDir, `${owner}__${name}`);
   console.log(`[init] cloning ${repo} …`);
@@ -261,7 +264,6 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   console.log('[init] composing reviewer textbook …');
   const textbook = await composeTextbook(config, repo, facts, essence);
 
-  const store = await openStore(config, repo);
   try {
     await store.writeTextbook(textbook);
   } finally {

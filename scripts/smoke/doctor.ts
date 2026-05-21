@@ -31,5 +31,7 @@ assert.ok(report.models.some((p) => p.kind === 'chat'), 'has a chat probe');
 assert.ok(report.models.some((p) => p.kind === 'embedding'), 'has an embedding probe');
 // chat roles share one endpoint+model → deduped into a single probe
 assert.ok(report.models.some((p) => p.roles.includes('review') && p.roles.includes('curator')), 'shared chat endpoint deduped');
+assert.ok(report.store.ok, `store probe reachable (sqlite): ${report.store.error ?? ''}`);
+assert.equal(report.store.backend, 'sqlite', 'store backend reported');
 
-console.log('PASS: doctor probes chat + embedding endpoints (dedup OK)');
+console.log('PASS: doctor probes chat + embedding + store backend (dedup OK)');

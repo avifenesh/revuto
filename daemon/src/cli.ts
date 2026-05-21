@@ -10,7 +10,10 @@
  *   revuto approve <owner/repo> <skill-slug>   activate a draft skill
  */
 import cron from 'node-cron';
+import { copyFileSync, existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import { loadConfig } from '../../agents/common/src/config.js';
+import { engineRoot } from '../../agents/common/src/engine-root.js';
 import { getOctokit } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 import { listReviewers, readReviewer, writeReviewer, removeReviewer, setPaused, setSchedule } from './reviewers.js';
@@ -25,8 +28,9 @@ const isJob = (s: string): s is Job => s === 'review' || s === 'learn' || s === 
 function usage(): void {
   console.log(`revuto <command>
 
+  init-config                     write a starter revuto.config.json into the current dir
   daemon                          start the scheduler (review/learn/decay)
-  doctor                          ping configured model endpoints + GitHub token
+  doctor                          ping model endpoints + store backend + GitHub token
   init <owner/repo> [maxPRs]      clone + onboard + backfill PRs + write textbook + register
   add <owner/repo>                register a repo (no onboarding)
   remove <owner/repo> [--purge]   unregister a repo (--purge also deletes skills + sqlite memory)
@@ -60,6 +64,13 @@ async function cmdAdd(repo: string): Promise<void> {
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
   switch (cmd) {
+    case 'init-config': {
+      const dest = resolve('revuto.config.json');
+      if (existsSync(dest)) { console.log(`revuto.config.json already exists — leaving it`); break; }
+      copyFileSync(join(engineRoot(), 'revuto.config.example.json'), dest);
+      console.log(`wrote ${dest}\nedit vaultPath + models, then: revuto doctor`);
+      break;
+    }
     case 'daemon': {
       startDaemon(loadConfig());
       console.log('daemon running — Ctrl-C to stop');
@@ -75,6 +86,7 @@ async function main(): Promise<void> {
     case 'doctor': {
       const report = await runDoctor(loadConfig());
       console.log(`github: ${report.github.ok ? `ok (login=${report.github.login})` : `FAIL — ${report.github.error}`}`);
+      console.log(`store:  ${report.store.ok ? `ok (${report.store.backend}, ${report.store.ms}ms)` : `FAIL (${report.store.backend}) — ${report.store.error}`}`);
       for (const m of report.models) {
         console.log(`${m.ok ? 'ok  ' : 'FAIL'} [${m.kind}] ${m.roles.join('+')} → ${m.model} @ ${m.baseURL} (${m.ms}ms)${m.error ? ` — ${m.error}` : ''}`);
       }

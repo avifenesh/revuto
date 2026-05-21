@@ -98,6 +98,9 @@ function defaultConfigPath(): string {
 export function loadConfig(path?: string): ReviewerConfig {
   const file = resolve(path ?? defaultConfigPath());
   let raw: any;
+  if (!existsSync(file)) {
+    throw new Error(`config: ${file} not found. Run \`revuto init-config\` to create a starter config, then edit vaultPath + models.`);
+  }
   try {
     raw = JSON.parse(readFileSync(file, 'utf8'));
   } catch (err) {

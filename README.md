@@ -55,15 +55,20 @@ Graduated skills land as `draft` and are loaded by the reviewer only after
 ## Setup
 
 ```bash
-cp revuto.config.example.json revuto.config.json   # edit vaultPath + models
-export GH_TOKEN=ghp_...                              # or: gh auth login
-scripts/surreal-start.sh &                           # default backend (or set store.backend=sqlite)
-revuto doctor                                        # verify endpoints + token
+revuto init-config                       # writes ./revuto.config.json — edit vaultPath + models
+export GH_TOKEN=ghp_...                  # or: gh auth login
+
+# default backend is SurrealDB — install it (https://surrealdb.com) and start it:
+surreal start --user root --pass root --bind 127.0.0.1:8000 surrealkv://"$HOME"/reviewer-vault/memory/surreal &
+#   …or set "store": { "backend": "sqlite" } in the config for zero external deps.
+
+revuto doctor                            # verify models + store backend + GitHub token
 ```
 
 Config (`revuto.config.json`, or `$REVUTO_CONFIG`): `vaultPath`, `github.tokenEnv`,
 per-role `models` (`{ baseURL, model, apiKeyEnv }`; `embedder` may be `null`),
-`schedules`, and `store`. See `revuto.config.example.json`.
+`schedules`, `limits`, and `store`. See `revuto.config.example.json`. `revuto doctor`
+checks model endpoints, the store backend, and the token before you run anything.
 
 ## Providers
 
