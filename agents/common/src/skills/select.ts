@@ -11,6 +11,7 @@
 import type { KnowledgeStore, SkillNote } from '../store/store.js';
 import { skillTextHash } from '../store/markdown-skills.js';
 import type { Embedder } from '../memory/embedder.js';
+import { cosine } from '../memory/vector.js';
 
 /** Minimal glob → RegExp supporting `**`, `*`, `?`. Matches POSIX-style paths. */
 function globToRegExp(glob: string): RegExp {
@@ -77,13 +78,8 @@ async function selectByEmbedding(
   }
 
   const [qvec] = await embedder.embed([query]);
-  const cos = (a: number[], b: number[]): number => {
-    let dot = 0, na = 0, nb = 0;
-    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
-    return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
-  };
   return skills
-    .map((s) => ({ s, score: cos(qvec, cached.get(s.slug) ?? []) }))
+    .map((s) => ({ s, score: cosine(qvec, cached.get(s.slug) ?? []) }))
     .filter((x) => x.score >= minScore)
     .sort((a, b) => b.score - a.score)
     .slice(0, topN)

@@ -50,8 +50,7 @@ export type NoiseReason =
   | 'quote-heavy'
   | 'codecov'
   | 'test-marker'
-  | 'too-short'
-  | 'author-reply-to-non-bot';
+  | 'too-short';
 
 export interface HeuristicResult {
   readonly noise: boolean;
@@ -141,63 +140,4 @@ export function classifyCommentBody(body: string): HeuristicResult {
   }
 
   return { noise: false };
-}
-
-interface ResolveParentOpts {
-  readonly repo: string;              // "owner/name"
-  readonly parentCommentId: number;
-  readonly installationToken: string; // used as gh api token
-}
-
-/**
- * Fetch one review comment by id and return its author's login + type.
- * Fails closed: if we can't resolve the parent, we do NOT mark the
- * comment as author-reply-to-non-bot (erring toward keeping signal).
- */
-export async function resolveParentCommentAuthor(
-  opts: ResolveParentOpts,
-): Promise<{ login: string; type: string } | null> {
-  const [owner, repo] = opts.repo.split('/');
-  if (!owner || !repo) return null;
-  try {
-    const resp = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${opts.parentCommentId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${opts.installationToken}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      },
-    );
-    if (!resp.ok) return null;
-    const parent = (await resp.json()) as { user?: { login?: string; type?: string } };
-    if (!parent.user?.login) return null;
-    return { login: parent.user.login, type: parent.user.type ?? 'User' };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * True when the incoming review comment is the PR author replying to a
- * non-bot commenter. The curator gains nothing from "Done" / "Good
- * point, will do" style acks between author and reviewer.
- *
- * Authors replying to the bot's own comments DO carry signal (they
- * confirm or push back on the bot's findings). Keep those.
- */
-export function isAuthorReplyToNonBot(ctx: {
-  readonly prAuthorLogin: string;
-  readonly commenterLogin: string;
-  readonly parentAuthorLogin: string | null;
-  readonly parentAuthorType: string | null;
-  readonly botLogin: string;
-}): boolean {
-  if (ctx.commenterLogin !== ctx.prAuthorLogin) return false;
-  if (!ctx.parentAuthorLogin) return false;
-  // Parent was the bot → author-to-bot reply → KEEP.
-  if (ctx.parentAuthorLogin === ctx.botLogin) return false;
-  if (ctx.parentAuthorType === 'Bot') return false;
-  return true;
 }

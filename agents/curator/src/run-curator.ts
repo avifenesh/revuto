@@ -6,7 +6,7 @@
 import { generateText, stepCountIs, hasToolCall } from 'ai';
 
 import type { ReviewerConfig } from '../../common/src/config.js';
-import { buildChatModel } from '../../common/src/model.js';
+import { buildChatModel, tokensFrom } from '../../common/src/model.js';
 import type { KnowledgeStore } from '../../common/src/store/store.js';
 import type { Embedder } from '../../common/src/memory/embedder.js';
 import { CURATOR_SYSTEM_PROMPT } from './prompts/curator-system.js';
@@ -71,9 +71,7 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
       } catch { /* leave defaults */ }
     }
   }
-  const tokens = (usage as { totalTokens?: number; outputTokens?: number } | undefined)?.totalTokens
-    ?? (usage as { outputTokens?: number } | undefined)?.outputTokens ?? 0;
-  return { decision, summary, tokens };
+  return { decision, summary, tokens: tokensFrom(usage) };
 }
 
 function renderFeedback(f: FeedbackEvent): string {

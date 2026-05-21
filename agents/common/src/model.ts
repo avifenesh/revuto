@@ -33,3 +33,9 @@ export function buildChatModel(spec: ModelSpec): LanguageModel {
 export function buildEmbeddingModel(spec: ModelSpec): EmbeddingModel {
   return provider(spec).textEmbeddingModel(spec.model);
 }
+
+/** Total tokens from a generateText `usage`, for daily-budget accounting. */
+export function tokensFrom(usage: unknown): number {
+  const u = usage as { totalTokens?: number; outputTokens?: number } | undefined;
+  return u?.totalTokens ?? u?.outputTokens ?? 0;
+}

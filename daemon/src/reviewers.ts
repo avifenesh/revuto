@@ -9,6 +9,7 @@ import matter from 'gray-matter';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
+import type { Job } from './types.js';
 
 export interface ReviewerSettings {
   readonly repo: string;
@@ -120,7 +121,7 @@ export function setPaused(config: ReviewerConfig, repo: string, paused: boolean)
 }
 
 /** Set (expr) or clear (null) a per-repo cron override for one job. */
-export function setSchedule(config: ReviewerConfig, repo: string, job: 'review' | 'learn' | 'decay', expr: string | null): boolean {
+export function setSchedule(config: ReviewerConfig, repo: string, job: Job, expr: string | null): boolean {
   const s = readReviewer(config, repo);
   if (!s) return false;
   const schedules: Record<string, string> = { ...(s.schedules ?? {}) };

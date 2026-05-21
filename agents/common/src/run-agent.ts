@@ -11,7 +11,7 @@ import { generateText, stepCountIs, hasToolCall } from 'ai';
 import type { Octokit } from '@octokit/rest';
 
 import type { ReviewerConfig } from './config.js';
-import { buildChatModel } from './model.js';
+import { buildChatModel, tokensFrom } from './model.js';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
 import { getOctokit } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
@@ -109,9 +109,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     }
   }
 
-  const tokens = (usage as { totalTokens?: number; outputTokens?: number } | undefined)?.totalTokens
-    ?? (usage as { outputTokens?: number } | undefined)?.outputTokens ?? 0;
-  return { terminal, result, headSha: ctx.headSha, steps: steps.length, tokens };
+  return { terminal, result, headSha: ctx.headSha, steps: steps.length, tokens: tokensFrom(usage) };
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>

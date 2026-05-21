@@ -91,6 +91,9 @@ export async function pollFeedback(
     'listReviewCommentsForRepo',
   )) as Array<any>;
 
+  // Most parents are on the same page — index it to avoid an API call per reply.
+  const byId = new Map<number, any>(comments.map((c) => [c.id, c]));
+
   const out: FeedbackEvent[] = [];
   for (const c of comments) {
     const body: string = c.body ?? '';
@@ -101,13 +104,17 @@ export async function pollFeedback(
     // If it replies to one of the reviewer's own comments, carry that as context.
     let inReplyToBot: string | undefined;
     if (c.in_reply_to_id) {
-      try {
-        const parent = await withRateLimitRetry(
-          () => octokit.pulls.getReviewComment({ owner, repo: name, comment_id: c.in_reply_to_id }),
-          'getReviewComment',
-        );
-        if ((parent.data.user?.login ?? '') === botLogin) inReplyToBot = parent.data.body ?? '';
-      } catch { /* parent gone — treat as a standalone maintainer comment */ }
+      let parent = byId.get(c.in_reply_to_id);
+      if (!parent) {
+        // Parent predates the `since` window — fetch it (rare).
+        try {
+          parent = (await withRateLimitRetry(
+            () => octokit.pulls.getReviewComment({ owner, repo: name, comment_id: c.in_reply_to_id }),
+            'getReviewComment',
+          )).data;
+        } catch { /* parent gone — treat as a standalone maintainer comment */ }
+      }
+      if (parent && (parent.user?.login ?? '') === botLogin) inReplyToBot = parent.body ?? '';
     }
 
     out.push({

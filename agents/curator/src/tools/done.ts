@@ -14,7 +14,7 @@ export function buildCuratorDoneTool() {
 - \`decision\`: one of "bumped", "merged", "created", "dropped", "graduated", "noop"
 - \`summary\`: one-sentence rationale. Cite the record_ids you touched (or "none" for noop).
 
-After this call, no further tool calls will be honored. The Lambda logs the decision and returns.`,
+After this call, no further tool calls will be honored. The run logs the decision and returns.`,
     inputSchema: z.object({
       decision: z.enum(['bumped', 'merged', 'created', 'dropped', 'graduated', 'noop']),
       summary: z.string().min(1),

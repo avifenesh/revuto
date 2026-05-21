@@ -13,6 +13,7 @@ import {
   type SkillNote, type NewSkillNote, type SkillStatus,
 } from './store.js';
 import { MarkdownSkills, repoSlug } from './markdown-skills.js';
+import { cosine } from '../memory/vector.js';
 import { randomUUID } from 'node:crypto';
 
 function toBlob(v: number[]): Buffer {
@@ -22,12 +23,6 @@ function toBlob(v: number[]): Buffer {
 function fromBlob(b: Buffer): number[] {
   const f = new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4);
   return Array.from(f);
-}
-function cosine(a: number[], b: number[]): number {
-  if (a.length !== b.length) return -1;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
-  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
 }
 
 interface ConcernRow {

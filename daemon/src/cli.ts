@@ -21,9 +21,7 @@ import { reviewOnePr, reviewRepo, learnRepo, decayRepo } from './jobs.js';
 import { startDaemon } from './scheduler.js';
 import { runInit } from './init.js';
 import { runDoctor, doctorOk } from './doctor.js';
-
-type Job = 'review' | 'learn' | 'decay';
-const isJob = (s: string): s is Job => s === 'review' || s === 'learn' || s === 'decay';
+import { isJob } from './types.js';
 
 function usage(): void {
   console.log(`revuto <command>

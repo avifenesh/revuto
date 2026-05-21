@@ -25,29 +25,28 @@ export interface StoreProbe { readonly backend: string; readonly ok: boolean; re
 export interface DoctorReport { readonly github: GithubProbe; readonly store: StoreProbe; readonly models: ModelProbe[]; }
 
 export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
-  // GitHub token
-  let github: GithubProbe;
-  try {
-    const { octokit } = getOctokit(config.github);
-    const { data } = await octokit.users.getAuthenticated();
-    github = { ok: true, login: data.login };
-  } catch (e) {
-    github = { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  const githubProbe = async (): Promise<GithubProbe> => {
+    try {
+      const { octokit } = getOctokit(config.github);
+      const { data } = await octokit.users.getAuthenticated();
+      return { ok: true, login: data.login };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
 
-  // Store backend reachable? (opens the per-repo store + a trivial read)
-  let store: StoreProbe;
-  {
+  // Opens the per-repo store + a trivial read.
+  const storeProbe = async (): Promise<StoreProbe> => {
     const t = Date.now();
     try {
       const s = await openStore(config, 'revuto/_doctor');
       await s.getCounter('_probe');
       await s.close();
-      store = { backend: config.store.backend, ok: true, ms: Date.now() - t };
+      return { backend: config.store.backend, ok: true, ms: Date.now() - t };
     } catch (e) {
-      store = { backend: config.store.backend, ok: false, ms: Date.now() - t, error: e instanceof Error ? e.message : String(e) };
+      return { backend: config.store.backend, ok: false, ms: Date.now() - t, error: e instanceof Error ? e.message : String(e) };
     }
-  }
+  };
 
   // Dedupe roles that share an endpoint+model.
   const entries: Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> = [
@@ -65,24 +64,23 @@ export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
     else groups.set(key, { roles: [e.role], spec: e.spec, kind: e.kind });
   }
 
-  const models: ModelProbe[] = [];
-  for (const g of groups.values()) {
+  const modelProbe = async (g: { roles: string[]; spec: ModelSpec; kind: 'chat' | 'embedding' }): Promise<ModelProbe> => {
     const t = Date.now();
-    let ok = false;
-    let error: string | undefined;
     try {
-      if (g.kind === 'chat') {
-        await generateText({ model: buildChatModel(g.spec), prompt: 'ping', maxOutputTokens: 5 });
-      } else {
-        await embedMany({ model: buildEmbeddingModel(g.spec), values: ['ping'] });
-      }
-      ok = true;
+      if (g.kind === 'chat') await generateText({ model: buildChatModel(g.spec), prompt: 'ping', maxOutputTokens: 5 });
+      else await embedMany({ model: buildEmbeddingModel(g.spec), values: ['ping'] });
+      return { roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, kind: g.kind, ok: true, ms: Date.now() - t };
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      return { roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, kind: g.kind, ok: false, ms: Date.now() - t, error: e instanceof Error ? e.message : String(e) };
     }
-    models.push({ roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, kind: g.kind, ok, ms: Date.now() - t, error });
-  }
+  };
 
+  // All probes are independent — run concurrently.
+  const [github, store, models] = await Promise.all([
+    githubProbe(),
+    storeProbe(),
+    Promise.all([...groups.values()].map(modelProbe)),
+  ]);
   return { github, store, models };
 }
 
