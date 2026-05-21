@@ -43,6 +43,7 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
     let limited: string | undefined;
     for (const pr of prs) {
       if (pr.isBot) { skipped++; continue; }                                                   // never review bot-authored PRs
+      if (pr.isDraft) { skipped++; continue; }                                                  // never touch drafts; reviewed once they're marked ready (updated_at bumps)
       if (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author)) { skipped++; continue; }
       const key = `${settings.repo}#${pr.number}@${pr.headSha}`;
       if (await store.seen(key)) { skipped++; continue; }                                       // already reviewed this head — no re-iterate
@@ -109,6 +110,12 @@ export async function decayRepo(config: ReviewerConfig, repo: string): Promise<D
 /** On-demand single-PR review (CLI `revuto review <repo> <pr>`). */
 export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber: number): Promise<ReviewOutcome> {
   const { octokit } = getOctokit(config.github);
+  const [owner, name] = repo.split('/');
+  const { data: pr } = await octokit.pulls.get({ owner, repo: name, pull_number: prNumber });
+  if (pr.draft) {
+    // Rule: never touch drafts. They get reviewed once marked ready (updated_at bumps → next poll).
+    return { terminal: 'skip_review', result: `#${prNumber} is a draft — drafts are never reviewed`, headSha: pr.head.sha, steps: 0, tokens: 0 };
+  }
   // Reviewing surfaces the repo in the Obsidian index even if it wasn't init'd.
   if (!readReviewer(config, repo)) {
     writeReviewer(config, { repo, botLogin: (await octokit.users.getAuthenticated()).data.login });
