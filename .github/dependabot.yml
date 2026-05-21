@@ -7,6 +7,11 @@ updates:
     groups:
       dev-and-types:
         patterns: ["@types/*", "typescript", "tsx"]
+    ignore:
+      # surrealdb@2 pins peer typescript ^5; TS6 breaks npm ci + typecheck. Stay on 5.x
+      # until surrealdb supports TS6 (see commit 1a3152b / closed PR #12).
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
