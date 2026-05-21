@@ -111,6 +111,7 @@ export async function decayRepo(config: ReviewerConfig, repo: string): Promise<D
 export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber: number): Promise<ReviewOutcome> {
   const { octokit } = getOctokit(config.github);
   const [owner, name] = repo.split('/');
+  if (!owner || !name) throw new Error(`bad repo: ${repo}`);
   const { data: pr } = await octokit.pulls.get({ owner, repo: name, pull_number: prNumber });
   if (pr.draft) {
     // Rule: never touch drafts. They get reviewed once marked ready (updated_at bumps → next poll).
