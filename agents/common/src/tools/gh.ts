@@ -61,6 +61,18 @@ export interface GhToolsDeps {
   readonly octokit: Octokit;
 }
 
+/** The revuto engine repo — the attribution footer links here. */
+const REVUTO_URL = 'https://github.com/avifenesh/revuto';
+const SIGNATURE = `\n\n---\n*This is an auto review done by [revuto](${REVUTO_URL}).*`;
+
+/**
+ * Append the attribution footer to anything revuto posts, so every comment is
+ * marked as an automated review. Idempotent — skips if already signed.
+ */
+function sign(body: string): string {
+  return body.includes(REVUTO_URL) ? body : `${body}${SIGNATURE}`;
+}
+
 export function buildGhApiReadTool(deps: GhToolsDeps) {
   return tool({
     name: 'gh_api_read',
@@ -135,7 +147,7 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
           pull_number: deps.ctx.prNumber,
           commit_id: deps.ctx.headSha,
           event: 'COMMENT',
-          body: input.body,
+          body: sign(input.body),
           comments: input.comments,
         });
         return JSON.stringify({ ok: true, review_id: resp.data.id, url: resp.data.html_url });
@@ -161,7 +173,7 @@ export function buildPostIssueCommentTool(deps: GhToolsDeps) {
           owner: deps.ctx.owner,
           repo: deps.ctx.repo,
           issue_number: deps.ctx.prNumber,
-          body: input.body,
+          body: sign(input.body),
         });
         return JSON.stringify({ ok: true, comment_id: resp.data.id, url: resp.data.html_url });
       } catch (err: any) {
