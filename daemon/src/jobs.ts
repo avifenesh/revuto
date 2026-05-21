@@ -19,17 +19,19 @@ const nowIso = (): string => new Date().toISOString();
 export interface ReviewJobResult { reviewed: number; skipped: number; initialized?: boolean; }
 export interface LearnJobResult { curated: number; seen: number; initialized?: boolean; }
 
-export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings): Promise<ReviewJobResult> {
+export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean } = {}): Promise<ReviewJobResult> {
   const { octokit } = getOctokit(config.github);
   const store = await openStore(config, settings.repo);
   const embedder = maybeEmbedder(config);
   try {
     const cursor = await store.getCursor('review');
-    if (!cursor) {
+    if (!cursor && !opts.force) {
+      // First scheduled tick: don't review the whole open backlog — start from now.
+      // (A manual `trigger` passes force to review the current open PRs.)
       await store.setCursor('review', nowIso());
       return { reviewed: 0, skipped: 0, initialized: true };
     }
-    const prs = await pollOpenPRs(octokit, settings.repo, cursor);
+    const prs = await pollOpenPRs(octokit, settings.repo, cursor ?? undefined);
     let reviewed = 0, skipped = 0;
     for (const pr of prs) {
       if (pr.isBot) { skipped++; continue; }                                                   // never review bot-authored PRs

@@ -117,11 +117,21 @@ cursors, idempotency) has two backends, set in `store.backend`:
 reviewer doctor                        # verify endpoints + GitHub token first
 reviewer init <owner/repo> [maxPRs]    # onboard a repo (clone + backfill + textbook)
 reviewer daemon                        # start the scheduler (review/learn/decay)
-reviewer review <owner/repo> <pr>      # review one PR now
+
+# lifecycle
+reviewer add <owner/repo>              # register without onboarding
+reviewer remove <owner/repo> [--purge] # unregister (--purge also deletes skills + sqlite memory)
+reviewer pause <owner/repo>            # stop scheduling (until resume / restart)
+reviewer resume <owner/repo>           # re-enable scheduling
+reviewer cron <owner/repo> <job> <expr>  # per-repo cron for review|learn|decay ("clear" resets to default)
+reviewer list                          # list registered reviewers (shows PAUSED)
+
+# run a job now
+reviewer trigger <owner/repo> [job]    # run review|learn|decay now (default: review)
+reviewer review <owner/repo> <pr>      # review one specific PR now
 reviewer learn <owner/repo>            # run one learn pass now
 reviewer decay <owner/repo>            # run decay now
 reviewer approve <owner/repo> <slug>   # activate a draft skill
-reviewer list                          # list registered reviewers
 ```
 
 Run the daemon as a systemd user service to survive reboots — see

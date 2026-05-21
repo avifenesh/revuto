@@ -6,7 +6,7 @@
  * old CDK `routes[]` array.
  */
 import matter from 'gray-matter';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 
@@ -19,6 +19,8 @@ export interface ReviewerSettings {
   readonly autoActivate?: boolean;
   /** The GitHub login the reviewer posts as; defaults to the token's own user. */
   readonly botLogin?: string;
+  /** When true, the scheduler skips this repo's jobs (applied on daemon (re)start). */
+  readonly paused?: boolean;
 }
 
 function reviewersDir(config: ReviewerConfig): string {
@@ -39,6 +41,7 @@ function parseNote(raw: string): ReviewerSettings | null {
     authorAllowlist: Array.isArray(d.authorAllowlist) ? d.authorAllowlist.map(String) : [],
     autoActivate: !!d.autoActivate,
     botLogin: d.botLogin ? String(d.botLogin) : undefined,
+    paused: !!d.paused,
   };
 }
 
@@ -67,6 +70,7 @@ export function writeReviewer(config: ReviewerConfig, s: ReviewerSettings): void
     schedules: s.schedules ?? {},
     authorAllowlist: s.authorAllowlist ?? [],
     autoActivate: s.autoActivate ?? false,
+    paused: s.paused ?? false,
   };
   if (s.botLogin) data.botLogin = s.botLogin;
   const [owner, name] = s.repo.split('/');
@@ -80,13 +84,49 @@ export function updateIndex(config: ReviewerConfig): void {
   const dir = reviewersDir(config);
   mkdirSync(dir, { recursive: true });
   const rs = listReviewers(config).sort((a, b) => a.repo.localeCompare(b.repo));
-  const lines = ['# Reviewers', '', `${rs.length} repo(s) registered.`, '', '| Repo | auto-activate | author allowlist |', '|---|---|---|'];
+  const lines = ['# Reviewers', '', `${rs.length} repo(s) registered.`, '', '| Repo | paused | auto-activate | author allowlist |', '|---|---|---|---|'];
   for (const r of rs) {
     const [owner, name] = r.repo.split('/');
     const allow = r.authorAllowlist?.length ? r.authorAllowlist.join(', ') : '(all)';
-    lines.push(`| [[${owner}__${name}\\|${r.repo}]] | ${r.autoActivate ? 'yes' : 'no'} | ${allow} |`);
+    lines.push(`| [[${owner}__${name}\\|${r.repo}]] | ${r.paused ? 'yes' : 'no'} | ${r.autoActivate ? 'yes' : 'no'} | ${allow} |`);
   }
   writeFileSync(join(dir, '_index.md'), lines.join('\n') + '\n', 'utf8');
+}
+
+/** Unregister a repo. With `purge`, also deletes its skill notes + SQLite memory file. */
+export function removeReviewer(config: ReviewerConfig, repo: string, opts: { purge?: boolean } = {}): boolean {
+  const p = join(reviewersDir(config), noteName(repo));
+  if (!existsSync(p)) return false;
+  rmSync(p);
+  if (opts.purge) {
+    const [owner, name] = repo.split('/');
+    const slug = `${owner}__${name}`;
+    rmSync(join(config.vaultPath, 'skills', slug), { recursive: true, force: true });
+    for (const ext of ['.sqlite', '.sqlite-wal', '.sqlite-shm']) {
+      rmSync(join(config.vaultPath, 'memory', `${slug}${ext}`), { force: true });
+    }
+    // SurrealDB memory lives in the server's per-repo database; drop it there if using surreal.
+  }
+  updateIndex(config);
+  return true;
+}
+
+/** Pause/resume a repo's scheduled jobs. Takes effect on daemon (re)start. */
+export function setPaused(config: ReviewerConfig, repo: string, paused: boolean): boolean {
+  const s = readReviewer(config, repo);
+  if (!s) return false;
+  writeReviewer(config, { ...s, paused });
+  return true;
+}
+
+/** Set (expr) or clear (null) a per-repo cron override for one job. */
+export function setSchedule(config: ReviewerConfig, repo: string, job: 'review' | 'learn' | 'decay', expr: string | null): boolean {
+  const s = readReviewer(config, repo);
+  if (!s) return false;
+  const schedules: Record<string, string> = { ...(s.schedules ?? {}) };
+  if (expr) schedules[job] = expr; else delete schedules[job];
+  writeReviewer(config, { ...s, schedules });
+  return true;
 }
 
 export function effectiveSchedules(

@@ -37,6 +37,7 @@ export function startDaemon(config: ReviewerConfig): ScheduledTask[] {
 
   const tasks: ScheduledTask[] = [];
   for (const r of reviewers) {
+    if (r.paused) { console.log(`paused ${r.repo} — not scheduled`); continue; }
     const s = effectiveSchedules(config, r);
     for (const [job, expr, fn] of [
       ['review', s.review, () => reviewRepo(config, r)],

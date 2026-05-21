@@ -9,14 +9,18 @@
  *   reviewer decay <owner/repo>     run decay now
  *   reviewer approve <owner/repo> <skill-slug>   activate a draft skill
  */
+import cron from 'node-cron';
 import { loadConfig } from '../../agents/common/src/config.js';
 import { getOctokit } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
-import { listReviewers, readReviewer, writeReviewer } from './reviewers.js';
-import { reviewOnePr, learnRepo, decayRepo } from './jobs.js';
+import { listReviewers, readReviewer, writeReviewer, removeReviewer, setPaused, setSchedule } from './reviewers.js';
+import { reviewOnePr, reviewRepo, learnRepo, decayRepo } from './jobs.js';
 import { startDaemon } from './scheduler.js';
 import { runInit } from './init.js';
 import { runDoctor, doctorOk } from './doctor.js';
+
+type Job = 'review' | 'learn' | 'decay';
+const isJob = (s: string): s is Job => s === 'review' || s === 'learn' || s === 'decay';
 
 function usage(): void {
   console.log(`reviewer <command>
@@ -25,8 +29,13 @@ function usage(): void {
   doctor                          ping configured model endpoints + GitHub token
   init <owner/repo> [maxPRs]      clone + onboard + backfill PRs + write textbook + register
   add <owner/repo>                register a repo (no onboarding)
+  remove <owner/repo> [--purge]   unregister a repo (--purge also deletes skills + sqlite memory)
+  pause <owner/repo>              stop scheduling this repo (until resume / daemon restart)
+  resume <owner/repo>             re-enable scheduling
+  cron <owner/repo> <job> <expr>  set a per-repo cron for review|learn|decay ("clear" to reset to default)
+  trigger <owner/repo> [job]      run review|learn|decay now (default: review)
   list                            list registered reviewers
-  review <owner/repo> <pr>        review one PR now
+  review <owner/repo> <pr>        review one specific PR now
   learn <owner/repo>              run one learn pass now
   decay <owner/repo>              run decay now
   approve <owner/repo> <slug>     activate a draft skill
@@ -80,7 +89,7 @@ async function main(): Promise<void> {
       const rs = listReviewers(config);
       if (rs.length === 0) { console.log('no reviewers registered'); break; }
       for (const r of rs) {
-        console.log(`${r.repo}  schedules=${JSON.stringify(r.schedules ?? {})}  allowlist=${r.authorAllowlist?.length ? r.authorAllowlist.join(',') : '(all)'}  autoActivate=${!!r.autoActivate}`);
+        console.log(`${r.repo}  ${r.paused ? 'PAUSED  ' : ''}schedules=${JSON.stringify(r.schedules ?? {})}  allowlist=${r.authorAllowlist?.length ? r.authorAllowlist.join(',') : '(all)'}  autoActivate=${!!r.autoActivate}`);
       }
       break;
     }
@@ -111,6 +120,44 @@ async function main(): Promise<void> {
       } finally {
         await store.close();
       }
+      break;
+    }
+    case 'remove': {
+      const repo = args[0];
+      if (!repo?.includes('/')) throw new Error('usage: reviewer remove <owner/repo> [--purge]');
+      const purge = args.includes('--purge');
+      const ok = removeReviewer(loadConfig(), repo, { purge });
+      console.log(ok ? `removed ${repo}${purge ? ' (skills + sqlite memory purged)' : ''}` : `not registered: ${repo}`);
+      break;
+    }
+    case 'pause':
+    case 'resume': {
+      const repo = args[0];
+      if (!repo?.includes('/')) throw new Error(`usage: reviewer ${cmd} <owner/repo>`);
+      const ok = setPaused(loadConfig(), repo, cmd === 'pause');
+      console.log(ok ? `${cmd}d ${repo} (applies on daemon restart)` : `not registered: ${repo}`);
+      break;
+    }
+    case 'cron': {
+      const repo = args[0]; const job = args[1] ?? ''; const expr = args.slice(2).join(' ').trim();
+      if (!repo?.includes('/') || !isJob(job) || !expr) {
+        throw new Error('usage: reviewer cron <owner/repo> <review|learn|decay> "<cron-expr>" | clear');
+      }
+      const clear = expr === 'clear' || expr === '-';
+      if (!clear && !cron.validate(expr)) throw new Error(`invalid cron expression: "${expr}"`);
+      const ok = setSchedule(loadConfig(), repo, job, clear ? null : expr);
+      console.log(ok ? `${repo} ${job} cron ${clear ? 'cleared (uses config default)' : `set to "${expr}"`} — applies on daemon restart` : `not registered: ${repo}`);
+      break;
+    }
+    case 'trigger': {
+      const repo = args[0]; const job = args[1] ?? 'review';
+      if (!repo?.includes('/') || !isJob(job)) throw new Error('usage: reviewer trigger <owner/repo> <review|learn|decay>');
+      const config = loadConfig();
+      const settings = readReviewer(config, repo) ?? { repo };
+      const res = job === 'review' ? await reviewRepo(config, settings, { force: true })
+        : job === 'learn' ? await learnRepo(config, settings)
+        : await decayRepo(config, repo);
+      console.log(JSON.stringify(res, null, 2));
       break;
     }
     default:
