@@ -7,7 +7,7 @@
  * overrides live in the vault's reviewer notes (see daemon/store), not here.
  */
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 /** Resolve a path, expanding a leading `~` to the home directory first. */
@@ -85,14 +85,19 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
 
 /**
  * Resolve the config path. Order: explicit arg → $REVUTO_CONFIG → $REVIEWER_CONFIG
- * → ./revuto.config.json → ./reviewer.config.json (back-compat).
+ * → ./revuto.config.json → $REVUTO_VAULT/revuto.config.json → ./reviewer.config.json.
+ * The $REVUTO_VAULT entry lets the config live inside the vault so everything is
+ * editable in one place (Obsidian); vaultPath then defaults to the config's folder.
  */
 function defaultConfigPath(): string {
-  return (
-    process.env.REVUTO_CONFIG ??
-    process.env.REVIEWER_CONFIG ??
-    (existsSync(resolve('revuto.config.json')) ? 'revuto.config.json' : 'reviewer.config.json')
-  );
+  if (process.env.REVUTO_CONFIG) return process.env.REVUTO_CONFIG;
+  if (process.env.REVIEWER_CONFIG) return process.env.REVIEWER_CONFIG;
+  if (existsSync(resolve('revuto.config.json'))) return 'revuto.config.json';
+  if (process.env.REVUTO_VAULT) {
+    const inVault = join(resolveHome(process.env.REVUTO_VAULT), 'revuto.config.json');
+    if (existsSync(inVault)) return inVault;
+  }
+  return existsSync(resolve('reviewer.config.json')) ? 'reviewer.config.json' : 'revuto.config.json';
 }
 
 export function loadConfig(path?: string): ReviewerConfig {
@@ -107,7 +112,9 @@ export function loadConfig(path?: string): ReviewerConfig {
     throw new Error(`config: cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const vaultPath = resolveHome(requireField(raw.vaultPath, 'vaultPath'));
+  // vaultPath defaults to the config file's own folder — so the config can live
+  // inside the vault and the user controls everything (config + skills + reviewers) there.
+  const vaultPath = raw.vaultPath ? resolveHome(raw.vaultPath) : dirname(file);
   const tokenEnv = raw.github?.tokenEnv ?? 'GH_TOKEN';
   const models = {
     review: checkModel(raw.models?.review, 'review'),

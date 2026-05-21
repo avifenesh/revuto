@@ -70,6 +70,12 @@ per-role `models` (`{ baseURL, model, apiKeyEnv }`; `embedder` may be `null`),
 `schedules`, `limits`, and `store`. See `revuto.config.example.json`. `revuto doctor`
 checks model endpoints, the store backend, and the token before you run anything.
 
+**Keep config in the vault (recommended for hand control):** put `revuto.config.json`
+*inside* your vault and either run from the vault dir or set `REVUTO_VAULT=<vault>`.
+Then **omit `vaultPath`** — it defaults to the config file's folder, so config + skills +
+reviewer notes all live in one Obsidian-editable place (no secrets are stored; API keys
+are env-referenced via `apiKeyEnv`).
+
 ## Providers
 
 Any OpenAI-compatible endpoint works; set it per role in `models`. Verify reachability
