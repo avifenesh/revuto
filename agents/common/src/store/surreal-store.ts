@@ -72,6 +72,7 @@ export class SurrealStore implements KnowledgeStore {
       DEFINE TABLE IF NOT EXISTS cursor SCHEMALESS;
       DEFINE TABLE IF NOT EXISTS seen SCHEMALESS;
       DEFINE TABLE IF NOT EXISTS skill_embedding SCHEMALESS;
+      DEFINE TABLE IF NOT EXISTS counter SCHEMALESS;
     `);
   }
 
@@ -180,6 +181,15 @@ export class SurrealStore implements KnowledgeStore {
   }
   async mark(key: string): Promise<void> {
     await this.rows(`UPSERT type::record('seen', $k) SET at = $now`, { k: key, now: new Date().toISOString() });
+  }
+
+  async incrCounter(key: string, by = 1): Promise<number> {
+    const rows = await this.rows(`UPSERT type::record('counter', $k) SET n = (n ?? 0) + $by RETURN AFTER`, { k: key, by });
+    return Number(rows[0]?.n ?? by);
+  }
+  async getCounter(key: string): Promise<number> {
+    const rows = await this.rows(`SELECT n FROM type::record('counter', $k)`, { k: key });
+    return Number(rows[0]?.n ?? 0);
   }
 
   async close(): Promise<void> { await this.db.close(); }

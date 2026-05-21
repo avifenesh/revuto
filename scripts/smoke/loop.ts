@@ -29,7 +29,8 @@ function cfg(baseURL: string): ReviewerConfig {
     github: { tokenEnv: 'GH_TOKEN' },
     models: { review: m, curator: m, distill: m, embedder: null },
     schedules: { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' },
-    review: { maxSteps: 10, maxOutputTokens: 1024, allowWrite: false, workspaceDir: join(vault, '.ws') },
+    review: { maxSteps: 10, allowWrite: false, workspaceDir: join(vault, '.ws') },
+    limits: { maxOutputTokens: { review: 1024, curator: 1024, distill: 1024 }, dailyReviews: 0, learnBatch: 0, dailyLearn: 0, dailyTokens: 0 },
     store: { backend: 'sqlite', surreal: { url: '', namespace: 'reviewer' } },
   };
 }

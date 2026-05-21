@@ -17,7 +17,8 @@ const config: ReviewerConfig = {
   github: { tokenEnv: 'REVIEWER_NO_SUCH_TOKEN_ENV' },
   models: { review: m, curator: m, distill: m, embedder: m },
   schedules: { review: '* * * * *', learn: '* * * * *', decay: '* * * * *' },
-  review: { maxSteps: 1, maxOutputTokens: 5, allowWrite: false, workspaceDir: '/tmp/reviewer-doctor/.ws' },
+  review: { maxSteps: 1, allowWrite: false, workspaceDir: '/tmp/reviewer-doctor/.ws' },
+  limits: { maxOutputTokens: { review: 5, curator: 5, distill: 5 }, dailyReviews: 0, learnBatch: 0, dailyLearn: 0, dailyTokens: 0 },
   store: { backend: 'sqlite', surreal: { url: '', namespace: 'reviewer' } },
 };
 

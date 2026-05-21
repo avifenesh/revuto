@@ -68,6 +68,7 @@ export class SqliteStore implements KnowledgeStore {
       CREATE TABLE IF NOT EXISTS cursors (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS idempotency (key TEXT PRIMARY KEY, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS skill_embeddings (slug TEXT PRIMARY KEY, text_hash TEXT NOT NULL, embedding BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS counters (key TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0);
     `);
   }
 
@@ -175,6 +176,17 @@ export class SqliteStore implements KnowledgeStore {
   }
   async mark(key: string): Promise<void> {
     this.db.prepare(`INSERT OR IGNORE INTO idempotency (key, created_at) VALUES (?, ?)`).run(key, new Date().toISOString());
+  }
+
+  async incrCounter(key: string, by = 1): Promise<number> {
+    const r = this.db.prepare(
+      `INSERT INTO counters (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = value + excluded.value RETURNING value`,
+    ).get(key, by) as { value: number };
+    return r.value;
+  }
+  async getCounter(key: string): Promise<number> {
+    const r = this.db.prepare(`SELECT value FROM counters WHERE key = ?`).get(key) as { value: number } | undefined;
+    return r?.value ?? 0;
   }
 
   async close(): Promise<void> { this.db.close(); }

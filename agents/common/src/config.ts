@@ -43,10 +43,22 @@ export interface ReviewerConfig {
   readonly schedules: { readonly review: string; readonly learn: string; readonly decay: string };
   readonly review: {
     readonly maxSteps: number;
-    readonly maxOutputTokens: number;
     readonly allowWrite: boolean;
     /** Parent dir for per-repo working checkouts. */
     readonly workspaceDir: string;
+  };
+  /** Caps. 0 = unlimited. Run/comment/token counts are per repo per UTC day. */
+  readonly limits: {
+    /** Per-run output-token cap for each agent. */
+    readonly maxOutputTokens: { readonly review: number; readonly curator: number; readonly distill: number };
+    /** Max review runs per repo per day. */
+    readonly dailyReviews: number;
+    /** Max comments processed per learn pass (per batch). */
+    readonly learnBatch: number;
+    /** Max comments processed per repo per day. */
+    readonly dailyLearn: number;
+    /** Shared daily token budget across ALL agents (review + curator + distill), per repo. */
+    readonly dailyTokens: number;
   };
   /** Memory backend. Skills are always Obsidian markdown; this is concerns/cursors/vectors. */
   readonly store: {
@@ -56,7 +68,8 @@ export interface ReviewerConfig {
 }
 
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
-const DEFAULT_REVIEW = { maxSteps: 150, maxOutputTokens: 32768, allowWrite: false, workspaceDir: '' };
+const DEFAULT_REVIEW = { maxSteps: 150, allowWrite: false, workspaceDir: '' };
+const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
 
 function requireField<T>(v: T | undefined, name: string): T {
   if (v === undefined || v === null || v === '') throw new Error(`config: required field "${name}" is missing`);
@@ -102,8 +115,22 @@ export function loadConfig(path?: string): ReviewerConfig {
   const schedules = { ...DEFAULT_SCHEDULES, ...(raw.schedules ?? {}) };
   const review = {
     ...DEFAULT_REVIEW,
-    ...(raw.review ?? {}),
+    maxSteps: raw.review?.maxSteps ?? DEFAULT_REVIEW.maxSteps,
+    allowWrite: raw.review?.allowWrite ?? DEFAULT_REVIEW.allowWrite,
     workspaceDir: resolveHome(raw.review?.workspaceDir ?? `${vaultPath}/.workspaces`),
+  };
+  const mot = raw.limits?.maxOutputTokens ?? {};
+  const limits = {
+    maxOutputTokens: {
+      // legacy review.maxOutputTokens still honored for the review cap
+      review: mot.review ?? raw.review?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS.review,
+      curator: mot.curator ?? DEFAULT_MAX_OUTPUT_TOKENS.curator,
+      distill: mot.distill ?? DEFAULT_MAX_OUTPUT_TOKENS.distill,
+    },
+    dailyReviews: Math.max(0, raw.limits?.dailyReviews ?? 0),
+    learnBatch: Math.max(0, raw.limits?.learnBatch ?? 0),
+    dailyLearn: Math.max(0, raw.limits?.dailyLearn ?? 0),
+    dailyTokens: Math.max(0, raw.limits?.dailyTokens ?? 0),
   };
 
   const store = {
@@ -117,5 +144,5 @@ export function loadConfig(path?: string): ReviewerConfig {
     },
   };
 
-  return { vaultPath, github: { tokenEnv }, models, schedules, review, store };
+  return { vaultPath, github: { tokenEnv }, models, schedules, review, limits, store };
 }

@@ -16,8 +16,10 @@ import { readReviewer, writeReviewer, type ReviewerSettings } from './reviewers.
 
 const nowIso = (): string => new Date().toISOString();
 
-export interface ReviewJobResult { reviewed: number; skipped: number; initialized?: boolean; }
-export interface LearnJobResult { curated: number; seen: number; initialized?: boolean; }
+export interface ReviewJobResult { reviewed: number; skipped: number; initialized?: boolean; limited?: string; }
+export interface LearnJobResult { curated: number; seen: number; initialized?: boolean; limited?: string; }
+
+const dayKey = (): string => new Date().toISOString().slice(0, 10);
 
 export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean } = {}): Promise<ReviewJobResult> {
   const { octokit } = getOctokit(config.github);
@@ -32,18 +34,27 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
       return { reviewed: 0, skipped: 0, initialized: true };
     }
     const prs = await pollOpenPRs(octokit, settings.repo, cursor ?? undefined);
+    const day = dayKey();
+    const { dailyReviews, dailyTokens } = config.limits;
+    let reviewsToday = dailyReviews ? await store.getCounter(`reviews:${day}`) : 0;
+    let tokensToday = dailyTokens ? await store.getCounter(`tokens:${day}`) : 0;
     let reviewed = 0, skipped = 0;
+    let limited: string | undefined;
     for (const pr of prs) {
       if (pr.isBot) { skipped++; continue; }                                                   // never review bot-authored PRs
       if (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author)) { skipped++; continue; }
       const key = `${settings.repo}#${pr.number}@${pr.headSha}`;
       if (await store.seen(key)) { skipped++; continue; }                                       // already reviewed this head — no re-iterate
-      await runReview({ repo: settings.repo, prNumber: pr.number, config, store, embedder });   // one review agent per new PR
+      if (dailyReviews && reviewsToday >= dailyReviews) { limited = 'daily-reviews'; break; }
+      if (dailyTokens && tokensToday >= dailyTokens) { limited = 'daily-tokens'; break; }
+      const outcome = await runReview({ repo: settings.repo, prNumber: pr.number, config, store, embedder }); // one review agent per new PR
       await store.mark(key);
       reviewed++;
+      if (dailyReviews) reviewsToday = await store.incrCounter(`reviews:${day}`);
+      if (dailyTokens) tokensToday = await store.incrCounter(`tokens:${day}`, outcome.tokens);   // shared daily token budget
     }
     await store.setCursor('review', nowIso());
-    return { reviewed, skipped };
+    return { reviewed, skipped, ...(limited ? { limited } : {}) };
   } finally {
     await store.close();
   }
@@ -60,16 +71,26 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
       return { curated: 0, seen: 0, initialized: true };
     }
     const botLogin = settings.botLogin ?? (await octokit.users.getAuthenticated()).data.login;
-    const feedback = await pollFeedback(octokit, settings.repo, botLogin, cursor);
+    let feedback = await pollFeedback(octokit, settings.repo, botLogin, cursor);
+    if (config.limits.learnBatch) feedback = feedback.slice(0, config.limits.learnBatch);       // per-batch cap
+    const day = dayKey();
+    const { dailyLearn, dailyTokens } = config.limits;
+    let learnedToday = dailyLearn ? await store.getCounter(`learn:${day}`) : 0;
+    let tokensToday = dailyTokens ? await store.getCounter(`tokens:${day}`) : 0;
     let curated = 0;
+    let limited: string | undefined;
     for (const fb of feedback) {
       if (await store.seen(fb.feedbackId)) continue;
-      await runCurator({ config, store, embedder, feedback: fb });
+      if (dailyLearn && learnedToday >= dailyLearn) { limited = 'daily-learn'; break; }
+      if (dailyTokens && tokensToday >= dailyTokens) { limited = 'daily-tokens'; break; }
+      const out = await runCurator({ config, store, embedder, feedback: fb });
       await store.mark(fb.feedbackId);
       curated++;
+      if (dailyLearn) learnedToday = await store.incrCounter(`learn:${day}`);
+      if (dailyTokens) tokensToday = await store.incrCounter(`tokens:${day}`, out.tokens);        // shared daily token budget
     }
     await store.setCursor('learn', nowIso());
-    return { curated, seen: feedback.length };
+    return { curated, seen: feedback.length, ...(limited ? { limited } : {}) };
   } finally {
     await store.close();
   }

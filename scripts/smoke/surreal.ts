@@ -23,7 +23,8 @@ const config: ReviewerConfig = {
   github: { tokenEnv: 'GH_TOKEN' },
   models: { review: m, curator: m, distill: m, embedder: null },
   schedules: { review: '* * * * *', learn: '* * * * *', decay: '* * * * *' },
-  review: { maxSteps: 1, maxOutputTokens: 1, allowWrite: false, workspaceDir: join(vault, '.ws') },
+  review: { maxSteps: 1, allowWrite: false, workspaceDir: join(vault, '.ws') },
+  limits: { maxOutputTokens: { review: 1, curator: 1, distill: 1 }, dailyReviews: 0, learnBatch: 0, dailyLearn: 0, dailyTokens: 0 },
   store: { backend: 'surreal', surreal: { url: 'http://127.0.0.1:8000/rpc', namespace: 'reviewer_test', username: 'root', password: 'root' } },
 };
 
@@ -61,5 +62,11 @@ await new Promise((r) => setTimeout(r, 6));
 const decay = await store.allConcerns();
 assert.ok(decay.length >= 1, 'buffer-flush concern still present pre-decay');
 
+// daily counters (limit-enforcement primitive)
+assert.equal(await store.getCounter('tokens:2026-05-21'), 0, 'absent counter is 0');
+assert.equal(await store.incrCounter('tokens:2026-05-21', 500), 500, 'counter adds by N');
+assert.equal(await store.incrCounter('tokens:2026-05-21', 250), 750, 'counter accumulates');
+assert.equal(await store.getCounter('tokens:2026-05-21'), 750, 'getCounter reads total');
+
 await store.close();
-console.log('PASS: SurrealDB backend — concerns + native cosine nearest + cursors + idempotency + graduation');
+console.log('PASS: SurrealDB backend — concerns + native cosine nearest + cursors + idempotency + graduation + counters');

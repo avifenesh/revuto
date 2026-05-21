@@ -97,6 +97,11 @@ export interface KnowledgeStore {
   seen(key: string): Promise<boolean>;
   mark(key: string): Promise<void>;
 
+  // --- daily counters (rate/token limits) --------------------------------
+  /** Atomically add `by` (default 1) to a counter and return the new total. */
+  incrCounter(key: string, by?: number): Promise<number>;
+  getCounter(key: string): Promise<number>;
+
   close(): Promise<void>;
 }
 

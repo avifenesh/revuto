@@ -194,7 +194,7 @@ export async function distillEssence(config: ReviewerConfig, facts: RepoFacts, r
     model: buildChatModel(config.models.distill),
     system: DISTILL_SYSTEM,
     prompt: `${renderFacts(repo, facts)}\n\n## Past review feedback (noise-filtered)\n\n${renderCorpus(corpus, 60_000)}`,
-    maxOutputTokens: 4096,
+    maxOutputTokens: config.limits.maxOutputTokens.distill,
   });
   return text.trim();
 }
@@ -215,7 +215,7 @@ export async function composeTextbook(config: ReviewerConfig, repo: string, fact
     model: buildChatModel(config.models.curator),
     system,
     prompt: `${renderFacts(repo, facts)}\n\n## Distilled maintainer-essence points\n\n${essence || '(no past feedback was available; base the textbook on the structure above and general best practice for this stack)'}`,
-    maxOutputTokens: 8192,
+    maxOutputTokens: config.limits.maxOutputTokens.distill,
   });
   return stripFence(text);
 }

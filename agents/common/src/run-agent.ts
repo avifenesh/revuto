@@ -49,6 +49,8 @@ export interface ReviewOutcome {
   readonly result: string;
   readonly headSha: string;
   readonly steps: number;
+  /** Total tokens used by this review run (for daily-budget accounting). */
+  readonly tokens: number;
 }
 
 export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> {
@@ -86,13 +88,13 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     'The workspace is checked out at the PR head. Follow the method in the system prompt. When done, call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.',
   ].join('\n');
 
-  const { steps } = await generateText({
+  const { steps, usage } = await generateText({
     model: buildChatModel(config.models.review),
     system,
     prompt: userMessage,
     tools,
     stopWhen: [stepCountIs(config.review.maxSteps), hasToolCall('post_review'), hasToolCall('skip_review')],
-    maxOutputTokens: config.review.maxOutputTokens,
+    maxOutputTokens: config.limits.maxOutputTokens.review,
   });
 
   let terminal: ReviewOutcome['terminal'] = 'none';
@@ -107,7 +109,9 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     }
   }
 
-  return { terminal, result, headSha: ctx.headSha, steps: steps.length };
+  const tokens = (usage as { totalTokens?: number; outputTokens?: number } | undefined)?.totalTokens
+    ?? (usage as { outputTokens?: number } | undefined)?.outputTokens ?? 0;
+  return { terminal, result, headSha: ctx.headSha, steps: steps.length, tokens };
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>

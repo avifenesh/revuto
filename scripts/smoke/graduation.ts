@@ -54,5 +54,12 @@ assert.equal(await store.seen('octo/demo#1@abc'), false);
 await store.mark('octo/demo#1@abc');
 assert.equal(await store.seen('octo/demo#1@abc'), true, 'idempotency mark/seen');
 
+// 5. daily counters (the limit-enforcement primitive)
+assert.equal(await store.getCounter('reviews:2026-05-21'), 0, 'absent counter is 0');
+assert.equal(await store.incrCounter('reviews:2026-05-21'), 1, 'counter starts at 1');
+assert.equal(await store.incrCounter('tokens:2026-05-21', 500), 500, 'counter adds by N');
+assert.equal(await store.incrCounter('tokens:2026-05-21', 250), 750, 'counter accumulates');
+assert.equal(await store.getCounter('tokens:2026-05-21'), 750, 'getCounter reads total');
+
 await store.close();
-console.log('PASS: store + 4x graduation + draft-gate + area-glob selection + cursors');
+console.log('PASS: store + 4x graduation + draft-gate + area-glob selection + cursors + counters');

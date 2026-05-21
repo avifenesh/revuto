@@ -25,7 +25,8 @@ const config: ReviewerConfig = {
     embedder: null,
   },
   schedules: { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' },
-  review: { maxSteps: 1, maxOutputTokens: 1, allowWrite: false, workspaceDir: join(vault, '.ws') },
+  review: { maxSteps: 1, allowWrite: false, workspaceDir: join(vault, '.ws') },
+  limits: { maxOutputTokens: { review: 1, curator: 1, distill: 1 }, dailyReviews: 0, learnBatch: 0, dailyLearn: 0, dailyTokens: 0 },
   store: { backend: 'sqlite', surreal: { url: '', namespace: 'reviewer' } },
 };
 

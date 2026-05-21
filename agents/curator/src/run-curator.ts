@@ -15,7 +15,6 @@ import { toAiSdkTools } from '../../common/src/tool-def.js';
 
 export const GRADUATION_THRESHOLD = 4;
 const CURATOR_MAX_STEPS = 40;
-const CURATOR_MAX_OUTPUT_TOKENS = 16384;
 
 export interface FeedbackEvent {
   readonly feedbackId: string;
@@ -36,6 +35,8 @@ export interface FeedbackEvent {
 export interface CuratorOutcome {
   readonly decision: string | null;
   readonly summary: string;
+  /** Total tokens used by this curator run (for daily-budget accounting). */
+  readonly tokens: number;
 }
 
 export interface RunCuratorOptions {
@@ -48,13 +49,13 @@ export interface RunCuratorOptions {
 export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcome> {
   const tools = toAiSdkTools(assembleCuratorTools({ store: opts.store, embedder: opts.embedder }));
 
-  const { steps } = await generateText({
+  const { steps, usage } = await generateText({
     model: buildChatModel(opts.config.models.curator),
     system: CURATOR_SYSTEM_PROMPT,
     prompt: renderFeedback(opts.feedback),
     tools,
     stopWhen: [stepCountIs(CURATOR_MAX_STEPS), hasToolCall('curator_done')],
-    maxOutputTokens: CURATOR_MAX_OUTPUT_TOKENS,
+    maxOutputTokens: opts.config.limits.maxOutputTokens.curator,
   });
 
   let decision: string | null = null;
@@ -70,7 +71,9 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
       } catch { /* leave defaults */ }
     }
   }
-  return { decision, summary };
+  const tokens = (usage as { totalTokens?: number; outputTokens?: number } | undefined)?.totalTokens
+    ?? (usage as { outputTokens?: number } | undefined)?.outputTokens ?? 0;
+  return { decision, summary, tokens };
 }
 
 function renderFeedback(f: FeedbackEvent): string {

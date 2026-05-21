@@ -104,6 +104,23 @@ cursors, idempotency) has two backends, set in `store.backend`:
 - `sqlite` — opt-in, zero dependency; a per-repo SQLite file under `<vault>/memory/`
   (no server to run). Set `"store": { "backend": "sqlite" }`.
 
+## Limits
+
+Optional caps under `limits` (0 = unlimited; run/comment/token counts are per repo per UTC day, enforced via store counters):
+
+- `maxOutputTokens` — per-run output-token cap for each agent: `{ review, curator, distill }`.
+- `dailyReviews` — max review runs per repo per day.
+- `learnBatch` — max comments processed per learn pass (per batch, not per comment).
+- `dailyLearn` — max comments processed per repo per day.
+- `dailyTokens` — **shared** daily token budget across all agents (review + curator + distill), per repo. When the day's running total reaches it, the review and learn loops stop until the next day.
+
+```jsonc
+"limits": {
+  "maxOutputTokens": { "review": 32768, "curator": 16384, "distill": 8192 },
+  "dailyReviews": 20, "learnBatch": 30, "dailyLearn": 100, "dailyTokens": 2000000
+}
+```
+
 ## Usage
 
 ```bash
