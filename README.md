@@ -99,7 +99,7 @@ with `revuto doctor` before running.
 
 Tool calling is required (the reviewer/curator drive tools), so a local **chat** server
 must run with a tool-capable chat template — `scripts/llama-server.sh` passes `--jinja`
-for that. For an **embedder**, `EMBED=1 LLAMA_MODEL=… scripts/llama-server.sh` serves it
+for that. For an **embedder**, `EMBED=1 LLAMA_MODEL=... scripts/llama-server.sh` serves it
 with `--embedding`, CLS pooling, CPU-only (`-ngl 0`), on port 8181 (clear of the chat
 server's 8080). The `embedder` role may be `null` — dedup + skill selection then fall back
 to LLM-judge / area-glob.

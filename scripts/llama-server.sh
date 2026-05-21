@@ -27,9 +27,10 @@ ALIAS="${LLAMA_ALIAS:-$(basename "$MODEL" .gguf)}"
 
 # Defaults differ for chat vs embedding instances.
 if [ "$EMBED" = "1" ]; then
-  PORT="${PORT:-8181}"   # off llama.cpp's default 8080
-  CTX="${CTX:-512}"      # embeddings are short
-  NGL="${NGL:-0}"        # CPU by default — keep the GPU free for chat models
+  PORT="${PORT:-8181}"      # off llama.cpp's default 8080
+  CTX="${CTX:-512}"         # embeddings are short
+  NGL="${NGL:-0}"           # CPU by default — keep the GPU free for chat models
+  POOLING="${POOLING:-cls}" # bge-* use CLS pooling
 else
   PORT="${PORT:-8080}"
   CTX="${CTX:-32768}"
@@ -47,10 +48,10 @@ if [ -z "$SERVER" ]; then
   exit 1
 fi
 
-# Embedding: --embedding + pooling (bge-* use CLS). Chat: --jinja for the tool-call parsing the reviewer needs.
+# Embedding: --embedding + pooling. Chat: --jinja for the tool-call parsing the reviewer needs.
 MODE=()
 if [ "$EMBED" = "1" ]; then
-  MODE=(--embedding --pooling "${POOLING:-cls}")
+  MODE=(--embedding --pooling "$POOLING")
 else
   MODE=(--jinja)
 fi
