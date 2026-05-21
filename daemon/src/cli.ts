@@ -10,9 +10,9 @@
  *   revuto approve <owner/repo> <skill-slug>   activate a draft skill
  */
 import cron from 'node-cron';
-import { copyFileSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
-import { loadConfig } from '../../agents/common/src/config.js';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
+import { loadConfig, defaultVaultPath } from '../../agents/common/src/config.js';
 import { engineRoot } from '../../agents/common/src/engine-root.js';
 import { getOctokit } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
@@ -26,7 +26,7 @@ import { isJob } from './types.js';
 function usage(): void {
   console.log(`revuto <command>
 
-  init-config                     write a starter revuto.config.json into the current dir
+  init-config [--local]           write a starter revuto.config.json into the vault (~/revuto or $REVUTO_VAULT); --local writes it to the current dir
   daemon                          start the scheduler (review/learn/decay)
   doctor                          ping model endpoints + store backend + GitHub token
   init <owner/repo> [maxPRs]      clone + onboard + backfill PRs + write textbook + register
@@ -63,10 +63,14 @@ async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
   switch (cmd) {
     case 'init-config': {
-      const dest = resolve('revuto.config.json');
-      if (existsSync(dest)) { console.log(`revuto.config.json already exists — leaving it`); break; }
-      copyFileSync(join(engineRoot(), 'revuto.config.example.json'), dest);
-      console.log(`wrote ${dest}\nedit vaultPath + models, then: revuto doctor`);
+      const vault = defaultVaultPath();
+      const dest = args.includes('--local') ? resolve('revuto.config.json') : join(vault, 'revuto.config.json');
+      if (existsSync(dest)) { console.log(`${dest} already exists — leaving it`); break; }
+      const cfg = JSON.parse(readFileSync(join(engineRoot(), 'revuto.config.example.json'), 'utf8'));
+      cfg.vaultPath = vault; // config + skills + memory all live in the vault
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, JSON.stringify(cfg, null, 2) + '\n');
+      console.log(`wrote ${dest}\nedit models, then: revuto doctor`);
       break;
     }
     case 'daemon': {

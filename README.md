@@ -55,26 +55,28 @@ Graduated skills land as `draft` and are loaded by the reviewer only after
 ## Setup
 
 ```bash
-revuto init-config                       # writes ./revuto.config.json — edit vaultPath + models
+revuto init-config                       # writes <vault>/revuto.config.json (default ~/revuto) — edit models
 export GH_TOKEN=ghp_...                  # or: gh auth login
 
 # default backend is SurrealDB — install it (https://surrealdb.com) and start it:
-surreal start --user root --pass root --bind 127.0.0.1:8000 surrealkv://"$HOME"/reviewer-vault/memory/surreal &
+surreal start --user root --pass root --bind 127.0.0.1:8000 surrealkv://"$HOME"/revuto/memory/surreal &
 #   …or set "store": { "backend": "sqlite" } in the config for zero external deps.
 
 revuto doctor                            # verify models + store backend + GitHub token
 ```
 
-Config (`revuto.config.json`, or `$REVUTO_CONFIG`): `vaultPath`, `github.tokenEnv`,
-per-role `models` (`{ baseURL, model, apiKeyEnv }`; `embedder` may be `null`),
-`schedules`, `limits`, and `store`. See `revuto.config.example.json`. `revuto doctor`
-checks model endpoints, the store backend, and the token before you run anything.
+**Config lives in the vault by default.** `init-config` writes
+`<vault>/revuto.config.json`, where `<vault>` is `$REVUTO_VAULT` or `~/revuto`, so
+config + skills + reviewer notes all sit in one Obsidian-editable place. `loadConfig`
+resolves in order: `$REVUTO_CONFIG` → `./revuto.config.json` (local override) →
+`<vault>/revuto.config.json` → `./reviewer.config.json`. Use `init-config --local` to
+drop the config in the current dir instead (it still points `vaultPath` at the vault).
 
-**Keep config in the vault (recommended for hand control):** put `revuto.config.json`
-*inside* your vault and either run from the vault dir or set `REVUTO_VAULT=<vault>`.
-Then **omit `vaultPath`** — it defaults to the config file's folder, so config + skills +
-reviewer notes all live in one Obsidian-editable place (no secrets are stored; API keys
-are env-referenced via `apiKeyEnv`).
+Config keys: `vaultPath`, `github.tokenEnv`, per-role `models`
+(`{ baseURL, model, apiKeyEnv }`; `embedder` may be `null`), `schedules`, `limits`, and
+`store`. See `revuto.config.example.json`. No secrets are stored — API keys are
+env-referenced via `apiKeyEnv`. `revuto doctor` checks model endpoints, the store
+backend, and the token before you run anything.
 
 ## Providers
 

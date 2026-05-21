@@ -83,21 +83,25 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   return m;
 }
 
+/** The default vault: $REVUTO_VAULT, else ~/revuto. The config + skills + reviewer notes live here. */
+export function defaultVaultPath(): string {
+  return resolveHome(process.env.REVUTO_VAULT ?? '~/revuto');
+}
+
 /**
  * Resolve the config path. Order: explicit arg → $REVUTO_CONFIG → $REVIEWER_CONFIG
- * → ./revuto.config.json → $REVUTO_VAULT/revuto.config.json → ./reviewer.config.json.
- * The $REVUTO_VAULT entry lets the config live inside the vault so everything is
- * editable in one place (Obsidian); vaultPath then defaults to the config's folder.
+ * → ./revuto.config.json (local override) → <vault>/revuto.config.json (the default
+ * home) → ./reviewer.config.json (back-compat). The config lives in the vault by
+ * default so config + skills + reviewer notes are controlled in one place (Obsidian).
  */
 function defaultConfigPath(): string {
   if (process.env.REVUTO_CONFIG) return process.env.REVUTO_CONFIG;
   if (process.env.REVIEWER_CONFIG) return process.env.REVIEWER_CONFIG;
   if (existsSync(resolve('revuto.config.json'))) return 'revuto.config.json';
-  if (process.env.REVUTO_VAULT) {
-    const inVault = join(resolveHome(process.env.REVUTO_VAULT), 'revuto.config.json');
-    if (existsSync(inVault)) return inVault;
-  }
-  return existsSync(resolve('reviewer.config.json')) ? 'reviewer.config.json' : 'revuto.config.json';
+  const vaultCfg = join(defaultVaultPath(), 'revuto.config.json');
+  if (existsSync(vaultCfg)) return vaultCfg;
+  if (existsSync(resolve('reviewer.config.json'))) return 'reviewer.config.json';
+  return vaultCfg; // not-found error then points at the vault location
 }
 
 export function loadConfig(path?: string): ReviewerConfig {

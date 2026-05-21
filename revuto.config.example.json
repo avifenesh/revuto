@@ -1,5 +1,5 @@
 {
-  "vaultPath": "~/reviewer-vault",
+  "vaultPath": "~/revuto",
   "github": { "tokenEnv": "GH_TOKEN" },
   "models": {
     "review":   { "name": "local", "baseURL": "http://localhost:8080/v1", "model": "qwen3.6-27b",       "apiKeyEnv": "LOCAL_API_KEY" },

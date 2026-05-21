@@ -39,6 +39,7 @@ jobs:
           npx tsx scripts/smoke/scan.ts
           npx tsx scripts/smoke/loop.ts
           npx tsx scripts/smoke/doctor.ts
+          npx tsx scripts/smoke/config.ts
 
   surreal-smoke:
     name: SurrealDB backend smoke
