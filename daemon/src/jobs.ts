@@ -110,7 +110,9 @@ export async function decayRepo(config: ReviewerConfig, repo: string): Promise<D
 /** On-demand single-PR review (CLI `revuto review <repo> <pr>`). */
 export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber: number): Promise<ReviewOutcome> {
   const { octokit } = getOctokit(config.github);
-  const [owner, name] = repo.split('/');
+  const parts = repo.split('/');
+  const [owner, name] = parts;
+  if (parts.length !== 2 || !owner || !name) throw new Error(`bad repo: ${repo} (expected owner/name)`);
   const { data: pr } = await octokit.pulls.get({ owner, repo: name, pull_number: prNumber });
   if (pr.draft) {
     // Rule: never touch drafts. They get reviewed once marked ready (updated_at bumps → next poll).
