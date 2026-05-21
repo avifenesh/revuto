@@ -15,6 +15,9 @@ export interface OpenPR {
   readonly headSha: string;
   readonly updatedAt: string;
   readonly isBot: boolean;
+  /** Draft PRs are never reviewed. GitHub bumps updated_at on the draft→ready
+   *  transition, so a PR that leaves draft within the window reappears here as ready. */
+  readonly isDraft: boolean;
 }
 
 /** Retry a GitHub call on primary/secondary rate limits, honoring reset headers + jitter. */
@@ -59,7 +62,7 @@ export async function pollOpenPRs(octokit: Octokit, repo: string, sinceISO?: str
       if (Date.parse(pr.updated_at) <= since) { stop = true; break; }
       const login = pr.user?.login ?? '';
       const isBot = pr.user?.type === 'Bot' || /\[bot\]$/i.test(login);
-      out.push({ number: pr.number, author: login, headSha: pr.head.sha, updatedAt: pr.updated_at, isBot });
+      out.push({ number: pr.number, author: login, headSha: pr.head.sha, updatedAt: pr.updated_at, isBot, isDraft: pr.draft ?? false });
     }
     if (stop || data.length < 100) break;
   }
