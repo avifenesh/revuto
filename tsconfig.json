@@ -20,8 +20,7 @@
     "agents/common/src/**/*.ts",
     "agents/curator/src/**/*.ts",
     "daemon/src/**/*.ts",
-    "ops/src/**/*.ts",
-    "webhook/src/heuristics.ts"
+    "ops/src/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

@@ -38,7 +38,11 @@ const feedback: FeedbackEvent = {
   feedbackId: 'rc-1',
   kind: 'review_comment_reply',
   body: 'agree — cap the retries with backoff',
-  botComment: { body: 'unbounded retry loop here', path: 'src/net/reconnect.c', line: 10, prNumber: 1, repo: 'octo/demo' },
+  repo: 'octo/demo',
+  prNumber: 1,
+  anchorPath: 'src/net/reconnect.c',
+  anchorLine: 10,
+  inReplyToBot: 'unbounded retry loop here',
   actor: 'maintainer',
   touchedFiles: ['src/net/reconnect.c'],
 };

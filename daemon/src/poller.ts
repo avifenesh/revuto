@@ -6,7 +6,7 @@
  *     the learn cursor, noise-filtered (→ learn).
  */
 import type { Octokit } from '@octokit/rest';
-import { classifyCommentBody } from '../../webhook/src/heuristics.js';
+import { classifyCommentBody } from '../../agents/common/src/heuristics.js';
 import type { FeedbackEvent } from '../../agents/curator/src/run-curator.js';
 
 export interface OpenPR {
@@ -72,9 +72,11 @@ function prNumberFromUrl(url: string): number {
 }
 
 /**
- * Human replies to the reviewer's review comments, created since `sinceISO`,
- * with noise filtered out. Each becomes a FeedbackEvent the curator can learn
- * from; `botComment` is the reviewer's parent comment being replied to.
+ * Every human review comment on the repo's PRs created since `sinceISO`, with
+ * noise filtered out (the code filter from heuristics.ts). Each becomes a
+ * FeedbackEvent the curator learns from — a maintainer's own review comment, or
+ * (when it replies to one of the reviewer's comments) a reply with that context.
+ * Replies to the bot still cost one extra API call to fetch the parent.
  */
 export async function pollFeedback(
   octokit: Octokit,
@@ -94,34 +96,29 @@ export async function pollFeedback(
     const body: string = c.body ?? '';
     if (!body.trim()) continue;
     if ((c.user?.login ?? '') === botLogin) continue;        // skip the reviewer's own comments
-    if (!c.in_reply_to_id) continue;                          // only thread replies
-    if (classifyCommentBody(body).noise) continue;            // drop ack/ditto/emoji/etc.
+    if (classifyCommentBody(body).noise) continue;            // code filter: drop ack/ditto/emoji/etc.
 
-    let parentLogin = '';
-    let parentBody = '';
-    try {
-      const parent = await withRateLimitRetry(
-        () => octokit.pulls.getReviewComment({ owner, repo: name, comment_id: c.in_reply_to_id }),
-        'getReviewComment',
-      );
-      parentLogin = parent.data.user?.login ?? '';
-      parentBody = parent.data.body ?? '';
-    } catch {
-      continue;
+    // If it replies to one of the reviewer's own comments, carry that as context.
+    let inReplyToBot: string | undefined;
+    if (c.in_reply_to_id) {
+      try {
+        const parent = await withRateLimitRetry(
+          () => octokit.pulls.getReviewComment({ owner, repo: name, comment_id: c.in_reply_to_id }),
+          'getReviewComment',
+        );
+        if ((parent.data.user?.login ?? '') === botLogin) inReplyToBot = parent.data.body ?? '';
+      } catch { /* parent gone — treat as a standalone maintainer comment */ }
     }
-    if (parentLogin !== botLogin) continue;                   // only replies to the reviewer
 
     out.push({
       feedbackId: `rc-${c.id}`,
-      kind: 'review_comment_reply',
+      kind: inReplyToBot ? 'review_comment_reply' : 'review_comment',
       body,
-      botComment: {
-        body: parentBody,
-        path: c.path,
-        line: c.line ?? undefined,
-        prNumber: prNumberFromUrl(c.pull_request_url ?? ''),
-        repo,
-      },
+      repo,
+      prNumber: prNumberFromUrl(c.pull_request_url ?? ''),
+      anchorPath: c.path,
+      anchorLine: c.line ?? undefined,
+      inReplyToBot,
       actor: c.user?.login,
       touchedFiles: c.path ? [c.path] : [],
     });

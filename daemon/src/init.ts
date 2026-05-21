@@ -20,7 +20,7 @@ import { cloneRepo } from '../../agents/common/src/workspace.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 import { buildChatModel } from '../../agents/common/src/model.js';
 import { engineRoot } from '../../agents/common/src/engine-root.js';
-import { classifyCommentBody } from '../../webhook/src/heuristics.js';
+import { classifyCommentBody } from '../../agents/common/src/heuristics.js';
 import { writeReviewer } from './reviewers.js';
 
 // ---------------------------------------------------------------------------

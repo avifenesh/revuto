@@ -23,9 +23,6 @@ cdk.context.json
 *.key
 *.p12
 id_rsa*
-github-app*.pem
-webhook.secret
-waitpoint-hmac.secret
 
 # Editor / OS
 .DS_Store

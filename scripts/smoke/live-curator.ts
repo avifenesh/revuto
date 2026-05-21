@@ -23,7 +23,11 @@ const feedback: FeedbackEvent = {
   feedbackId: 'rc-live-1',
   kind: 'review_comment_reply',
   body: 'Agree — this reconnect loop has no backoff cap, it has bitten us before. Please bound the retries.',
-  botComment: { body: 'This reconnect path retries unconditionally; is the retry count bounded?', path: 'src/net/reconnect.c', line: 42, prNumber: 1, repo: 'octo/demo' },
+  repo: 'octo/demo',
+  prNumber: 1,
+  anchorPath: 'src/net/reconnect.c',
+  anchorLine: 42,
+  inReplyToBot: 'This reconnect path retries unconditionally; is the retry count bounded?',
   actor: 'maintainer',
   touchedFiles: ['src/net/reconnect.c'],
 };

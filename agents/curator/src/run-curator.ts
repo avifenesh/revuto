@@ -19,9 +19,16 @@ const CURATOR_MAX_OUTPUT_TOKENS = 16384;
 
 export interface FeedbackEvent {
   readonly feedbackId: string;
-  readonly kind: 'review_comment_reply' | 'issue_comment_reply' | 'reaction' | 'resolution';
+  /** A maintainer's own review comment, or a reply to one of the reviewer's comments. */
+  readonly kind: 'review_comment' | 'review_comment_reply';
   readonly body: string;
-  readonly botComment: { body: string; path?: string; line?: number; prNumber: number; repo: string };
+  readonly repo: string;
+  readonly prNumber: number;
+  /** File/line the comment is anchored to (if a review comment). */
+  readonly anchorPath?: string;
+  readonly anchorLine?: number;
+  /** The reviewer's comment being replied to — present only for review_comment_reply. */
+  readonly inReplyToBot?: string;
   readonly actor?: string;
   readonly touchedFiles: readonly string[];
 }
@@ -68,15 +75,21 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
 
 function renderFeedback(f: FeedbackEvent): string {
   const lines: string[] = [];
-  lines.push(`# Feedback event ${f.feedbackId}`);
+  lines.push(`# Review feedback ${f.feedbackId}`);
   lines.push('');
-  lines.push(`- Kind: ${f.kind}`);
-  lines.push(`- Repo / PR: ${f.botComment.repo} / #${f.botComment.prNumber}`);
-  if (f.botComment.path) lines.push(`- Anchor: ${f.botComment.path}:${f.botComment.line ?? '?'}`);
+  lines.push(`- Kind: ${f.kind === 'review_comment_reply' ? 'reply to the reviewer\'s comment' : 'maintainer review comment'}`);
+  lines.push(`- Repo / PR: ${f.repo} / #${f.prNumber}`);
+  if (f.anchorPath) lines.push(`- Anchor: ${f.anchorPath}:${f.anchorLine ?? '?'}`);
+  if (f.actor) lines.push(`- Author: ${f.actor}`);
   if (f.touchedFiles.length) lines.push(`- Touched files (up to 20): ${f.touchedFiles.slice(0, 20).join(', ')}`);
   lines.push('');
-  lines.push('## Bot comment (what the human is responding to)', '', f.botComment.body.trim() || '(empty)', '');
-  lines.push('## Human feedback', '', f.body.trim() || '(empty — reaction or resolution)', '');
+  if (f.inReplyToBot) {
+    lines.push("## The reviewer's comment being replied to", '', f.inReplyToBot.trim() || '(empty)', '');
+    lines.push('## The reply', '', f.body.trim() || '(empty)', '');
+  } else {
+    lines.push('## Maintainer review comment', '', f.body.trim() || '(empty)', '');
+    lines.push('Treat this as observed institutional signal: does it reveal a durable concern, invariant, or intentional carve-out the reviewer should remember? Most comments are routine and should be dropped.', '');
+  }
   lines.push('---', '');
   lines.push(`Decide bump / merge / create / drop / graduation / noop. Graduation threshold is ${GRADUATION_THRESHOLD} reinforcements. Call \`curator_done\` once when finished.`);
   return lines.join('\n');
