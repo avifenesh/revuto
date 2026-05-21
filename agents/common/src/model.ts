@@ -39,3 +39,29 @@ export function tokensFrom(usage: unknown): number {
   const u = usage as { totalTokens?: number; outputTokens?: number } | undefined;
   return u?.totalTokens ?? u?.outputTokens ?? 0;
 }
+
+// Model families that tend to end a turn with prose instead of calling the
+// terminal tool — they need explicit steering. Mirrors hermes-agent's
+// TOOL_USE_ENFORCEMENT_MODELS. GLM (z.ai) is the one we hit in practice.
+const TOOL_SHY_FAMILIES = ['glm', 'gpt', 'codex', 'gemini', 'gemma', 'grok', 'qwen', 'deepseek', 'kimi'];
+
+/** Whether a model needs the tool-use enforcement guidance appended to its system prompt. */
+export function needsToolUseEnforcement(spec: ModelSpec): boolean {
+  const m = spec.model.toLowerCase();
+  return TOOL_SHY_FAMILIES.some((f) => m.includes(f));
+}
+
+/**
+ * Appended to a tool-driving agent's system prompt for tool-shy models. Reframed
+ * from hermes-agent's TOOL_USE_ENFORCEMENT_GUIDANCE for revuto's terminal-tool loop:
+ * the run is wasted unless it ends in a terminal tool call, not prose.
+ */
+export const TOOL_USE_ENFORCEMENT = `
+
+## Tool-use enforcement
+
+You drive this entirely through tool calls. Do not describe what you would do, summarize
+your findings as prose, or end your turn with a plan — a text-only reply posts nothing and
+the whole run is wasted. The moment you have gathered enough, make the tool call. Every
+response must either make progress via a tool call or finish via your terminal tool. You
+MUST end by calling exactly one terminal tool — never with a plain text message.`;

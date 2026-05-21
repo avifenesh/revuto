@@ -11,7 +11,7 @@ import { generateText, stepCountIs, hasToolCall } from 'ai';
 import type { Octokit } from '@octokit/rest';
 
 import type { ReviewerConfig } from './config.js';
-import { buildChatModel, tokensFrom } from './model.js';
+import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEMENT } from './model.js';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
 import { getOctokit } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
@@ -72,9 +72,11 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   if (!skillMd && opts.store) {
     skillMd = (await selectSkills(opts.store, opts.embedder ?? null, ctx.fileList)).trim();
   }
-  const system = skillMd
+  let system = skillMd
     ? `${REVIEWER_SYSTEM_PROMPT}\n\n---\n\n## Repository knowledge\n\n${skillMd}`
     : REVIEWER_SYSTEM_PROMPT;
+  // Tool-shy models (GLM, etc.) tend to end with prose instead of a terminal tool — steer them.
+  if (needsToolUseEnforcement(config.models.review)) system += TOOL_USE_ENFORCEMENT;
 
   const assemble = opts.assembleTools ?? defaultAssembleTools;
   const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config });
@@ -88,19 +90,56 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     'The workspace is checked out at the PR head. Follow the method in the system prompt. When done, call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.',
   ].join('\n');
 
-  const { steps, usage } = await generateText({
-    model: buildChatModel(config.models.review),
+  const model = buildChatModel(config.models.review);
+  const maxOutputTokens = config.limits.maxOutputTokens.review;
+  const main = await generateText({
+    model,
     system,
     prompt: userMessage,
     tools,
     stopWhen: [stepCountIs(config.review.maxSteps), hasToolCall('post_review'), hasToolCall('skip_review')],
-    maxOutputTokens: config.limits.maxOutputTokens.review,
+    maxOutputTokens,
   });
 
+  let { terminal, result } = findTerminal(main.steps);
+  let tokens = tokensFrom(main.usage);
+  let stepCount = main.steps.length;
+
+  // GLM-style failure: the model ended with prose instead of a terminal tool, so nothing
+  // was posted. Force a decision — replay the conversation with only the terminal tools and
+  // toolChoice "required" so the model must post_review or skip_review.
+  if (terminal === 'none') {
+    const forced = await generateText({
+      model,
+      system,
+      messages: [
+        { role: 'user', content: userMessage },
+        ...main.response.messages,
+        { role: 'user', content: 'You ended without posting, which wastes the review. Call exactly one of `post_review` (with your findings) or `skip_review` (if nothing clears the bar) now — respond only with that tool call.' },
+      ],
+      tools: { post_review: tools.post_review, skip_review: tools.skip_review },
+      toolChoice: 'required',
+      stopWhen: [stepCountIs(2), hasToolCall('post_review'), hasToolCall('skip_review')],
+      maxOutputTokens,
+    });
+    const f = findTerminal(forced.steps);
+    terminal = f.terminal;
+    result = f.result;
+    tokens += tokensFrom(forced.usage);
+    stepCount += forced.steps.length;
+  }
+
+  return { terminal, result, headSha: ctx.headSha, steps: stepCount, tokens };
+}
+
+type StepLike = { toolResults?: Array<{ toolName: string; output?: unknown; result?: unknown }> };
+
+/** Pull the terminal tool's outcome from a run's steps, if it called one. */
+function findTerminal(steps: readonly StepLike[]): { terminal: ReviewOutcome['terminal']; result: string } {
   let terminal: ReviewOutcome['terminal'] = 'none';
   let result = '';
   for (const step of steps) {
-    for (const tr of (step.toolResults ?? []) as Array<{ toolName: string; output?: unknown; result?: unknown }>) {
+    for (const tr of step.toolResults ?? []) {
       if (tr.toolName === 'post_review' || tr.toolName === 'skip_review') {
         terminal = tr.toolName;
         const payload = tr.output ?? tr.result ?? {};
@@ -108,8 +147,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
       }
     }
   }
-
-  return { terminal, result, headSha: ctx.headSha, steps: steps.length, tokens: tokensFrom(usage) };
+  return { terminal, result };
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>
