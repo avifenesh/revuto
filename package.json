@@ -40,7 +40,7 @@
     "@agent-sh/harness-tools": "0.2.0",
     "@ai-sdk/openai-compatible": "^1.0.0",
     "@octokit/rest": "^22.0.1",
-    "ai": "^5.0.0",
+    "ai": "^6.0.188",
     "better-sqlite3": "^11.8.0",
     "gray-matter": "^4.0.3",
     "node-cron": "^3.0.3",
