@@ -84,7 +84,7 @@ export async function decayRepo(config: ReviewerConfig, repo: string): Promise<D
   }
 }
 
-/** On-demand single-PR review (CLI `reviewer review <repo> <pr>`). */
+/** On-demand single-PR review (CLI `revuto review <repo> <pr>`). */
 export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber: number): Promise<ReviewOutcome> {
   const { octokit } = getOctokit(config.github);
   // Reviewing surfaces the repo in the Obsidian index even if it wasn't init'd.
@@ -100,7 +100,7 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
   }
 }
 
-/** On-demand single learn pass (CLI `reviewer learn <repo>`). */
+/** On-demand single learn pass (CLI `revuto learn <repo>`). */
 export async function learnOnce(config: ReviewerConfig, settings: ReviewerSettings): Promise<LearnJobResult> {
   return learnRepo(config, settings);
 }

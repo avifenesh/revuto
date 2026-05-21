@@ -1,5 +1,5 @@
 /**
- * `reviewer init <owner/repo>` — stand up a reviewer for a new repo:
+ * `revuto init <owner/repo>` — stand up a reviewer for a new repo:
  *   1. clone the repo (read-only working copy),
  *   2. onboard: scan structure (deterministic) for a factual overview,
  *   3. backfill up to N past PRs' review feedback via GraphQL,

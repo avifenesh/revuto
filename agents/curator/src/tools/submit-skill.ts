@@ -9,7 +9,7 @@ import type { KnowledgeStore, SkillNote } from '../../../common/src/store/store.
  *   1. writes a markdown skill note (status: draft) into the repo's vault dir, and
  *   2. deletes the source concern from the store.
  *
- * The skill stays `draft` until a human runs `reviewer approve` (or the repo has
+ * The skill stays `draft` until a human runs `revuto approve` (or the repo has
  * autoActivate). Drafts are not loaded by the reviewer. The skill's `area` globs
  * are inherited from the source concern so area-glob selection keeps working
  * even without an embedder.

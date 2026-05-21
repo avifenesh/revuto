@@ -8,7 +8,7 @@
 # Run:
 #   LLAMA_MODEL=/path/to/model.gguf scripts/llama-server.sh [--port 8080]
 #
-# Then point reviewer.config.json models at:
+# Then point revuto.config.json models at:
 #   { "baseURL": "http://127.0.0.1:8080/v1", "model": "<served-name>" }   # no apiKeyEnv needed
 set -euo pipefail
 

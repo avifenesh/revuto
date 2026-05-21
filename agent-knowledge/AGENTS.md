@@ -1,6 +1,6 @@
 # Agent Knowledge Base — Master Index
 
-This directory contains research guides synthesized from online sources for use by the valkey-reviewer agent family.
+This directory contains research guides synthesized from online sources for use by the revuto agent family.
 
 ## Usage
 

@@ -32,7 +32,7 @@ export function planSchedule(config: ReviewerConfig, reviewers: ReviewerSettings
 export function startDaemon(config: ReviewerConfig): ScheduledTask[] {
   const reviewers = listReviewers(config);
   if (reviewers.length === 0) {
-    console.warn('no reviewers registered — add one with `reviewer init <owner/repo>` (or `reviewer add`)');
+    console.warn('no reviewers registered — add one with `revuto init <owner/repo>` (or `revuto add`)');
   }
 
   const tasks: ScheduledTask[] = [];

@@ -283,38 +283,19 @@ A generic capability skill (e.g., "process PDFs") teaches the model *how* to do 
 
 ---
 
-### 8. AgentCore Agent-Skills Registry (AWS Bedrock)
+### 8. How skills are stored and selected
 
-The valkey-reviewer project uses AWS Bedrock AgentCore as its runtime. AgentCore's Memory service provides a `SearchMemoryRecords` API that powers a skill registry pattern.
+Skills are markdown notes in a vault (`skills/<owner>__<repo>/<slug>.md`) with YAML frontmatter (`name`, `description`, `area` globs, `status: draft|active`). On each review the reviewer loads the per-repo textbook plus the topic skills relevant to the current diff:
 
-**How skills are stored as memory records**:
+- **With an embedder configured** — cosine similarity between the touched-area query and each skill's `name + description + area` embedding (SurrealDB `vector::similarity::cosine`, or a JS fallback). Only `active` skills are considered.
+- **Without an embedder** — area-glob match of each skill's `area` patterns against the PR's touched files.
 
-Skills published to the registry are stored as `MemoryRecord` objects with `descriptorType: AGENT_SKILLS`. The relevant content type is `skillMd`, which wraps the SKILL.md content as `inlineContent` (the full markdown string) alongside a structured `skillMetadata` object containing `name` and `description`.
+Either way the `description` and `area` decide whether a skill fires, so they carry the selection load. Write the description dense with the vocabulary real PRs in the area use:
 
-```json
-{
-  "memoryRecordId": "skill-valkey-security-audit",
-  "content": {
-    "skillMd": {
-      "name": "valkey-security-audit",
-      "description": "Use when reviewing PRs that touch authentication, ACL, or TLS code...",
-      "inlineContent": "---\nname: valkey-security-audit\n...\n# Full SKILL.md body here\n"
-    }
-  },
-  "descriptorType": "AGENT_SKILLS"
-}
-```
-
-**SearchRegistryRecords matcher behavior**:
-
-`SearchMemoryRecords` (or the newer `SearchRegistryRecords` in AgentCore) uses **semantic similarity** — not keyword search — over the combined `name` + `description` + `inlineContent` text. The query is the current task description or PR overview. Records are ranked by cosine similarity in the embedding space.
-
-**Practical implications for skill authors targeting AgentCore**:
-
-- The description must be dense with the *vocabulary of the task*, not the vocabulary of the implementation. If PRs are described as "dual-channel replication refactor", your description should contain "replication", "dual-channel", and the domain-specific context words that appear in real PR titles.
-- Semantic search rewards descriptions that use the same language as the queries. Do not paraphrase into generic terms ("concurrent system changes") when the actual domain term is more specific ("incremental rehash" or "safe-iterator lifetime").
-- The `inlineContent` (full body) is also indexed. Named patterns with specific identifiers (`hashtableTwoPhasePopDelete`, `rehash_idx`, `safe_iterators`) will match PRs containing those identifiers even if the description alone would not fire.
-- For the memory-curator use case: the curator should write the `description` by distilling the human feedback into the most query-likely phrasing. The body should include the verbatim identifier names from the source code that triggered the feedback.
+- The description must be dense with the *vocabulary of the task*, not the vocabulary of the implementation. If PRs are described as "dual-channel replication refactor", the description should contain "replication", "dual-channel", and the domain-specific words that appear in real PR titles.
+- Use the same language as the diffs. Do not paraphrase into generic terms ("concurrent system changes") when the domain term is more specific ("incremental rehash" or "safe-iterator lifetime").
+- Selection embeds `name + description + area`, not the full body — so put the specific identifiers (`hashtableTwoPhasePopDelete`, `rehash_idx`, `safe_iterators`) and file globs in the `description` / `area`, not only in the body.
+- For the curator: write the `description` by distilling the human feedback into the most query-likely phrasing, and set `area` to the globs of the files the feedback touched.
 
 ---
 
@@ -525,7 +506,7 @@ Skip unless: diff touches authentication middleware, session validation, or perm
 | Conflicting patterns | Two patterns overlap; model hedges | Add "if multiple patterns match, narrower skip-unless wins" rule |
 | Skill loads but is ignored after compaction | Skill gets dropped from 25K compaction budget | Re-invoke explicitly after compaction; trim body to stay in budget |
 | Description truncated in budget | Too many skills registered; descriptions shortened | Put key trigger phrase first; trim to 512 chars for safety |
-| AgentCore search misses | Description vocabulary doesn't match PR title vocabulary | Use actual PR vocabulary (file names, function names, commit message style) |
+| Skill never fires (selection misses) | Description vocabulary doesn't match PR title vocabulary | Use actual PR vocabulary (file names, function names, commit message style) |
 
 ---
 
@@ -550,7 +531,7 @@ Skip unless: diff touches authentication middleware, session validation, or perm
 
 ## Curator-Specific Guidance: Composing `skill_md` from Human Feedback
 
-This section addresses the valkey-reviewer memory-curator use case directly.
+This section addresses the memory-curator use case directly.
 
 ### When to promote a feedback signal to a skill
 
@@ -568,7 +549,7 @@ It stays in the curator's short-term memory (not a skill) when:
 The curator's `description` should:
 
 1. Start with `"Use when reviewing a PR that touches [specific file/function/subsystem]"` — matches real query vocabulary (PR titles, file lists)
-2. Include the verbatim identifiers from the source code that triggered the feedback (e.g., `sds *err`, `C_ERR`, `cancelReplicationHandshake`) — these match AgentCore's semantic search when the PR diff contains these identifiers
+2. Include the verbatim identifiers from the source code that triggered the feedback (e.g., `sds *err`, `C_ERR`, `cancelReplicationHandshake`) — these match the embedder's semantic selection when the PR diff contains these identifiers
 3. State what the skill adds that code-reading alone can't provide ("cross-PR contract not expressed in types", "decision from PR 945 not in comments")
 4. Be 1–3 sentences; do not exceed 512 characters for safety margin against truncation
 

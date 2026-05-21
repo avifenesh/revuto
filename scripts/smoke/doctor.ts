@@ -1,5 +1,5 @@
 /**
- * Smoke for `reviewer doctor`: probes chat + embedding endpoints against the
+ * Smoke for `revuto doctor`: probes chat + embedding endpoints against the
  * fake OpenAI-compatible server. (GitHub probe fails without a token — expected;
  * we assert only the model probes here.)
  *

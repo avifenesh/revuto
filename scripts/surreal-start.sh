@@ -4,7 +4,7 @@
 #   scripts/surreal-start.sh                 # 127.0.0.1:8000, data under the vault
 #   PORT=8000 SURREAL_DATA=~/reviewer-vault/memory/surreal scripts/surreal-start.sh
 #
-# Then in reviewer.config.json:
+# Then in revuto.config.json:
 #   "store": { "backend": "surreal",
 #              "surreal": { "url": "http://127.0.0.1:8000/rpc", "namespace": "reviewer",
 #                           "username": "root", "password": "root" } }
