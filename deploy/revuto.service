@@ -5,12 +5,15 @@
 #   mkdir -p ~/.config/systemd/user ~/.config/revuto
 #   echo 'GH_TOKEN=ghp_xxx' > ~/.config/revuto/env    # + GLM_API_KEY etc. (chmod 600)
 #   cp deploy/revuto.service ~/.config/systemd/user/revuto.service
-#   # edit WorkingDirectory/REVUTO_CONFIG below to your checkout, then:
+#   # edit WorkingDirectory below to your checkout, then:
 #   systemctl --user daemon-reload && systemctl --user enable --now revuto
 #   journalctl --user -u revuto -f
 #
-# Global install (npm i -g revuto): set `ExecStart=/usr/bin/env revuto daemon`,
-# drop WorkingDirectory, and point REVUTO_CONFIG at an absolute path.
+# Config resolves from the vault by default ($REVUTO_VAULT or ~/revuto). Set
+# REVUTO_VAULT below if your vault is elsewhere, or REVUTO_CONFIG for an explicit path.
+#
+# Global install (npm i -g revuto): set `ExecStart=/usr/bin/env revuto daemon`
+# and drop WorkingDirectory.
 #
 # %h expands to the user's home directory.
 
@@ -22,7 +25,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/projects/revuto
-Environment=REVUTO_CONFIG=%h/projects/revuto/revuto.config.json
+# Config auto-resolves from the vault (~/revuto). Uncomment to override:
+#Environment=REVUTO_VAULT=%h/revuto
 EnvironmentFile=-%h/.config/revuto/env
 ExecStart=/usr/bin/env node --enable-source-maps dist/daemon/src/cli.js daemon
 Restart=on-failure
