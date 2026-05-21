@@ -55,9 +55,9 @@ Verified deterministically (no endpoint/token needed):
 
 Needs a configured OpenAI-compatible endpoint + `GH_TOKEN` to exercise end-to-end
 (integration, not yet run here):
-- `reviewer review <repo> <pr>` posting a real review.
-- `reviewer learn` curating a real reply; embedder-on dedup/selection path.
-- `reviewer init` producing a non-trivial `_textbook.md` from PR history.
+- `revuto review <repo> <pr>` posting a real review.
+- `revuto learn` curating a real reply; embedder-on dedup/selection path.
+- `revuto init` producing a non-trivial `_textbook.md` from PR history.
 - supplier-swap (run the same review against two different `models.review` endpoints).
 
 ## Not done / future

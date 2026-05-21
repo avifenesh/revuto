@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * reviewer CLI. Commands:
- *   reviewer daemon                 start the scheduler (review/learn/decay per repo)
- *   reviewer add <owner/repo>       register a repo (minimal; `init` adds onboarding)
- *   reviewer list                   list registered reviewers
- *   reviewer review <owner/repo> <pr>   review one PR now
- *   reviewer learn <owner/repo>     run one learn pass now
- *   reviewer decay <owner/repo>     run decay now
- *   reviewer approve <owner/repo> <skill-slug>   activate a draft skill
+ * revuto CLI. Commands:
+ *   revuto daemon                 start the scheduler (review/learn/decay per repo)
+ *   revuto add <owner/repo>       register a repo (minimal; `init` adds onboarding)
+ *   revuto list                   list registered reviewers
+ *   revuto review <owner/repo> <pr>   review one PR now
+ *   revuto learn <owner/repo>     run one learn pass now
+ *   revuto decay <owner/repo>     run decay now
+ *   revuto approve <owner/repo> <skill-slug>   activate a draft skill
  */
 import cron from 'node-cron';
 import { loadConfig } from '../../agents/common/src/config.js';
@@ -23,7 +23,7 @@ type Job = 'review' | 'learn' | 'decay';
 const isJob = (s: string): s is Job => s === 'review' || s === 'learn' || s === 'decay';
 
 function usage(): void {
-  console.log(`reviewer <command>
+  console.log(`revuto <command>
 
   daemon                          start the scheduler (review/learn/decay)
   doctor                          ping configured model endpoints + GitHub token
@@ -49,7 +49,7 @@ function requireReviewer(repo: string) {
 }
 
 async function cmdAdd(repo: string): Promise<void> {
-  if (!repo?.includes('/')) throw new Error('usage: reviewer add <owner/repo>');
+  if (!repo?.includes('/')) throw new Error('usage: revuto add <owner/repo>');
   const config = loadConfig();
   const { octokit } = getOctokit(config.github);
   const botLogin = (await octokit.users.getAuthenticated()).data.login;
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     }
     case 'init': {
       const repo = args[0];
-      if (!repo?.includes('/')) throw new Error('usage: reviewer init <owner/repo> [maxPRs]');
+      if (!repo?.includes('/')) throw new Error('usage: revuto init <owner/repo> [maxPRs]');
       const maxPRs = args[1] ? parseInt(args[1], 10) : undefined;
       console.log(JSON.stringify(await runInit({ config: loadConfig(), repo, maxPRs }), null, 2));
       break;
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
     }
     case 'review': {
       const repo = args[0]; const pr = parseInt(args[1] ?? '', 10);
-      if (!repo?.includes('/') || !Number.isFinite(pr)) throw new Error('usage: reviewer review <owner/repo> <pr>');
+      if (!repo?.includes('/') || !Number.isFinite(pr)) throw new Error('usage: revuto review <owner/repo> <pr>');
       const config = loadConfig();
       const outcome = await reviewOnePr(config, repo, pr);
       console.log(JSON.stringify(outcome, null, 2));
@@ -113,7 +113,7 @@ async function main(): Promise<void> {
     }
     case 'approve': {
       const repo = args[0]; const slug = args[1];
-      if (!repo?.includes('/') || !slug) throw new Error('usage: reviewer approve <owner/repo> <skill-slug>');
+      if (!repo?.includes('/') || !slug) throw new Error('usage: revuto approve <owner/repo> <skill-slug>');
       const store = await openStore(loadConfig(), repo);
       try {
         console.log((await store.setSkillStatus(slug, 'active')) ? `activated ${slug}` : `no skill "${slug}" in ${repo}`);
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     }
     case 'remove': {
       const repo = args[0];
-      if (!repo?.includes('/')) throw new Error('usage: reviewer remove <owner/repo> [--purge]');
+      if (!repo?.includes('/')) throw new Error('usage: revuto remove <owner/repo> [--purge]');
       const purge = args.includes('--purge');
       const ok = removeReviewer(loadConfig(), repo, { purge });
       console.log(ok ? `removed ${repo}${purge ? ' (skills + sqlite memory purged)' : ''}` : `not registered: ${repo}`);
@@ -133,7 +133,7 @@ async function main(): Promise<void> {
     case 'pause':
     case 'resume': {
       const repo = args[0];
-      if (!repo?.includes('/')) throw new Error(`usage: reviewer ${cmd} <owner/repo>`);
+      if (!repo?.includes('/')) throw new Error(`usage: revuto ${cmd} <owner/repo>`);
       const ok = setPaused(loadConfig(), repo, cmd === 'pause');
       console.log(ok ? `${cmd}d ${repo} (applies on daemon restart)` : `not registered: ${repo}`);
       break;
@@ -141,7 +141,7 @@ async function main(): Promise<void> {
     case 'cron': {
       const repo = args[0]; const job = args[1] ?? ''; const expr = args.slice(2).join(' ').trim();
       if (!repo?.includes('/') || !isJob(job) || !expr) {
-        throw new Error('usage: reviewer cron <owner/repo> <review|learn|decay> "<cron-expr>" | clear');
+        throw new Error('usage: revuto cron <owner/repo> <review|learn|decay> "<cron-expr>" | clear');
       }
       const clear = expr === 'clear' || expr === '-';
       if (!clear && !cron.validate(expr)) throw new Error(`invalid cron expression: "${expr}"`);
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
     }
     case 'trigger': {
       const repo = args[0]; const job = args[1] ?? 'review';
-      if (!repo?.includes('/') || !isJob(job)) throw new Error('usage: reviewer trigger <owner/repo> <review|learn|decay>');
+      if (!repo?.includes('/') || !isJob(job)) throw new Error('usage: revuto trigger <owner/repo> <review|learn|decay>');
       const config = loadConfig();
       const settings = readReviewer(config, repo) ?? { repo };
       const res = job === 'review' ? await reviewRepo(config, settings, { force: true })

@@ -48,5 +48,7 @@ coverage/
 tmp/
 
 # Local engine config (personal paths; secrets are env-referenced, not stored here)
+revuto.config.json
+revuto.config.local.json
 reviewer.config.json
 reviewer.config.local.json

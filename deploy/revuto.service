@@ -1,0 +1,32 @@
+# systemd user service for the revuto daemon.
+#
+# From a source checkout:
+#   npm run build
+#   mkdir -p ~/.config/systemd/user ~/.config/revuto
+#   echo 'GH_TOKEN=ghp_xxx' > ~/.config/revuto/env    # + GLM_API_KEY etc. (chmod 600)
+#   cp deploy/revuto.service ~/.config/systemd/user/revuto.service
+#   # edit WorkingDirectory/REVUTO_CONFIG below to your checkout, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now revuto
+#   journalctl --user -u revuto -f
+#
+# Global install (npm i -g revuto): set `ExecStart=/usr/bin/env revuto daemon`,
+# drop WorkingDirectory, and point REVUTO_CONFIG at an absolute path.
+#
+# %h expands to the user's home directory.
+
+[Unit]
+Description=revuto autonomous PR reviewer daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/revuto
+Environment=REVUTO_CONFIG=%h/projects/revuto/revuto.config.json
+EnvironmentFile=-%h/.config/revuto/env
+ExecStart=/usr/bin/env node --enable-source-maps dist/daemon/src/cli.js daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

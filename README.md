@@ -1,4 +1,4 @@
-# reviewer
+# revuto
 
 A local, supplier-agnostic, repo-agnostic autonomous PR reviewer that **learns**.
 
@@ -18,6 +18,17 @@ into reusable topic skills.
 - **Knowledge is yours and visible.** Skills are markdown notes in an Obsidian
   vault (or any folder). Nothing is written into the reviewed repo.
 
+## Install
+
+```bash
+npm i -g revuto          # or run ad-hoc: npx revuto <command>
+```
+
+Needs Node ≥ 20. `better-sqlite3` ships prebuilt binaries. For the default SurrealDB
+memory backend, install [SurrealDB](https://surrealdb.com) separately and start it
+with `revuto`'s `scripts/surreal-start.sh` — or set `store.backend` to `sqlite` for
+zero external deps.
+
 ## How it works
 
 ```
@@ -35,54 +46,32 @@ decay  (daily) age out concerns that never reach the graduation threshold
 ```
 
 Graduated skills land as `draft` and are loaded by the reviewer only after
-`reviewer approve` (or per-repo `autoActivate`).
-
-## Layout
-
-```
-agents/common/src/   engine: model factory, run loop, tools, store, embedder, skills
-agents/curator/src/  learning agent (concerns store tools, graduation, prompt)
-daemon/src/          scheduler, poller, jobs, CLI, init bootstrap
-ops/src/decay.ts     concern decay
-webhook/src/heuristics.ts   comment-noise filter (reused by the poller)
-agent-knowledge/     skill-writing guidance the curator/init follow
-examples/, docs/legacy-aws/   reference samples + original AWS architecture notes
-```
-
-Per-repo state lives **outside** this repo, in the vault:
-
-```
-<vault>/reviewers/<owner>__<repo>.md     reviewer config note (schedules, allowlist, …)
-<vault>/skills/<owner>__<repo>/_textbook.md   curated textbook (init output)
-<vault>/skills/<owner>__<repo>/<slug>.md      graduated topic skills (draft|active)
-<vault>/memory/<owner>__<repo>.sqlite         concerns + cursors + idempotency
-```
+`revuto approve` (or per-repo `autoActivate`).
 
 ## Setup
 
 ```bash
-npm install
-npm run build
-cp reviewer.config.example.json reviewer.config.json   # edit vaultPath + models
-export GH_TOKEN=ghp_...                                  # or: gh auth login
-scripts/surreal-start.sh &                               # default memory backend (or set store.backend=sqlite)
+cp revuto.config.example.json revuto.config.json   # edit vaultPath + models
+export GH_TOKEN=ghp_...                              # or: gh auth login
+scripts/surreal-start.sh &                           # default backend (or set store.backend=sqlite)
+revuto doctor                                        # verify endpoints + token
 ```
 
-Config (`reviewer.config.json`): `vaultPath`, `github.tokenEnv`, per-role `models`
-(`{ baseURL, model, apiKeyEnv }`; `embedder` may be `null`), and `schedules`. See
-`reviewer.config.example.json`.
+Config (`revuto.config.json`, or `$REVUTO_CONFIG`): `vaultPath`, `github.tokenEnv`,
+per-role `models` (`{ baseURL, model, apiKeyEnv }`; `embedder` may be `null`),
+`schedules`, and `store`. See `revuto.config.example.json`.
 
 ## Providers
 
 Any OpenAI-compatible endpoint works; set it per role in `models`. Verify reachability
-with `reviewer doctor` before running.
+with `revuto doctor` before running.
 
 ```jsonc
 // local llama.cpp (scripts/llama-server.sh) — keyless
-{ "baseURL": "http://127.0.0.1:8080/v1", "model": "qwen3-8b" }
+{ "baseURL": "http://127.0.0.1:8080/v1", "model": "qwen3.6-27b" }
 
-// hosted GLM (Z.ai OpenAI-compatible API)
-{ "baseURL": "https://api.z.ai/api/paas/v4", "model": "glm-4.6", "apiKeyEnv": "GLM_API_KEY" }
+// hosted GLM (Z.ai coding endpoint)
+{ "baseURL": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.1", "apiKeyEnv": "GLM_API_KEY" }
 
 // a self-hosted agent exposing /v1 (e.g. Hermes)
 { "baseURL": "http://127.0.0.1:PORT/v1", "model": "<served-name>", "apiKeyEnv": "HERMES_API_KEY" }
@@ -114,34 +103,37 @@ cursors, idempotency) has two backends, set in `store.backend`:
 ## Usage
 
 ```bash
-reviewer doctor                        # verify endpoints + GitHub token first
-reviewer init <owner/repo> [maxPRs]    # onboard a repo (clone + backfill + textbook)
-reviewer daemon                        # start the scheduler (review/learn/decay)
+revuto doctor                        # verify endpoints + GitHub token first
+revuto init <owner/repo> [maxPRs]    # onboard a repo (clone + backfill + textbook)
+revuto daemon                        # start the scheduler (review/learn/decay)
 
 # lifecycle
-reviewer add <owner/repo>              # register without onboarding
-reviewer remove <owner/repo> [--purge] # unregister (--purge also deletes skills + sqlite memory)
-reviewer pause <owner/repo>            # stop scheduling (until resume / restart)
-reviewer resume <owner/repo>           # re-enable scheduling
-reviewer cron <owner/repo> <job> <expr>  # per-repo cron for review|learn|decay ("clear" resets to default)
-reviewer list                          # list registered reviewers (shows PAUSED)
+revuto add <owner/repo>              # register without onboarding
+revuto remove <owner/repo> [--purge] # unregister (--purge also deletes skills + sqlite memory)
+revuto pause <owner/repo>            # stop scheduling (until resume / restart)
+revuto resume <owner/repo>           # re-enable scheduling
+revuto cron <owner/repo> <job> <expr>  # per-repo cron for review|learn|decay ("clear" resets to default)
+revuto list                          # list registered reviewers (shows PAUSED)
 
 # run a job now
-reviewer trigger <owner/repo> [job]    # run review|learn|decay now (default: review)
-reviewer review <owner/repo> <pr>      # review one specific PR now
-reviewer learn <owner/repo>            # run one learn pass now
-reviewer decay <owner/repo>            # run decay now
-reviewer approve <owner/repo> <slug>   # activate a draft skill
+revuto trigger <owner/repo> [job]    # run review|learn|decay now (default: review)
+revuto review <owner/repo> <pr>      # review one specific PR now
+revuto learn <owner/repo>            # run one learn pass now
+revuto decay <owner/repo>            # run decay now
+revuto approve <owner/repo> <slug>   # activate a draft skill
 ```
 
 Run the daemon as a systemd user service to survive reboots — see
-`deploy/reviewer.service`.
+`deploy/revuto.service`.
 
 ## Development
 
 ```bash
+git clone https://github.com/avifenesh/revuto && cd revuto
+npm install && npm run build
 npm run typecheck
 npx tsx scripts/smoke/graduation.ts    # store + 4× graduation + selection
+npx tsx scripts/smoke/loop.ts          # full learn loop (fake endpoint)
 npx tsx scripts/smoke/scheduler.ts     # registry + schedule planning
 npx tsx scripts/smoke/scan.ts          # onboarding repo scan
 ```

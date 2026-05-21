@@ -1,23 +1,39 @@
 {
-  "name": "reviewer",
+  "name": "revuto",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Local, supplier-agnostic, repo-agnostic autonomous PR reviewer. Stands up a learning reviewer for any repo: clone + onboard + PR-history backfill → curated skill, then poll-review + learn loop with skills graduated into an external (Obsidian) vault.",
   "license": "MIT",
+  "author": "Avi Fenesh",
+  "keywords": ["pr-review", "code-review", "ai", "agent", "llm", "openai-compatible", "obsidian", "surrealdb", "cli"],
   "repository": { "type": "git", "url": "git+https://github.com/avifenesh/revuto.git" },
   "homepage": "https://github.com/avifenesh/revuto#readme",
+  "bugs": { "url": "https://github.com/avifenesh/revuto/issues" },
   "bin": {
-    "reviewer": "dist/daemon/src/cli.js"
+    "revuto": "dist/daemon/src/cli.js"
   },
+  "files": [
+    "dist",
+    "agent-knowledge/skill-writing-best-practices.md",
+    "scripts/surreal-start.sh",
+    "scripts/llama-server.sh",
+    "deploy",
+    "revuto.config.example.json",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "dev": "tsx daemon/src/cli.ts",
-    "start": "node --enable-source-maps dist/daemon/src/cli.js"
+    "start": "node --enable-source-maps dist/daemon/src/cli.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@agent-sh/harness-core": "^0.2.0",
@@ -28,7 +44,6 @@
     "better-sqlite3": "^11.8.0",
     "gray-matter": "^4.0.3",
     "node-cron": "^3.0.3",
-    "sqlite-vec": "^0.1.6",
     "surrealdb": "^2.0.3",
     "zod": "^4.1.12"
   },

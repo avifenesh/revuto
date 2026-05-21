@@ -6,7 +6,7 @@
  * location, GitHub token source, per-role models, and schedules. Per-repo
  * overrides live in the vault's reviewer notes (see daemon/store), not here.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -71,13 +71,19 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
 }
 
 /**
- * Load and validate the config. Path resolution order:
- *   1. explicit `path` argument
- *   2. $REVIEWER_CONFIG
- *   3. ./reviewer.config.json (cwd)
+ * Resolve the config path. Order: explicit arg → $REVUTO_CONFIG → $REVIEWER_CONFIG
+ * → ./revuto.config.json → ./reviewer.config.json (back-compat).
  */
+function defaultConfigPath(): string {
+  return (
+    process.env.REVUTO_CONFIG ??
+    process.env.REVIEWER_CONFIG ??
+    (existsSync(resolve('revuto.config.json')) ? 'revuto.config.json' : 'reviewer.config.json')
+  );
+}
+
 export function loadConfig(path?: string): ReviewerConfig {
-  const file = resolve(path ?? process.env.REVIEWER_CONFIG ?? 'reviewer.config.json');
+  const file = resolve(path ?? defaultConfigPath());
   let raw: any;
   try {
     raw = JSON.parse(readFileSync(file, 'utf8'));
