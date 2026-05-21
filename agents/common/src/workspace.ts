@@ -90,13 +90,13 @@ export async function cloneRepo(repo: string, token: string, dir: string): Promi
   await ensureClone(owner, name, dir, token);
 }
 
-async function checkoutPr(workspaceRoot: string, prNumber: number, headSha: string): Promise<string> {
+async function checkoutPr(workspaceRoot: string, headSha: string): Promise<string> {
   const env = { GIT_TERMINAL_PROMPT: '0' };
-  // GitHub exposes every PR head at pull/<N>/head. tree:0 filter hydrates lazily.
-  // Fetch the head commit, then check out the SHA from the PR object directly — don't
-  // depend on a persisted remote-tracking ref, which isn't reliable across re-reviews.
-  await run('git', ['fetch', '--filter=tree:0', 'origin', `pull/${prNumber}/head`], { cwd: workspaceRoot, env });
-  // Detached checkout at the PR tip keeps the working tree clean for LSP.
+  // Fetch the exact PR head commit by SHA (GitHub allows reachable-SHA fetch — same as the
+  // baseSha fetch below). Using the SHA from the PR object rather than pull/<n>/head avoids
+  // a race if the head advances after we read the PR, and needs no persisted ref. tree:0
+  // hydrates lazily; the detached checkout keeps the working tree clean for LSP.
+  await run('git', ['fetch', '--filter=tree:0', 'origin', headSha], { cwd: workspaceRoot, env });
   await run('git', ['checkout', '--detach', headSha], { cwd: workspaceRoot, env });
   return headSha;
 }
@@ -113,7 +113,7 @@ export async function prepareWorkspace(
   const { data: pr } = await octokit.pulls.get({ owner, repo: repoName, pull_number: payload.pr_number });
 
   await ensureClone(owner, repoName, workspaceRoot, token);
-  const headSha = await checkoutPr(workspaceRoot, payload.pr_number, pr.head.sha);
+  const headSha = await checkoutPr(workspaceRoot, pr.head.sha);
 
   // Base SHA comes from the PR object, not the ref name — the ref may have
   // advanced since the PR was opened. Fetch the base ref + sha explicitly.
