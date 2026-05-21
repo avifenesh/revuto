@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Local, supplier-agnostic, repo-agnostic autonomous PR reviewer. Stands up a learning reviewer for any repo: clone + onboard + PR-history backfill → curated skill, then poll-review + learn loop with skills graduated into an external (Obsidian) vault.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/avifenesh/revuto.git" },
+  "homepage": "https://github.com/avifenesh/revuto#readme",
   "bin": {
     "reviewer": "dist/daemon/src/cli.js"
   },
