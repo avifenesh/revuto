@@ -1,0 +1,56 @@
+name: Publish
+
+# Publish to npm when a v* tag is pushed (e.g. `git tag v0.1.0 && git push --tags`).
+# Requires the repo secret NPM_TOKEN (an npm automation token).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build + verify + npm publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub Release
+      id-token: write   # npm provenance (OIDC)
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - name: Tag matches package.json version
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "package.json=$PKG tag=$TAG"
+          test "$PKG" = "$TAG" || { echo "::error::tag v$TAG does not match package.json version $PKG"; exit 1; }
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Smokes (offline gate)
+        run: |
+          npx tsx scripts/smoke/graduation.ts
+          npx tsx scripts/smoke/scheduler.ts
+          npx tsx scripts/smoke/scan.ts
+          npx tsx scripts/smoke/loop.ts
+          npx tsx scripts/smoke/doctor.ts
+      - name: Publish to npm (with provenance)
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

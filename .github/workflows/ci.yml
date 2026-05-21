@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build + typecheck + smokes (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Offline smokes
+        run: |
+          npx tsx scripts/smoke/graduation.ts
+          npx tsx scripts/smoke/scheduler.ts
+          npx tsx scripts/smoke/scan.ts
+          npx tsx scripts/smoke/loop.ts
+          npx tsx scripts/smoke/doctor.ts
+
+  surreal-smoke:
+    name: SurrealDB backend smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Install + start SurrealDB
+        run: |
+          VER=$(curl -fsSL https://api.github.com/repos/surrealdb/surrealdb/releases/latest | grep -oE '"tag_name": *"[^"]+"' | head -1 | grep -oE 'v[0-9.]+')
+          curl -fL "https://github.com/surrealdb/surrealdb/releases/download/${VER}/surreal-${VER}.linux-amd64.tgz" -o /tmp/surreal.tgz
+          tar xzf /tmp/surreal.tgz
+          ./surreal start --user root --pass root --bind 127.0.0.1:8000 memory &
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8000/health >/dev/null && break; sleep 1; done
+      - run: npx tsx scripts/smoke/surreal.ts
+
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Audit (critical blocks; high reported)
+        run: npm audit --audit-level=critical
+      - name: High advisories (non-blocking)
+        run: npm audit --audit-level=high || true
+
+  secret-scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high

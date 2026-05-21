@@ -1,5 +1,9 @@
 # revuto
 
+[![CI](https://github.com/avifenesh/revuto/actions/workflows/ci.yml/badge.svg)](https://github.com/avifenesh/revuto/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/avifenesh/revuto/actions/workflows/codeql.yml/badge.svg)](https://github.com/avifenesh/revuto/actions/workflows/codeql.yml)
+[![npm](https://img.shields.io/npm/v/revuto.svg)](https://www.npmjs.com/package/revuto)
+
 A local, supplier-agnostic, repo-agnostic autonomous PR reviewer that **learns**.
 
 Point it at any GitHub repo. It clones the repo, reads its PR history to build a
