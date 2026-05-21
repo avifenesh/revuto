@@ -73,6 +73,15 @@ function sign(body: string): string {
   return body.includes(REVUTO_URL) ? body : `${body}${SIGNATURE}`;
 }
 
+interface InlineComment {
+  path: string;
+  line: number;
+  side?: 'LEFT' | 'RIGHT';
+  start_line?: number;
+  start_side?: 'LEFT' | 'RIGHT';
+  body: string;
+}
+
 export function buildGhApiReadTool(deps: GhToolsDeps) {
   return tool({
     name: 'gh_api_read',
@@ -148,7 +157,7 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
           commit_id: deps.ctx.headSha,
           event: 'COMMENT',
           body: sign(input.body),
-          comments: input.comments.map((c) => ({ ...c, body: sign(c.body) })),
+          comments: (input.comments as InlineComment[]).map((c) => ({ ...c, body: sign(c.body) })),
         });
         return JSON.stringify({ ok: true, review_id: resp.data.id, url: resp.data.html_url });
       } catch (err: any) {
