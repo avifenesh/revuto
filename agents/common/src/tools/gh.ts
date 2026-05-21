@@ -148,7 +148,7 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
           commit_id: deps.ctx.headSha,
           event: 'COMMENT',
           body: sign(input.body),
-          comments: input.comments,
+          comments: input.comments.map((c) => ({ ...c, body: sign(c.body) })),
         });
         return JSON.stringify({ ok: true, review_id: resp.data.id, url: resp.data.html_url });
       } catch (err: any) {
