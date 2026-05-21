@@ -84,8 +84,11 @@ Any OpenAI-compatible endpoint works; set it per role in `models`. Verify reacha
 with `revuto doctor` before running.
 
 ```jsonc
-// local llama.cpp (scripts/llama-server.sh) — keyless
+// local llama.cpp chat model (scripts/llama-server.sh) — keyless
 { "baseURL": "http://127.0.0.1:8080/v1", "model": "qwen3.6-27b" }
+
+// local llama.cpp embedder (EMBED=1 scripts/llama-server.sh) — keyless, separate port
+{ "baseURL": "http://127.0.0.1:8181/v1", "model": "bge-small-en-v1.5" }
 
 // hosted GLM (Z.ai coding endpoint)
 { "baseURL": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.1", "apiKeyEnv": "GLM_API_KEY" }
@@ -94,8 +97,12 @@ with `revuto doctor` before running.
 { "baseURL": "http://127.0.0.1:PORT/v1", "model": "<served-name>", "apiKeyEnv": "HERMES_API_KEY" }
 ```
 
-Tool calling is required (the reviewer/curator drive tools), so a local server must run
-with a tool-capable chat template — `scripts/llama-server.sh` passes `--jinja` for that.
+Tool calling is required (the reviewer/curator drive tools), so a local **chat** server
+must run with a tool-capable chat template — `scripts/llama-server.sh` passes `--jinja`
+for that. For an **embedder**, `EMBED=1 LLAMA_MODEL=... scripts/llama-server.sh` serves it
+with `--embedding`, CLS pooling, CPU-only (`-ngl 0`), on port 8181 (clear of the chat
+server's 8080). The `embedder` role may be `null` — dedup + skill selection then fall back
+to LLM-judge / area-glob.
 
 ## Storage backend
 

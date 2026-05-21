@@ -5,18 +5,37 @@
 #   cmake -B "$HOME/projects/llama.cpp/build" -S "$HOME/projects/llama.cpp" -DGGML_CUDA=ON
 #   cmake --build "$HOME/projects/llama.cpp/build" -j --target llama-server
 #
-# Run:
-#   LLAMA_MODEL=/path/to/model.gguf scripts/llama-server.sh [--port 8080]
+# Run a chat model (default — full GPU offload, port 8080, tool-call parsing):
+#   LLAMA_MODEL=/path/to/chat.gguf scripts/llama-server.sh
 #
-# Then point revuto.config.json models at:
-#   { "baseURL": "http://127.0.0.1:8080/v1", "model": "<served-name>" }   # no apiKeyEnv needed
+# Run an embedder (EMBED=1 — CPU by default to keep the GPU free, port 8181 so it
+# stays clear of llama.cpp's own default 8080, CLS pooling for bge-* models):
+#   EMBED=1 LLAMA_MODEL=~/models/embed/bge-small-en-v1.5-f16.gguf scripts/llama-server.sh
+#
+# Then point revuto.config.json at:
+#   review/curator/distill: { "baseURL": "http://127.0.0.1:8080/v1", "model": "<served-name>" }
+#   embedder:               { "baseURL": "http://127.0.0.1:8181/v1", "model": "<served-name>" }
+#   (local endpoints need no apiKeyEnv)
+#
+# Overridable env: PORT, CTX, NGL (gpu layers), POOLING, LLAMA_ALIAS, LLAMA_DIR.
 set -euo pipefail
 
 LLAMA_DIR="${LLAMA_DIR:-$HOME/projects/llama.cpp}"
 MODEL="${LLAMA_MODEL:?set LLAMA_MODEL=/path/to/model.gguf}"
-PORT="${PORT:-8080}"
-CTX="${CTX:-32768}"
+EMBED="${EMBED:-0}"
 ALIAS="${LLAMA_ALIAS:-$(basename "$MODEL" .gguf)}"
+
+# Defaults differ for chat vs embedding instances.
+if [ "$EMBED" = "1" ]; then
+  PORT="${PORT:-8181}"      # off llama.cpp's default 8080
+  CTX="${CTX:-512}"         # embeddings are short
+  NGL="${NGL:-0}"           # CPU by default — keep the GPU free for chat models
+  POOLING="${POOLING:-cls}" # bge-* use CLS pooling
+else
+  PORT="${PORT:-8080}"
+  CTX="${CTX:-32768}"
+  NGL="${NGL:-999}"      # full GPU offload
+fi
 
 # Use the first prebuilt binary among the known CUDA build dirs.
 SERVER=""
@@ -29,9 +48,12 @@ if [ -z "$SERVER" ]; then
   exit 1
 fi
 
-# --jinja enables the chat template's tool-call parsing, which the reviewer needs.
-# --embedding mode is a separate instance; pass EMBED=1 to enable it.
-EXTRA=()
-[ "${EMBED:-0}" = "1" ] && EXTRA+=(--embedding --pooling mean)
-echo "serving $ALIAS on http://127.0.0.1:$PORT/v1 via $SERVER" >&2
-exec "$SERVER" -m "$MODEL" --host 127.0.0.1 --port "$PORT" -ngl 999 --jinja --ctx-size "$CTX" --alias "$ALIAS" "${EXTRA[@]}" "$@"
+# Embedding: --embedding + pooling. Chat: --jinja for the tool-call parsing the reviewer needs.
+MODE=()
+if [ "$EMBED" = "1" ]; then
+  MODE=(--embedding --pooling "$POOLING")
+else
+  MODE=(--jinja)
+fi
+echo "serving $ALIAS on http://127.0.0.1:$PORT/v1 ($([ "$EMBED" = "1" ] && echo embedding || echo chat), ngl=$NGL) via $SERVER" >&2
+exec "$SERVER" -m "$MODEL" --host 127.0.0.1 --port "$PORT" -ngl "$NGL" --ctx-size "$CTX" --alias "$ALIAS" "${MODE[@]}" "$@"
