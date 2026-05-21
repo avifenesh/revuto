@@ -6,7 +6,7 @@
 import { generateText, stepCountIs, hasToolCall } from 'ai';
 
 import type { ReviewerConfig } from '../../common/src/config.js';
-import { buildChatModel, tokensFrom } from '../../common/src/model.js';
+import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEMENT } from '../../common/src/model.js';
 import type { KnowledgeStore } from '../../common/src/store/store.js';
 import type { Embedder } from '../../common/src/memory/embedder.js';
 import { CURATOR_SYSTEM_PROMPT } from './prompts/curator-system.js';
@@ -49,14 +49,43 @@ export interface RunCuratorOptions {
 export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcome> {
   const tools = toAiSdkTools(assembleCuratorTools({ store: opts.store, embedder: opts.embedder }));
 
-  const { steps, usage } = await generateText({
-    model: buildChatModel(opts.config.models.curator),
-    system: CURATOR_SYSTEM_PROMPT,
-    prompt: renderFeedback(opts.feedback),
+  const model = buildChatModel(opts.config.models.curator);
+  const maxOutputTokens = opts.config.limits.maxOutputTokens.curator;
+  let system = CURATOR_SYSTEM_PROMPT;
+  // Tool-shy models (GLM, etc.) tend to end with prose instead of calling curator_done.
+  if (needsToolUseEnforcement(opts.config.models.curator)) system += TOOL_USE_ENFORCEMENT;
+  const prompt = renderFeedback(opts.feedback);
+
+  const main = await generateText({
+    model,
+    system,
+    prompt,
     tools,
     stopWhen: [stepCountIs(CURATOR_MAX_STEPS), hasToolCall('curator_done')],
-    maxOutputTokens: opts.config.limits.maxOutputTokens.curator,
+    maxOutputTokens,
   });
+
+  let steps: Array<{ toolResults?: Array<{ toolName: string; output?: unknown; result?: unknown }> }> = [...main.steps];
+  let tokens = tokensFrom(main.usage);
+
+  // Force a decision if the model ended without recording one (see run-agent for the GLM rationale).
+  if (!hasCuratorDone(main.steps)) {
+    const forced = await generateText({
+      model,
+      system,
+      messages: [
+        { role: 'user', content: prompt },
+        ...main.response.messages,
+        { role: 'user', content: 'You ended without recording a decision. Call `curator_done` now with your decision and summary — respond only with that tool call.' },
+      ],
+      tools: { curator_done: tools.curator_done },
+      toolChoice: 'required',
+      stopWhen: [stepCountIs(2), hasToolCall('curator_done')],
+      maxOutputTokens,
+    });
+    steps = [...main.steps, ...forced.steps];
+    tokens += tokensFrom(forced.usage);
+  }
 
   let decision: string | null = null;
   let summary = '';
@@ -71,7 +100,12 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
       } catch { /* leave defaults */ }
     }
   }
-  return { decision, summary, tokens: tokensFrom(usage) };
+  return { decision, summary, tokens };
+}
+
+/** Whether any step called the curator's terminal tool. */
+function hasCuratorDone(steps: ReadonlyArray<{ toolResults?: Array<{ toolName: string }> }>): boolean {
+  return steps.some((s) => (s.toolResults ?? []).some((tr) => tr.toolName === 'curator_done'));
 }
 
 function renderFeedback(f: FeedbackEvent): string {
