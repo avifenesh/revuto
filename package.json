@@ -5,10 +5,25 @@
   "description": "Local, supplier-agnostic, repo-agnostic autonomous PR reviewer. Stands up a learning reviewer for any repo: clone + onboard + PR-history backfill → curated skill, then poll-review + learn loop with skills graduated into an external (Obsidian) vault.",
   "license": "MIT",
   "author": "Avi Fenesh",
-  "keywords": ["pr-review", "code-review", "ai", "agent", "llm", "openai-compatible", "obsidian", "surrealdb", "cli"],
-  "repository": { "type": "git", "url": "git+https://github.com/avifenesh/revuto.git" },
+  "keywords": [
+    "pr-review",
+    "code-review",
+    "ai",
+    "agent",
+    "llm",
+    "openai-compatible",
+    "obsidian",
+    "surrealdb",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avifenesh/revuto.git"
+  },
   "homepage": "https://github.com/avifenesh/revuto#readme",
-  "bugs": { "url": "https://github.com/avifenesh/revuto/issues" },
+  "bugs": {
+    "url": "https://github.com/avifenesh/revuto/issues"
+  },
   "bin": {
     "revuto": "dist/daemon/src/cli.js"
   },
@@ -38,20 +53,20 @@
   "dependencies": {
     "@agent-sh/harness-core": "^0.2.0",
     "@agent-sh/harness-tools": "0.2.0",
-    "@ai-sdk/openai-compatible": "^1.0.0",
+    "@ai-sdk/openai-compatible": "^2.0.47",
     "@octokit/rest": "^22.0.1",
-    "ai": "^5.0.0",
-    "better-sqlite3": "^11.8.0",
+    "ai": "^6.0.188",
+    "better-sqlite3": "^12.10.0",
     "gray-matter": "^4.0.3",
-    "node-cron": "^3.0.3",
+    "node-cron": "^4.2.1",
     "surrealdb": "^2.0.3",
     "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
-    "@types/node": "^20.14.0",
+    "@types/node": "^25.9.1",
     "@types/node-cron": "^3.0.11",
     "tsx": "^4.19.0",
-    "typescript": "^5.5.0"
+    "typescript": "^6.0.3"
   }
 }

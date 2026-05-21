@@ -30,6 +30,6 @@ export function buildChatModel(spec: ModelSpec): LanguageModel {
 }
 
 /** Embedding model — only when an embedder is configured. */
-export function buildEmbeddingModel(spec: ModelSpec): EmbeddingModel<string> {
+export function buildEmbeddingModel(spec: ModelSpec): EmbeddingModel {
   return provider(spec).textEmbeddingModel(spec.model);
 }
