@@ -31,6 +31,7 @@ assert.ok(report.models.every((p) => p.ok), `all model probes reachable: ${JSON.
 assert.ok(report.models.some((p) => p.kind === 'chat' && p.api === 'responses' && p.roles.includes('review')), 'has a Responses chat probe');
 assert.ok(report.models.some((p) => p.kind === 'chat' && p.api === 'chat' && p.roles.includes('curator') && p.roles.includes('distill')), 'has a default chat probe');
 assert.ok(report.models.some((p) => p.kind === 'embedding'), 'has an embedding probe');
+assert.ok(report.models.every((p) => p.responseModel === 'fake'), `all model probes report provider model: ${JSON.stringify(report.models)}`);
 assert.ok(srv.getPaths().some((p) => p.endsWith('/responses')), 'doctor probes the Responses endpoint');
 assert.ok(srv.getPaths().some((p) => p.endsWith('/chat/completions')), 'doctor probes the chat endpoint separately');
 assert.ok(report.store.ok, `store probe reachable (sqlite): ${report.store.error ?? ''}`);
