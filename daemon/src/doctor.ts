@@ -18,6 +18,8 @@ export interface ModelProbe {
   readonly kind: 'chat' | 'embedding';
   readonly ok: boolean;
   readonly ms: number;
+  readonly responseModel?: string;
+  readonly responseId?: string;
   readonly error?: string;
 }
 
@@ -42,12 +44,41 @@ export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe
     else groups.set(key, { roles: [e.role], spec: e.spec, kind: e.kind });
   }
 
+  const stringField = (value: unknown, field: string): string | undefined => {
+    if (!value || typeof value !== 'object') return undefined;
+    const raw = (value as Record<string, unknown>)[field];
+    return typeof raw === 'string' && raw.trim() ? raw : undefined;
+  };
+
   const modelProbe = async (g: { roles: string[]; spec: ModelSpec; kind: 'chat' | 'embedding' }): Promise<ModelProbe> => {
     const t = Date.now();
     try {
-      if (g.kind === 'chat') await generateText({ model: buildChatModel(g.spec), prompt: 'ping', maxOutputTokens: 16 });
-      else await embedMany({ model: buildEmbeddingModel(g.spec), values: ['ping'] });
-      return { roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, api: g.kind === 'chat' ? g.spec.api ?? 'chat' : undefined, kind: g.kind, ok: true, ms: Date.now() - t };
+      if (g.kind === 'chat') {
+        const result = await generateText({ model: buildChatModel(g.spec), prompt: 'ping', maxOutputTokens: 16 });
+        return {
+          roles: g.roles,
+          baseURL: g.spec.baseURL,
+          model: g.spec.model,
+          api: g.spec.api ?? 'chat',
+          kind: g.kind,
+          ok: true,
+          ms: Date.now() - t,
+          responseModel: stringField(result.response.body, 'model') ?? result.response.modelId,
+          responseId: stringField(result.response.body, 'id') ?? result.response.id,
+        };
+      }
+      const result = await embedMany({ model: buildEmbeddingModel(g.spec), values: ['ping'] });
+      const responseBody = result.responses?.find((response) => response?.body)?.body;
+      return {
+        roles: g.roles,
+        baseURL: g.spec.baseURL,
+        model: g.spec.model,
+        kind: g.kind,
+        ok: true,
+        ms: Date.now() - t,
+        responseModel: stringField(responseBody, 'model'),
+        responseId: stringField(responseBody, 'id'),
+      };
     } catch (e) {
       return { roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, api: g.kind === 'chat' ? g.spec.api ?? 'chat' : undefined, kind: g.kind, ok: false, ms: Date.now() - t, error: e instanceof Error ? e.message : String(e) };
     }

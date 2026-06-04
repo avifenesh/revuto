@@ -269,11 +269,29 @@ function authInfo(spec: ModelSpec): Pick<ModelStatus, 'auth' | 'effectiveAuth' |
 }
 
 function disabledProbe(): ProbeStatus {
-  return { state: 'disabled', kind: 'none', checkedAt: null, ms: null, error: null, sharedRoles: [] };
+  return {
+    state: 'disabled',
+    kind: 'none',
+    checkedAt: null,
+    ms: null,
+    error: null,
+    sharedRoles: [],
+    responseModel: null,
+    responseId: null
+  };
 }
 
 function unknownProbe(role: ModelRole): ProbeStatus {
-  return { state: 'unknown', kind: role === 'embedder' ? 'embedding' : 'chat', checkedAt: null, ms: null, error: null, sharedRoles: [role] };
+  return {
+    state: 'unknown',
+    kind: role === 'embedder' ? 'embedding' : 'chat',
+    checkedAt: null,
+    ms: null,
+    error: null,
+    sharedRoles: [role],
+    responseModel: null,
+    responseId: null
+  };
 }
 
 function modelStatus(role: ModelRole, spec: ModelSpec | null, probe?: ProbeStatus): ModelStatus {
@@ -345,7 +363,9 @@ function probeStatusesFromModelProbes(checkedAt: string, probes: Awaited<ReturnT
         checkedAt,
         ms: probe.ms,
         error: probe.error ?? null,
-        sharedRoles
+        sharedRoles,
+        responseModel: probe.responseModel ?? null,
+        responseId: probe.responseId ?? null
       });
     }
   }
@@ -355,10 +375,10 @@ function probeStatusesFromModelProbes(checkedAt: string, probes: Awaited<ReturnT
 function failedProbeStatuses(config: ReviewerConfig, checkedAt: string, error: string): Map<ModelRole, ProbeStatus> {
   const out = new Map<ModelRole, ProbeStatus>();
   for (const role of ['review', 'curator', 'distill'] as ModelRole[]) {
-    out.set(role, { state: 'failed', kind: 'chat', checkedAt, ms: null, error, sharedRoles: [role] });
+    out.set(role, { state: 'failed', kind: 'chat', checkedAt, ms: null, error, sharedRoles: [role], responseModel: null, responseId: null });
   }
   if (config.models.embedder) {
-    out.set('embedder', { state: 'failed', kind: 'embedding', checkedAt, ms: null, error, sharedRoles: ['embedder'] });
+    out.set('embedder', { state: 'failed', kind: 'embedding', checkedAt, ms: null, error, sharedRoles: ['embedder'], responseModel: null, responseId: null });
   }
   return out;
 }

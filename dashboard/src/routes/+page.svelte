@@ -144,8 +144,10 @@
 
   function probeDetail(model: ModelStatus): string {
     if (model.probe.state === 'ok') {
+      const responseModel = model.probe.responseModel ? ` / provider model ${model.probe.responseModel}` : '';
+      const responseId = model.probe.responseId ? ` / response ${model.probe.responseId}` : '';
       const shared = model.probe.sharedRoles.length > 1 ? ` / shared by ${model.probe.sharedRoles.join(', ')}` : '';
-      return `${model.probe.kind} probe checked ${timeAgo(model.probe.checkedAt)}${shared}`;
+      return `${model.probe.kind} probe checked ${timeAgo(model.probe.checkedAt)}${responseModel}${responseId}${shared}`;
     }
     if (model.probe.state === 'failed') return model.probe.error ?? 'probe failed';
     if (model.probe.state === 'disabled') return 'No embedder configured.';
@@ -416,6 +418,9 @@
                 <span><b>Auth</b>{authLabel(model)}</span>
                 <span><b>Effort</b>{model.reasoningEffort ?? 'none'}</span>
                 <span><b>Provider</b>{model.name}</span>
+                {#if model.probe.responseModel}
+                  <span><b>Live</b>{model.probe.responseModel}</span>
+                {/if}
               </div>
               <small class="endpoint">{model.baseURL}</small>
               <small class="probe-detail">{probeDetail(model)}</small>

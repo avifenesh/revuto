@@ -35,6 +35,8 @@ export interface ModelStatus {
     ms: number | null;
     error: string | null;
     sharedRoles: string[];
+    responseModel: string | null;
+    responseId: string | null;
   };
 }
 
