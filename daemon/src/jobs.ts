@@ -43,7 +43,7 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
     let limited: string | undefined;
     for (const pr of prs) {
       if (pr.isBot) { skipped++; continue; }                                                   // never review bot-authored PRs
-      if (pr.isDraft) { skipped++; continue; }                                                  // never touch drafts; reviewed once they're marked ready (updated_at bumps)
+      if (!pr.isDraft) { skipped++; continue; }                                                 // never touch drafts; reviewed once they're marked ready (updated_at bumps)
       if (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author)) { skipped++; continue; }
       const key = `${settings.repo}#${pr.number}@${pr.headSha}`;
       if (await store.seen(key)) { skipped++; continue; }                                       // already reviewed this head — no re-iterate
