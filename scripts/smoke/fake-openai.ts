@@ -13,24 +13,35 @@ export type FakeScript = (toolResultsSoFar: number) => FakeDecision;
 export interface FakeServer {
   readonly url: string;
   getCalls(): number;
+  getPaths(): string[];
+  getBodies(): unknown[];
+  getHeaders(): Array<Record<string, string | string[] | undefined>>;
   close(): Promise<void>;
 }
 
 export function startFakeOpenAI(script: FakeScript): Promise<FakeServer> {
   return new Promise((resolve) => {
     let calls = 0;
+    const paths: string[] = [];
+    const bodies: unknown[] = [];
+    const headers: Array<Record<string, string | string[] | undefined>> = [];
     const server = createServer((req, res) => {
       const url = req.url ?? '';
-      if (!url.endsWith('/chat/completions') && !url.endsWith('/embeddings')) { res.writeHead(404).end(); return; }
+      if (!url.endsWith('/chat/completions') && !url.endsWith('/embeddings') && !url.endsWith('/responses')) { res.writeHead(404).end(); return; }
       let body = '';
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
         calls++;
+        paths.push(url);
+        headers.push(req.headers);
+        let parsed: any = {};
+        try { parsed = body ? JSON.parse(body) : {}; } catch { /* ignore */ }
+        bodies.push(parsed);
 
         // Embeddings: return a small deterministic vector per input.
         if (url.endsWith('/embeddings')) {
           let input: unknown = [];
-          try { input = JSON.parse(body).input; } catch { /* ignore */ }
+          try { input = parsed.input; } catch { /* ignore */ }
           const values = Array.isArray(input) ? input : [input];
           const data = values.map((_, i) => ({ object: 'embedding', index: i, embedding: Array.from({ length: 8 }, (_, k) => ((i + k + 1) % 7) / 7) }));
           res.writeHead(200, { 'content-type': 'application/json' });
@@ -38,8 +49,28 @@ export function startFakeOpenAI(script: FakeScript): Promise<FakeServer> {
           return;
         }
 
+        if (url.endsWith('/responses')) {
+          const input = Array.isArray(parsed.input) ? parsed.input : [];
+          const toolResults = input.filter((m: any) => m.type === 'function_call_output').length;
+          const d = script(toolResults);
+          const output = 'text' in d
+            ? [{ type: 'message', id: `msg_${calls}`, role: 'assistant', content: [{ type: 'output_text', text: d.text }] }]
+            : [{ type: 'function_call', id: `fc_${calls}`, call_id: `call_${calls}`, name: d.tool, arguments: JSON.stringify(d.args), status: 'completed' }];
+          const payload = {
+            id: `resp_${calls}`,
+            object: 'response',
+            status: 'completed',
+            model: parsed.model ?? 'fake',
+            output,
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, output_tokens_details: { reasoning_tokens: 0 } },
+          };
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(payload));
+          return;
+        }
+
         let messages: Array<{ role?: string }> = [];
-        try { messages = JSON.parse(body).messages ?? []; } catch { /* ignore */ }
+        try { messages = parsed.messages ?? []; } catch { /* ignore */ }
         const toolResults = messages.filter((m) => m.role === 'tool').length;
         const d = script(toolResults);
         const message = 'text' in d
@@ -63,6 +94,9 @@ export function startFakeOpenAI(script: FakeScript): Promise<FakeServer> {
       resolve({
         url: `http://127.0.0.1:${port}/v1`,
         getCalls: () => calls,
+        getPaths: () => paths,
+        getBodies: () => bodies,
+        getHeaders: () => headers,
         close: () => new Promise<void>((r) => server.close(() => r())),
       });
     });

@@ -14,6 +14,7 @@ export interface ModelProbe {
   readonly roles: string[];
   readonly baseURL: string;
   readonly model: string;
+  readonly api?: string;
   readonly kind: 'chat' | 'embedding';
   readonly ok: boolean;
   readonly ms: number;
@@ -23,6 +24,37 @@ export interface ModelProbe {
 export interface GithubProbe { readonly ok: boolean; readonly login?: string; readonly error?: string; }
 export interface StoreProbe { readonly backend: string; readonly ok: boolean; readonly ms: number; readonly error?: string; }
 export interface DoctorReport { readonly github: GithubProbe; readonly store: StoreProbe; readonly models: ModelProbe[]; }
+
+export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe[]> {
+  // Dedupe roles that share an endpoint+model.
+  const entries: Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> = [
+    { role: 'review', spec: config.models.review, kind: 'chat' },
+    { role: 'curator', spec: config.models.curator, kind: 'chat' },
+    { role: 'distill', spec: config.models.distill, kind: 'chat' },
+  ];
+  if (config.models.embedder) entries.push({ role: 'embedder', spec: config.models.embedder, kind: 'embedding' });
+
+  const groups = new Map<string, { roles: string[]; spec: ModelSpec; kind: 'chat' | 'embedding' }>();
+  for (const e of entries) {
+    const key = `${e.kind}:${e.spec.api ?? 'chat'}:${e.spec.baseURL}:${e.spec.model}`;
+    const g = groups.get(key);
+    if (g) g.roles.push(e.role);
+    else groups.set(key, { roles: [e.role], spec: e.spec, kind: e.kind });
+  }
+
+  const modelProbe = async (g: { roles: string[]; spec: ModelSpec; kind: 'chat' | 'embedding' }): Promise<ModelProbe> => {
+    const t = Date.now();
+    try {
+      if (g.kind === 'chat') await generateText({ model: buildChatModel(g.spec), prompt: 'ping', maxOutputTokens: 16 });
+      else await embedMany({ model: buildEmbeddingModel(g.spec), values: ['ping'] });
+      return { roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, api: g.kind === 'chat' ? g.spec.api ?? 'chat' : undefined, kind: g.kind, ok: true, ms: Date.now() - t };
+    } catch (e) {
+      return { roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, api: g.kind === 'chat' ? g.spec.api ?? 'chat' : undefined, kind: g.kind, ok: false, ms: Date.now() - t, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
+
+  return Promise.all([...groups.values()].map(modelProbe));
+}
 
 export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
   const githubProbe = async (): Promise<GithubProbe> => {
@@ -48,38 +80,11 @@ export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
     }
   };
 
-  // Dedupe roles that share an endpoint+model.
-  const entries: Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> = [
-    { role: 'review', spec: config.models.review, kind: 'chat' },
-    { role: 'curator', spec: config.models.curator, kind: 'chat' },
-    { role: 'distill', spec: config.models.distill, kind: 'chat' },
-  ];
-  if (config.models.embedder) entries.push({ role: 'embedder', spec: config.models.embedder, kind: 'embedding' });
-
-  const groups = new Map<string, { roles: string[]; spec: ModelSpec; kind: 'chat' | 'embedding' }>();
-  for (const e of entries) {
-    const key = `${e.kind}:${e.spec.baseURL}:${e.spec.model}`;
-    const g = groups.get(key);
-    if (g) g.roles.push(e.role);
-    else groups.set(key, { roles: [e.role], spec: e.spec, kind: e.kind });
-  }
-
-  const modelProbe = async (g: { roles: string[]; spec: ModelSpec; kind: 'chat' | 'embedding' }): Promise<ModelProbe> => {
-    const t = Date.now();
-    try {
-      if (g.kind === 'chat') await generateText({ model: buildChatModel(g.spec), prompt: 'ping', maxOutputTokens: 5 });
-      else await embedMany({ model: buildEmbeddingModel(g.spec), values: ['ping'] });
-      return { roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, kind: g.kind, ok: true, ms: Date.now() - t };
-    } catch (e) {
-      return { roles: g.roles, baseURL: g.spec.baseURL, model: g.spec.model, kind: g.kind, ok: false, ms: Date.now() - t, error: e instanceof Error ? e.message : String(e) };
-    }
-  };
-
   // All probes are independent — run concurrently.
   const [github, store, models] = await Promise.all([
     githubProbe(),
     storeProbe(),
-    Promise.all([...groups.values()].map(modelProbe)),
+    runModelProbes(config),
   ]);
   return { github, store, models };
 }

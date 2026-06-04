@@ -15,15 +15,24 @@ import { loadConfig, defaultVaultPath } from '../../agents/common/src/config.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'revuto-cfg-'));
 const m = { baseURL: 'http://x/v1', model: 'm' };
+const responses = { ...m, api: 'responses', auth: 'auto', reasoningEffort: 'xhigh', awsRegion: 'us-east-2' };
 const file = join(dir, 'revuto.config.json');
-writeFileSync(file, JSON.stringify({ github: { tokenEnv: 'GH_TOKEN' }, models: { review: m, curator: m, distill: m, embedder: null } }));
+writeFileSync(file, JSON.stringify({ github: { tokenEnv: 'GH_TOKEN' }, models: { review: responses, curator: m, distill: m, embedder: null } }));
 
 const c = loadConfig(file);
 assert.equal(c.vaultPath, dir, 'vaultPath defaults to the config file folder');
+assert.equal(c.models.review.api, 'responses', 'responses API config survives load');
+assert.equal(c.models.review.auth, 'auto', 'auth mode config survives load');
+assert.equal(c.models.review.reasoningEffort, 'xhigh', 'reasoning effort config survives load');
+assert.equal(c.models.review.awsRegion, 'us-east-2', 'AWS region config survives load');
 assert.equal(c.store.backend, 'surreal', 'store backend defaults to surreal');
 assert.ok(c.limits.maxOutputTokens.review > 0, 'review token cap default applied');
 assert.equal(c.limits.dailyTokens, 0, 'unset limits default to 0 (unlimited)');
 assert.equal(c.github.tokenEnv, 'GH_TOKEN', 'github token env read');
+
+const badFile = join(dir, 'bad-revuto.config.json');
+writeFileSync(badFile, JSON.stringify({ github: { tokenEnv: 'GH_TOKEN' }, models: { review: { ...m, api: 'response' }, curator: m, distill: m, embedder: null } }));
+assert.throws(() => loadConfig(badFile), /models\.review\.api must be one of chat, responses/, 'invalid model api fails fast');
 
 // Vault is the default config home: point $REVUTO_VAULT at a temp dir, drop a config
 // there, and confirm loadConfig() (no path arg) finds it from a cwd with no local config.
@@ -37,4 +46,4 @@ process.chdir(mkdtempSync(join(tmpdir(), 'revuto-cwd-'))); // no ./revuto.config
 const v = loadConfig();
 assert.equal(v.vaultPath, vault, 'config found in $REVUTO_VAULT with no path arg; vaultPath self-locates to the vault');
 
-console.log('PASS: config-in-vault default (vaultPath self-locates, $REVUTO_VAULT is the default home) + limit/store defaults');
+console.log('PASS: config-in-vault default + responses model options + invalid-api validation + limit/store defaults');

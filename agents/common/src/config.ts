@@ -22,6 +22,14 @@ export interface ModelSpec {
   readonly baseURL: string;
   /** Model id as the endpoint expects it (e.g. "anthropic.claude-opus-4-7", "qwen3-8b"). */
   readonly model: string;
+  /** OpenAI-compatible API surface. Defaults to chat completions. */
+  readonly api?: 'chat' | 'responses';
+  /** Reasoning effort for Responses/reasoning models. */
+  readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle. */
+  readonly auth?: 'auto' | 'bearer' | 'aws' | 'none';
+  /** AWS region for SigV4-signed bedrock-mantle requests. */
+  readonly awsRegion?: string;
   /** Env var holding the API key. Omit for keyless local endpoints. */
   readonly apiKeyEnv?: string;
   /** Optional provider label for diagnostics. */
@@ -70,17 +78,34 @@ export interface ReviewerConfig {
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
 const DEFAULT_REVIEW = { maxSteps: 150, allowWrite: false, workspaceDir: '' };
 const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
+const MODEL_APIS = ['chat', 'responses'] as const;
+const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const AUTH_MODES = ['auto', 'bearer', 'aws', 'none'] as const;
 
 function requireField<T>(v: T | undefined, name: string): T {
   if (v === undefined || v === null || v === '') throw new Error(`config: required field "${name}" is missing`);
   return v;
 }
 
+function optionalEnum<T extends string>(value: unknown, name: string, allowed: readonly T[]): T | undefined {
+  if (value === undefined) return undefined;
+  if (allowed.includes(value as T)) return value as T;
+  throw new Error(`config: ${name} must be one of ${allowed.join(', ')}`);
+}
+
 function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (!m) throw new Error(`config: models.${role} is required`);
   requireField(m.baseURL, `models.${role}.baseURL`);
   requireField(m.model, `models.${role}.model`);
-  return m;
+  if (typeof m.baseURL !== 'string') throw new Error(`config: models.${role}.baseURL must be a string`);
+  if (typeof m.model !== 'string') throw new Error(`config: models.${role}.model must be a string`);
+  const api = optionalEnum(m.api, `models.${role}.api`, MODEL_APIS);
+  const reasoningEffort = optionalEnum(m.reasoningEffort, `models.${role}.reasoningEffort`, REASONING_EFFORTS);
+  const auth = optionalEnum(m.auth, `models.${role}.auth`, AUTH_MODES);
+  if (m.awsRegion !== undefined && typeof m.awsRegion !== 'string') throw new Error(`config: models.${role}.awsRegion must be a string`);
+  if (m.apiKeyEnv !== undefined && typeof m.apiKeyEnv !== 'string') throw new Error(`config: models.${role}.apiKeyEnv must be a string`);
+  if (m.name !== undefined && typeof m.name !== 'string') throw new Error(`config: models.${role}.name must be a string`);
+  return { ...m, api, reasoningEffort, auth };
 }
 
 /** The default vault: $REVUTO_VAULT, else ~/revuto. The config + skills + reviewer notes live here. */

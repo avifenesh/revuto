@@ -72,11 +72,12 @@ resolves in order: `$REVUTO_CONFIG` → `./revuto.config.json` (local override) 
 `<vault>/revuto.config.json` → `./reviewer.config.json`. Use `init-config --local` to
 drop the config in the current dir instead (it still points `vaultPath` at the vault).
 
-Config keys: `vaultPath`, `github.tokenEnv`, per-role `models`
-(`{ baseURL, model, apiKeyEnv }`; `embedder` may be `null`), `schedules`, `limits`, and
-`store`. See `revuto.config.example.json`. No secrets are stored — API keys are
-env-referenced via `apiKeyEnv`. `revuto doctor` checks model endpoints, the store
-backend, and the token before you run anything.
+Config keys: `vaultPath`, `github.tokenEnv`, per-role `models`, `schedules`,
+`limits`, and `store`. Model specs require `baseURL` and `model`; optional keys
+are `name`, `apiKeyEnv`, `api`, `auth`, `reasoningEffort`, and `awsRegion`
+(`embedder` may be `null`). See `revuto.config.example.json`. No secrets are
+stored — API keys are env-referenced via `apiKeyEnv`. `revuto doctor` checks
+model endpoints, the store backend, and the token before you run anything.
 
 ## Providers
 
@@ -93,9 +94,30 @@ with `revuto doctor` before running.
 // hosted GLM (Z.ai coding endpoint)
 { "baseURL": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.1", "apiKeyEnv": "GLM_API_KEY" }
 
+// Amazon Bedrock OpenAI-compatible Responses API (Mantle)
+// Uses AWS_BEARER_TOKEN_BEDROCK when set; otherwise signs HTTP with the default AWS credential chain.
+{
+  "name": "bedrock-mantle",
+  "baseURL": "https://bedrock-mantle.us-east-2.api.aws/v1",
+  "model": "openai.gpt-5.5",
+  "api": "responses",
+  "reasoningEffort": "xhigh",
+  "auth": "auto",
+  "apiKeyEnv": "AWS_BEARER_TOKEN_BEDROCK",
+  "awsRegion": "us-east-2"
+}
+
 // a self-hosted agent exposing /v1 (e.g. Hermes)
 { "baseURL": "http://127.0.0.1:PORT/v1", "model": "<served-name>", "apiKeyEnv": "HERMES_API_KEY" }
 ```
+
+`api` defaults to `chat` (`/v1/chat/completions`). Set `api: "responses"` for
+`/v1/responses` providers such as Bedrock Mantle. Responses calls are stateless
+by default (`store: false`) and can use `reasoningEffort` for GPT/o-series models.
+The current Responses adapter covers Revuto's text + function-tool loop, bearer
+auth, and Bedrock SigV4 signing. It intentionally leaves streaming, stored
+conversation state, multimodal/file inputs, structured-output helpers, and built-in
+Responses tools unsupported for now.
 
 Tool calling is required (the reviewer/curator drive tools), so a local **chat** server
 must run with a tool-capable chat template — `scripts/llama-server.sh` passes `--jinja`
@@ -175,6 +197,9 @@ npm install && npm run build
 npm run typecheck
 npx tsx scripts/smoke/graduation.ts    # store + 4× graduation + selection
 npx tsx scripts/smoke/loop.ts          # full learn loop (fake endpoint)
+npx tsx scripts/smoke/responses.ts     # /v1/responses + Bedrock Mantle auth
+npx tsx scripts/smoke/doctor.ts        # doctor probes + output shape
+npx tsx scripts/smoke/config.ts        # config defaults + model API validation
 npx tsx scripts/smoke/scheduler.ts     # registry + schedule planning
 npx tsx scripts/smoke/scan.ts          # onboarding repo scan
 ```

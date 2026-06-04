@@ -1,15 +1,16 @@
 /**
  * Supplier-agnostic model factory.
  *
- * Every LLM/embedding call in the engine goes through an OpenAI-compatible
- * provider built here from a `ModelSpec` ({ baseURL, model, apiKeyEnv }). That
- * makes Bedrock (via an OpenAI-compatible gateway such as LiteLLM), xAI/Grok,
- * GLM, a local vLLM/Ollama endpoint, etc. interchangeable per role — no
- * provider-specific code anywhere else.
+ * Every LLM/embedding call in the engine goes through a `ModelSpec`. Chat
+ * completions use `@ai-sdk/openai-compatible`; providers that expose
+ * `/v1/responses` (for example Bedrock Mantle) use the small Responses adapter.
+ * That keeps Bedrock, xAI/Grok, GLM, local vLLM/Ollama, etc. interchangeable per
+ * role while preserving the endpoint contract each provider actually exposes.
  */
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel, EmbeddingModel } from 'ai';
 import type { ModelSpec } from './config.js';
+import { buildResponsesModel } from './responses-model.js';
 
 function resolveApiKey(spec: ModelSpec): string {
   if (!spec.apiKeyEnv) return ''; // keyless local endpoints (Ollama/vLLM) are fine
@@ -26,6 +27,7 @@ function provider(spec: ModelSpec) {
 
 /** Chat/completion model for a role (review, curator, distill). */
 export function buildChatModel(spec: ModelSpec): LanguageModel {
+  if (spec.api === 'responses') return buildResponsesModel(spec);
   return provider(spec).chatModel(spec.model);
 }
 
