@@ -11,7 +11,9 @@ open_script="${repo_root}/scripts/revuto-dashboard-open.sh"
 
 cd "$repo_root"
 
-npm run dashboard:build
+if [[ ! -f dashboard/build/index.js ]]; then
+  npm run dashboard:build
+fi
 
 mkdir -p "${HOME}/.config/systemd/user" "${HOME}/.local/share/applications"
 install -m 0644 "$service_src" "$service_dst"

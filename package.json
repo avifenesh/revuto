@@ -1,6 +1,6 @@
 {
   "name": "revuto",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "type": "module",
   "description": "Local, supplier-agnostic, repo-agnostic autonomous PR reviewer. Stands up a learning reviewer for any repo: clone + onboard + PR-history backfill → curated skill, then poll-review + learn loop with skills graduated into an external (Obsidian) vault.",
   "license": "MIT",
