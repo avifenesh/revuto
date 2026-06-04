@@ -37,6 +37,7 @@
     "dashboard/vite.config.ts",
     "dashboard/src",
     "dashboard/static",
+    "dashboard/build",
     "scripts/surreal-start.sh",
     "scripts/llama-server.sh",
     "scripts/revuto-dashboard-serve.sh",
@@ -65,7 +66,7 @@
     "dashboard:open": "scripts/revuto-dashboard-open.sh",
     "dashboard:install-desktop": "scripts/install-revuto-dashboard-desktop.sh",
     "start": "node --enable-source-maps dist/daemon/src/cli.js",
-    "prepublishOnly": "npm run build"
+    "prepack": "npm run build && npm run dashboard:build"
   },
   "dependencies": {
     "@agent-sh/harness-core": "^0.2.0",
