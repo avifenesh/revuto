@@ -19,6 +19,7 @@ import { openStore } from '../../agents/common/src/store/open.js';
 import { listReviewers, readReviewer, writeReviewer, removeReviewer, setPaused, setSchedule } from './reviewers.js';
 import { reviewOnePr, reviewRepo, learnRepo, decayRepo } from './jobs.js';
 import { startDaemon } from './scheduler.js';
+import { runQueuedForRepo } from './repo-queue.js';
 import { runInit } from './init.js';
 import { runDoctor, doctorOk } from './doctor.js';
 import { isJob } from './types.js';
@@ -112,18 +113,19 @@ async function main(): Promise<void> {
       const repo = args[0]; const pr = parseInt(args[1] ?? '', 10);
       if (!repo?.includes('/') || !Number.isFinite(pr)) throw new Error('usage: revuto review <owner/repo> <pr>');
       const config = loadConfig();
-      const outcome = await reviewOnePr(config, repo, pr);
+      const outcome = await runQueuedForRepo(config, repo, () => reviewOnePr(config, repo, pr));
       console.log(JSON.stringify(outcome, null, 2));
       break;
     }
     case 'learn': {
       const { config, settings } = requireReviewer(args[0] ?? '');
-      console.log(JSON.stringify(await learnRepo(config, settings), null, 2));
+      console.log(JSON.stringify(await runQueuedForRepo(config, settings.repo, () => learnRepo(config, settings)), null, 2));
       break;
     }
     case 'decay': {
       const config = loadConfig();
-      console.log(JSON.stringify(await decayRepo(config, args[0] ?? ''), null, 2));
+      const repo = args[0] ?? '';
+      console.log(JSON.stringify(await runQueuedForRepo(config, repo, () => decayRepo(config, repo)), null, 2));
       break;
     }
     case 'approve': {
@@ -169,9 +171,11 @@ async function main(): Promise<void> {
       if (!repo?.includes('/') || !isJob(job)) throw new Error('usage: revuto trigger <owner/repo> <review|learn|decay>');
       const config = loadConfig();
       const settings = readReviewer(config, repo) ?? { repo };
-      const res = job === 'review' ? await reviewRepo(config, settings, { force: true })
-        : job === 'learn' ? await learnRepo(config, settings)
-        : await decayRepo(config, repo);
+      const res = await runQueuedForRepo(config, repo, async () => {
+        if (job === 'review') return reviewRepo(config, settings, { force: true });
+        if (job === 'learn') return learnRepo(config, settings);
+        return decayRepo(config, repo);
+      });
       console.log(JSON.stringify(res, null, 2));
       break;
     }

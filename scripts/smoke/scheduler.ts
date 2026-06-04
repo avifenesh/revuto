@@ -5,14 +5,18 @@
  *   npx tsx scripts/smoke/scheduler.ts
  */
 import assert from 'node:assert/strict';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { once } from 'node:events';
 import cron from 'node-cron';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import { writeReviewer, listReviewers, readReviewer } from '../../daemon/src/reviewers.js';
 import { planSchedule } from '../../daemon/src/scheduler.js';
+import { runQueuedForRepo } from '../../daemon/src/repo-queue.js';
 
 const vault = mkdtempSync(join(tmpdir(), 'reviewer-sched-'));
 const config: ReviewerConfig = {
@@ -52,4 +56,106 @@ for (const p of plan) {
   for (const expr of Object.values(p.schedules)) assert.ok(cron.validate(expr), `valid cron: ${expr}`);
 }
 
-console.log('PASS: reviewer registry round-trip + per-repo schedule merge + cron validity');
+const events: string[] = [];
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+await Promise.all([
+  runQueuedForRepo(config, 'octo/alpha', async () => {
+    events.push('alpha-1-start');
+    await delay(30);
+    events.push('alpha-1-end');
+  }, { pollMs: 1 }),
+  runQueuedForRepo(config, 'octo/alpha', async () => {
+    events.push('alpha-2-start');
+    await delay(5);
+    events.push('alpha-2-end');
+  }, { pollMs: 1 }),
+  runQueuedForRepo(config, 'octo/beta', async () => {
+    events.push('beta-start');
+    await delay(5);
+    events.push('beta-end');
+  }, { pollMs: 1 }),
+]);
+
+assert.ok(events.indexOf('alpha-2-start') > events.indexOf('alpha-1-end'), 'same repo jobs are serialized');
+assert.ok(events.indexOf('beta-start') < events.indexOf('alpha-1-end'), 'different repo jobs can overlap');
+
+const childEvents: string[] = [];
+const waiters = new Map<string, Array<() => void>>();
+let child: ChildProcessWithoutNullStreams | null = null;
+
+function noteChildEvent(event: string): void {
+  childEvents.push(event);
+  const resolvers = waiters.get(event) ?? [];
+  waiters.delete(event);
+  for (const resolve of resolvers) resolve();
+}
+
+function waitForChildEvent(event: string): Promise<void> {
+  if (childEvents.includes(event)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`timed out waiting for child event: ${event}`)), 5_000);
+    const resolveOnce = (): void => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    waiters.set(event, [...(waiters.get(event) ?? []), resolveOnce]);
+  });
+}
+
+function watchChildOutput(proc: ChildProcessWithoutNullStreams): void {
+  let stdout = '';
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', (chunk) => {
+    stdout += chunk;
+    for (;;) {
+      const newline = stdout.indexOf('\n');
+      if (newline < 0) break;
+      const line = stdout.slice(0, newline).trim();
+      stdout = stdout.slice(newline + 1);
+      if (line) noteChildEvent(line);
+    }
+  });
+}
+
+function spawnQueueWorker(repo: string): ChildProcessWithoutNullStreams {
+  const workerSource = `
+const { runQueuedForRepo } = await import(process.env.REVUTO_QUEUE_MODULE);
+const config = JSON.parse(process.env.REVUTO_QUEUE_CONFIG);
+const repo = process.env.REVUTO_QUEUE_REPO;
+process.stdout.write('child-ready\\n');
+await runQueuedForRepo(config, repo, async () => {
+  process.stdout.write('child-start\\n');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  process.stdout.write('child-end\\n');
+}, { pollMs: 1 });
+`;
+  const proc = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', workerSource], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      REVUTO_QUEUE_MODULE: pathToFileURL(join(process.cwd(), 'daemon/src/repo-queue.ts')).href,
+      REVUTO_QUEUE_CONFIG: JSON.stringify(config),
+      REVUTO_QUEUE_REPO: repo,
+    },
+  });
+  watchChildOutput(proc);
+  proc.stderr.pipe(process.stderr);
+  return proc;
+}
+
+await runQueuedForRepo(config, 'octo/manual', async () => {
+  childEvents.push('parent-start');
+  child = spawnQueueWorker('octo/manual');
+  await waitForChildEvent('child-ready');
+  await delay(20);
+  assert.equal(childEvents.includes('child-start'), false, 'child process waits behind an existing repo lock');
+  childEvents.push('parent-end');
+}, { pollMs: 1 });
+
+assert.ok(child, 'child queue worker was spawned');
+const [code] = await once(child, 'exit') as [number | null];
+assert.equal(code, 0, 'child queue worker exited cleanly');
+assert.ok(childEvents.indexOf('child-start') > childEvents.indexOf('parent-end'), 'cross-process jobs for the same repo are serialized');
+
+console.log('PASS: reviewer registry round-trip + per-repo schedule merge + cron validity + per-repo job queue');

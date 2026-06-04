@@ -8,15 +8,22 @@ import cron, { type ScheduledTask } from 'node-cron';
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import { listReviewers, effectiveSchedules, type ReviewerSettings } from './reviewers.js';
 import { reviewRepo, learnRepo, decayRepo } from './jobs.js';
+import { runQueuedForRepo } from './repo-queue.js';
 
-async function guard(job: string, repo: string, fn: () => Promise<unknown> | unknown): Promise<void> {
-  const t = Date.now();
-  try {
-    const res = await fn();
-    console.log(`[${job}] ${repo} ${res ? JSON.stringify(res) : ''} (${Date.now() - t}ms)`);
-  } catch (e) {
-    console.error(`[${job}] ${repo} failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+export { runQueuedForRepo } from './repo-queue.js';
+
+async function guard(config: ReviewerConfig, job: string, repo: string, fn: () => Promise<unknown> | unknown): Promise<void> {
+  const run = async (): Promise<void> => {
+    const t = Date.now();
+    try {
+      const res = await fn();
+      console.log(`[${job}] ${repo} ${res ? JSON.stringify(res) : ''} (${Date.now() - t}ms)`);
+    } catch (e) {
+      console.error(`[${job}] ${repo} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  await runQueuedForRepo(config, repo, run);
 }
 
 export interface ScheduledRepo {
@@ -48,7 +55,7 @@ export function startDaemon(config: ReviewerConfig): ScheduledTask[] {
         console.error(`[${job}] ${r.repo}: invalid cron "${expr}" — skipped`);
         continue;
       }
-      tasks.push(cron.schedule(expr, () => guard(job, r.repo, fn)));
+      tasks.push(cron.schedule(expr, () => guard(config, job, r.repo, fn)));
     }
     console.log(`scheduled ${r.repo}: review='${s.review}' learn='${s.learn}' decay='${s.decay}'`);
   }
