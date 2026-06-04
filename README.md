@@ -65,6 +65,30 @@ surreal start --user root --pass root --bind 127.0.0.1:8000 surrealkv://"$HOME"/
 revuto doctor                            # verify models + store backend + GitHub token
 ```
 
+### Local dashboard
+
+The local dashboard can run as a user service and open from a desktop icon:
+
+```bash
+npm run dashboard:install-desktop
+```
+
+That builds the SvelteKit dashboard, installs `revuto-dashboard.service` under
+`~/.config/systemd/user/`, starts it on `127.0.0.1:5180`, and writes a
+`Revuto Watch` launcher to both the desktop applications menu and `~/Desktop`.
+After that, use the icon or:
+
+```bash
+npm run dashboard:open
+```
+
+Useful checks:
+
+```bash
+systemctl --user status revuto-dashboard.service
+journalctl --user -u revuto-dashboard.service -f
+```
+
 **Config lives in the vault by default.** `init-config` writes
 `<vault>/revuto.config.json`, where `<vault>` is `$REVUTO_VAULT` or `~/revuto`, so
 config + skills + reviewer notes all sit in one Obsidian-editable place. `loadConfig`

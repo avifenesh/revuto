@@ -1,0 +1,19 @@
+[Unit]
+Description=Revuto Watch local dashboard
+Documentation=file:%h/projects/revuto/README.md
+After=network-online.target revuto.service revuto-surreal.service revuto-embedder.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/revuto
+EnvironmentFile=-%h/.config/revuto/env
+Environment=HOST=127.0.0.1
+Environment=PORT=5180
+Environment=ORIGIN=http://127.0.0.1:5180
+ExecStart=%h/projects/revuto/scripts/revuto-dashboard-serve.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

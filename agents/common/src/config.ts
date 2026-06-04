@@ -129,8 +129,12 @@ function defaultConfigPath(): string {
   return vaultCfg; // not-found error then points at the vault location
 }
 
+export function resolveConfigPath(path?: string): string {
+  return resolve(path ?? defaultConfigPath());
+}
+
 export function loadConfig(path?: string): ReviewerConfig {
-  const file = resolve(path ?? defaultConfigPath());
+  const file = resolveConfigPath(path);
   let raw: any;
   if (!existsSync(file)) {
     throw new Error(`config: ${file} not found. Run \`revuto init-config\` to create a starter config, then edit vaultPath + models.`);

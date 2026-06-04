@@ -47,6 +47,12 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "dev": "tsx daemon/src/cli.ts",
+    "dashboard:dev": "npm --prefix dashboard run dev --",
+    "dashboard:build": "npm --prefix dashboard run build",
+    "dashboard:check": "npm --prefix dashboard run check",
+    "dashboard:serve": "scripts/revuto-dashboard-serve.sh",
+    "dashboard:open": "scripts/revuto-dashboard-open.sh",
+    "dashboard:install-desktop": "scripts/install-revuto-dashboard-desktop.sh",
     "start": "node --enable-source-maps dist/daemon/src/cli.js",
     "prepublishOnly": "npm run build"
   },
