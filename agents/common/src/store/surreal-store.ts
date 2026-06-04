@@ -48,10 +48,12 @@ export class SurrealStore implements KnowledgeStore {
   private readonly db = new Surreal();
   private readonly skills: MarkdownSkills;
   private readonly cfg: SurrealConfig;
+  private readonly database: string;
 
   constructor(vaultPath: string, repo: string, cfg: SurrealConfig) {
     this.repo = repo;
     this.cfg = cfg;
+    this.database = repoSlug(repo);
     this.skills = new MarkdownSkills(vaultPath, repoSlug(repo));
   }
 
@@ -60,12 +62,12 @@ export class SurrealStore implements KnowledgeStore {
     await this.db.connect(this.cfg.url);
     if (this.cfg.username) await this.db.signin({ username: this.cfg.username, password: this.cfg.password ?? '' });
     const ns = ident(this.cfg.namespace);
-    const dbName = ident(repoSlug(this.repo));
+    const dbName = ident(this.database);
     // SurrealDB v3 doesn't auto-create on USE; define them first (DEFINE name can't be parameterized).
     await this.db.query(`DEFINE NAMESPACE IF NOT EXISTS \`${ns}\``);
     await this.db.use({ namespace: this.cfg.namespace });
     await this.db.query(`DEFINE DATABASE IF NOT EXISTS \`${dbName}\``);
-    await this.db.use({ namespace: this.cfg.namespace, database: repoSlug(this.repo) });
+    await this.selectDatabase();
     // Define tables so reads before first write return [] instead of erroring (v3 strict).
     await this.db.query(`
       DEFINE TABLE IF NOT EXISTS concern SCHEMALESS;
@@ -76,7 +78,12 @@ export class SurrealStore implements KnowledgeStore {
     `);
   }
 
+  private async selectDatabase(): Promise<void> {
+    await this.db.use({ namespace: this.cfg.namespace, database: this.database });
+  }
+
   private async rows(sql: string, vars?: Record<string, unknown>): Promise<any[]> {
+    await this.selectDatabase();
     const res = (await this.db.query(sql, vars)) as unknown[];
     return (res[res.length - 1] as any[]) ?? [];
   }

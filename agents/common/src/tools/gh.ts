@@ -61,18 +61,19 @@ export interface GhToolsDeps {
   readonly octokit: Octokit;
 }
 
-/** The revuto engine repo — the attribution footer links here. */
+/** The revuto engine repo — the attribution header links here. */
 const REVUTO_URL = 'https://github.com/avifenesh/revuto';
 /** Hidden HTML-comment sentinel (invisible when rendered) used to detect an already-signed body. */
 const SIGNATURE_MARK = '<!-- revuto-signed -->';
-const SIGNATURE = `\n\n${SIGNATURE_MARK}\n\n---\n*This is an auto review done by [revuto](${REVUTO_URL}).*`;
+const SIGNATURE = `${SIGNATURE_MARK}\n*This is an auto review done by [revuto](${REVUTO_URL}).*`;
 
 /**
- * Append the attribution footer to anything revuto posts, so every comment is
+ * Prefix the attribution header to anything revuto posts, so every comment is
  * marked as an automated review. Idempotent — detected via the hidden sentinel.
  */
 function sign(body: string): string {
-  return body.includes(SIGNATURE_MARK) ? body : `${body}${SIGNATURE}`;
+  if (body.includes(SIGNATURE_MARK)) return body;
+  return body.trim() ? `${SIGNATURE}\n\n---\n\n${body}` : SIGNATURE;
 }
 
 interface InlineComment {
