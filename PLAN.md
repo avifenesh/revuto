@@ -10,8 +10,9 @@ are in `docs/legacy-aws/`.
 ## Design decisions
 
 - **OpenAI-compatible everywhere.** `agents/common/src/model.ts` builds every
-  chat/embedding model from a `ModelSpec { baseURL, model, apiKeyEnv }` via
-  `@ai-sdk/openai-compatible`. No provider lock-in; configured per role.
+  model from a `ModelSpec` per role. Chat completions and embeddings use
+  `@ai-sdk/openai-compatible`; `api: "responses"` routes through the local
+  `/v1/responses` adapter for providers such as Bedrock Mantle.
 - **Orchestration:** Vercel AI SDK (`generateText` + tool calling + `stopWhen`).
   Tool builders return a neutral `ToolDef` (`agents/common/src/tool-def.ts`) that
   `toAiSdkTools` adapts — the rest of the engine is orchestrator-agnostic.
@@ -31,7 +32,7 @@ are in `docs/legacy-aws/`.
 
 | Area | Path | Role |
 |---|---|---|
-| Model factory | `agents/common/src/model.ts` | OpenAI-compatible chat/embedding per role |
+| Model factory | `agents/common/src/model.ts` + `agents/common/src/responses-model.ts` | OpenAI-compatible chat/embedding plus `/v1/responses` per role |
 | Tool adapter | `agents/common/src/tool-def.ts` | neutral ToolDef → AI SDK tools |
 | Review loop | `agents/common/src/run-agent.ts` | `runReview()` — workspace, skill select, generateText |
 | Tools | `agents/common/src/tools/*` | harness (read/grep/glob/bash/lsp) + git + gh + post/skip |
@@ -49,6 +50,7 @@ Phases 1–5 implemented; `npm run typecheck` and `npm run build` pass.
 Verified deterministically (no endpoint/token needed):
 - `scripts/smoke/graduation.ts` — store, 4× reinforcement, draft-gate, area-glob selection, cursors.
 - `scripts/smoke/scheduler.ts` — reviewer registry round-trip + per-repo schedule merge.
+- `scripts/smoke/responses.ts` — `/v1/responses` adapter, tool loop, reasoning effort, bearer auth, AWS SigV4 auth.
 - `scripts/smoke/scan.ts` — onboarding repo scan.
 - `scripts/smoke/loop.ts` — full learn loop (fake OpenAI endpoint drives the real curator tool loop).
 - `scripts/smoke/surreal.ts` — SurrealDB backend parity (needs a local `surreal start`): concerns + native cosine + cursors + idempotency + graduation.
