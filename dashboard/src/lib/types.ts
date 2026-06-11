@@ -113,6 +113,8 @@ export interface DashboardSnapshot {
     pausedReviewers: number;
     recentJobs: number;
     recentFailures: number;
+    reviewed: number;
+    skipped: number;
   };
   services: ServiceStatus[];
   models: ModelStatus[];

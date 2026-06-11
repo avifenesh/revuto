@@ -194,7 +194,7 @@ function parseJobEvent(raw: string): JobEvent | null {
   };
 }
 
-async function readJournal(since: string): Promise<{ jobs: JobEvent[]; logs: LogLine[] }> {
+async function readJournal(since: string): Promise<{ jobs: JobEvent[]; logs: LogLine[]; reviewed: number; skipped: number }> {
   const res = await run('journalctl', [
     '--user',
     '-u',
@@ -210,9 +210,19 @@ async function readJournal(since: string): Promise<{ jobs: JobEvent[]; logs: Log
 
   const lines = res.stdout.split('\n').filter((line) => line.trim().length > 0);
   const daemonLines = lines.filter((line) => /\snode\[\d+\]:\s/.test(line));
-  const jobs = daemonLines.map(parseJobEvent).filter((job): job is JobEvent => !!job).reverse().slice(0, JOB_HISTORY_LIMIT);
+  const allJobs = daemonLines.map(parseJobEvent).filter((job): job is JobEvent => !!job);
+  // Total over the full journal window, not the truncated display slice: poll
+  // cycles emit one zero-result job per repo, so the trailing JOB_HISTORY_LIMIT
+  // events are almost always empty and would bury the rare real reviews.
+  let reviewed = 0;
+  let skipped = 0;
+  for (const job of allJobs) {
+    if (typeof job.result?.reviewed === 'number') reviewed += job.result.reviewed;
+    if (typeof job.result?.skipped === 'number') skipped += job.result.skipped;
+  }
+  const jobs = allJobs.reverse().slice(0, JOB_HISTORY_LIMIT);
   const logs = daemonLines.map(parseJournalLine).reverse().slice(0, LOG_HISTORY_LIMIT);
-  return { jobs, logs };
+  return { jobs, logs, reviewed, skipped };
 }
 
 function safeProviderName(spec: ModelSpec): string {
@@ -512,7 +522,9 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
       reviewers: reviewers.length,
       pausedReviewers: reviewers.filter((reviewer) => reviewer.paused).length,
       recentJobs: journal.jobs.length,
-      recentFailures: journal.jobs.filter((job) => job.status === 'failed').length
+      recentFailures: journal.jobs.filter((job) => job.status === 'failed').length,
+      reviewed: journal.reviewed,
+      skipped: journal.skipped
     },
     services,
     models,

@@ -12,6 +12,7 @@
   let refreshError: string | null = null;
   let refreshing = false;
   let currentSection: DashboardSection = 'overview';
+  let showEmptyCycles = false;
 
   const navItems: Array<{ id: DashboardSection; label: string }> = [
     { id: 'overview', label: 'Overview' },
@@ -25,6 +26,8 @@
   $: selectedJobs = selectedRepo === 'all'
     ? snapshot.jobs
     : snapshot.jobs.filter((job) => job.repo === selectedRepo);
+  $: emptyCycleCount = selectedJobs.filter(isEmptyCycle).length;
+  $: visibleJobs = showEmptyCycles ? selectedJobs : selectedJobs.filter((job) => !isEmptyCycle(job));
   $: jobCounts = {
     review: selectedJobs.filter((job) => job.job === 'review').length,
     learn: selectedJobs.filter((job) => job.job === 'learn').length,
@@ -32,8 +35,8 @@
   };
   $: lastJob = snapshot.jobs[0] ?? null;
   $: healthTone = snapshot.counts.servicesActive === snapshot.counts.servicesTotal ? 'good' : 'bad';
-  $: recentReviewed = sumResult(snapshot.jobs, 'reviewed');
-  $: recentSkipped = sumResult(snapshot.jobs, 'skipped');
+  $: recentReviewed = selectedRepo === 'all' ? snapshot.counts.reviewed : sumResult(selectedJobs, 'reviewed');
+  $: recentSkipped = selectedRepo === 'all' ? snapshot.counts.skipped : sumResult(selectedJobs, 'skipped');
   $: activeModels = snapshot.models.filter((model) => model.enabled).length;
   $: probedModels = snapshot.models.filter((model) => model.enabled && model.probe.state === 'ok').length;
   $: failedModel = snapshot.models.find((model) => model.enabled && model.probe.state === 'failed');
@@ -79,6 +82,16 @@
       const value = job.result?.[key];
       return total + (typeof value === 'number' ? value : 0);
     }, 0);
+  }
+
+  function isEmptyCycle(job: JobEvent): boolean {
+    if (job.status !== 'ok' || !job.result) return false;
+    const reviewed = typeof job.result.reviewed === 'number' ? job.result.reviewed : 0;
+    const skipped = typeof job.result.skipped === 'number' ? job.result.skipped : 0;
+    const curated = typeof job.result.curated === 'number' ? job.result.curated : 0;
+    const seen = typeof job.result.seen === 'number' ? job.result.seen : 0;
+    const noisyFlags = job.result.initialized || job.result.limited || job.result.deleted || job.result.decayed;
+    return !noisyFlags && reviewed === 0 && skipped === 0 && curated === 0 && seen === 0;
   }
 
   function formatTime(value: string | null | undefined): string {
@@ -334,6 +347,10 @@
               {/each}
             </select>
           </label>
+          <label class="toggle">
+            <input type="checkbox" bind:checked={showEmptyCycles} />
+            <span>Show empty cycles{emptyCycleCount > 0 ? ` (${emptyCycleCount})` : ''}</span>
+          </label>
         </div>
 
         <div class="table-wrap">
@@ -349,7 +366,7 @@
               </tr>
             </thead>
             <tbody>
-              {#each selectedJobs.slice(0, 80) as job}
+              {#each visibleJobs.slice(0, 80) as job}
                 <tr>
                   <td>{formatTime(job.timestamp)}</td>
                   <td class="mono repo-cell">{job.repo}</td>
@@ -369,7 +386,11 @@
                 </tr>
               {:else}
                 <tr>
-                  <td colspan="6" class="empty">No daemon jobs in the current window.</td>
+                  <td colspan="6" class="empty">
+                    {emptyCycleCount > 0
+                      ? `No activity — ${emptyCycleCount} empty poll ${emptyCycleCount === 1 ? 'cycle' : 'cycles'} hidden.`
+                      : 'No daemon jobs in the current window.'}
+                  </td>
                 </tr>
               {/each}
             </tbody>
@@ -914,6 +935,31 @@
     display: grid;
     gap: 4px;
     min-width: 180px;
+  }
+
+  label.toggle {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  label.toggle input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: #0d3439;
+    cursor: pointer;
+  }
+
+  label.toggle span {
+    color: #4d5c65;
+    font-size: 11px;
+    font-weight: 720;
+    letter-spacing: 0;
+    text-transform: none;
+    white-space: nowrap;
+    cursor: pointer;
   }
 
   select {
