@@ -59,15 +59,24 @@ export class SurrealStore implements KnowledgeStore {
 
   /** Connect, ensure the per-repo namespace/database exist, and select them. */
   async connect(): Promise<void> {
-    await this.db.connect(this.cfg.url);
-    if (this.cfg.username) await this.db.signin({ username: this.cfg.username, password: this.cfg.password ?? '' });
+    // Session state (auth + ns/db selection) must ride in the connect options:
+    // the SDK silently reconnects dropped sockets and replays only what
+    // connect() was given — manual signin()/use() calls are lost on reconnect,
+    // which surfaced as random per-repo learn failures ("Anonymous access not
+    // allowed" / "Specify a namespace/database to use") whenever every repo's
+    // socket opened on the same cron tick.
+    await this.db.connect(this.cfg.url, {
+      namespace: this.cfg.namespace,
+      database: this.database,
+      ...(this.cfg.username
+        ? { authentication: { username: this.cfg.username, password: this.cfg.password ?? '' } }
+        : {}),
+    });
     const ns = ident(this.cfg.namespace);
     const dbName = ident(this.database);
-    // SurrealDB v3 doesn't auto-create on USE; define them first (DEFINE name can't be parameterized).
+    // SurrealDB v3 doesn't auto-create on USE; define them (DEFINE name can't be parameterized).
     await this.db.query(`DEFINE NAMESPACE IF NOT EXISTS \`${ns}\``);
-    await this.db.use({ namespace: this.cfg.namespace });
     await this.db.query(`DEFINE DATABASE IF NOT EXISTS \`${dbName}\``);
-    await this.selectDatabase();
     // Define tables so reads before first write return [] instead of erroring (v3 strict).
     await this.db.query(`
       DEFINE TABLE IF NOT EXISTS concern SCHEMALESS;
@@ -78,12 +87,7 @@ export class SurrealStore implements KnowledgeStore {
     `);
   }
 
-  private async selectDatabase(): Promise<void> {
-    await this.db.use({ namespace: this.cfg.namespace, database: this.database });
-  }
-
   private async rows(sql: string, vars?: Record<string, unknown>): Promise<any[]> {
-    await this.selectDatabase();
     const res = (await this.db.query(sql, vars)) as unknown[];
     return (res[res.length - 1] as any[]) ?? [];
   }
