@@ -22,11 +22,11 @@ export interface ModelSpec {
   readonly baseURL: string;
   /** Model id as the endpoint expects it (e.g. "anthropic.claude-opus-4-7", "qwen3-8b"). */
   readonly model: string;
-  /** OpenAI-compatible API surface. Defaults to chat completions. */
-  readonly api?: 'chat' | 'responses';
-  /** Reasoning effort for Responses/reasoning models. */
-  readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle. */
+  /** API surface. "chat"=OpenAI chat completions, "responses"=OpenAI Responses (mantle), "converse"=Bedrock Converse (native Claude). Defaults to chat. */
+  readonly api?: 'chat' | 'responses' | 'converse';
+  /** Reasoning effort for Responses/reasoning models. "max" is the adaptive-thinking ceiling for Converse Claude (opus-4-8+). */
+  readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. */
   readonly auth?: 'auto' | 'bearer' | 'aws' | 'none';
   /** AWS region for SigV4-signed bedrock-mantle requests. */
   readonly awsRegion?: string;
@@ -78,8 +78,8 @@ export interface ReviewerConfig {
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
 const DEFAULT_REVIEW = { maxSteps: 150, allowWrite: false, workspaceDir: '' };
 const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
-const MODEL_APIS = ['chat', 'responses'] as const;
-const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const MODEL_APIS = ['chat', 'responses', 'converse'] as const;
+const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const AUTH_MODES = ['auto', 'bearer', 'aws', 'none'] as const;
 
 function requireField<T>(v: T | undefined, name: string): T {

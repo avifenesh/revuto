@@ -11,6 +11,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel, EmbeddingModel } from 'ai';
 import type { ModelSpec } from './config.js';
 import { buildResponsesModel } from './responses-model.js';
+import { buildConverseModel } from './converse-model.js';
 
 function resolveApiKey(spec: ModelSpec): string {
   if (!spec.apiKeyEnv) return ''; // keyless local endpoints (Ollama/vLLM) are fine
@@ -28,6 +29,7 @@ function provider(spec: ModelSpec) {
 /** Chat/completion model for a role (review, curator, distill). */
 export function buildChatModel(spec: ModelSpec): LanguageModel {
   if (spec.api === 'responses') return buildResponsesModel(spec);
+  if (spec.api === 'converse') return buildConverseModel(spec);
   return provider(spec).chatModel(spec.model);
 }
 
