@@ -13,6 +13,9 @@
   let refreshing = false;
   let currentSection: DashboardSection = 'overview';
   let showEmptyCycles = false;
+  let actionBusy: string | null = null;
+  let actionResult: { text: string; isError: boolean } | null = null;
+  let stopArmed = false;
 
   const navItems: Array<{ id: DashboardSection; label: string }> = [
     { id: 'overview', label: 'Overview' },
@@ -75,6 +78,43 @@
     } finally {
       refreshing = false;
     }
+  }
+
+  function actionKey(action: string, target?: string): string {
+    return `${action}:${target ?? ''}`;
+  }
+
+  async function runAction(action: string, target?: string) {
+    actionBusy = actionKey(action, target);
+    try {
+      const response = await window.fetch('/api/action', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action, target })
+      });
+      const result = await response.json() as { ok: boolean; output?: string; error?: string };
+      actionResult = {
+        text: result.error ?? result.output ?? (result.ok ? 'ok' : 'failed'),
+        isError: !result.ok || !!result.error
+      };
+      await refreshSnapshot(false);
+    } catch (err) {
+      actionResult = { text: err instanceof Error ? err.message : String(err), isError: true };
+    } finally {
+      actionBusy = null;
+    }
+  }
+
+  function runStop() {
+    if (!stopArmed) {
+      stopArmed = true;
+      window.setTimeout(() => {
+        stopArmed = false;
+      }, 4000);
+      return;
+    }
+    stopArmed = false;
+    void runAction('stop');
   }
 
   function sumResult(jobs: JobEvent[], key: string): number {
@@ -211,8 +251,8 @@
 
     <div class="side-block">
       <span class="eyebrow">Mode</span>
-      <strong>Observe only</strong>
-      <p>Stop, rerun, and steer are parked for the next slice.</p>
+      <strong>Standalone</strong>
+      <p>revuto.service</p>
     </div>
   </aside>
 
@@ -278,11 +318,24 @@
       </div>
     </section>
 
-    <section class="control-strip" aria-label="Read-only agent controls" hidden={currentSection !== 'overview'}>
-      <button type="button" disabled>Stop</button>
-      <button type="button" disabled>Rerun</button>
-      <button type="button" disabled>Steer</button>
-      <span>Read-only surface</span>
+    <section class="control-strip" aria-label="Daemon controls" hidden={currentSection !== 'overview'}>
+      <button type="button" onclick={() => runAction('start')} disabled={actionBusy !== null}>
+        {actionBusy === actionKey('start') ? 'Starting' : 'Start'}
+      </button>
+      <button type="button" onclick={() => runAction('restart')} disabled={actionBusy !== null}>
+        {actionBusy === actionKey('restart') ? 'Restarting' : 'Restart'}
+      </button>
+      <button type="button" onclick={() => runAction('doctor')} disabled={actionBusy !== null}>
+        {actionBusy === actionKey('doctor') ? 'Checking' : 'Doctor'}
+      </button>
+      <button class:armed={stopArmed} type="button" onclick={runStop} disabled={actionBusy !== null}>
+        {actionBusy === actionKey('stop') ? 'Stopping' : stopArmed ? 'Confirm stop' : 'Stop'}
+      </button>
+      {#if actionResult}
+        <span class:error={actionResult.isError}>{actionResult.text}</span>
+      {:else}
+        <span>revuto.service</span>
+      {/if}
     </section>
 
     <div class={`grid view-${currentSection}`} hidden={currentSection === 'repos' || currentSection === 'logs'}>
@@ -496,6 +549,38 @@
               <span>{reviewer.paused ? 'paused' : 'active'}</span>
               <span>review {reviewer.schedules.review}</span>
               <span>learn {reviewer.schedules.learn}</span>
+            </div>
+            <div class="repo-actions">
+              <button
+                type="button"
+                onclick={() => runAction(reviewer.paused ? 'resume' : 'pause', reviewer.repo)}
+                disabled={actionBusy !== null}
+              >
+                {actionBusy === actionKey(reviewer.paused ? 'resume' : 'pause', reviewer.repo)
+                  ? 'Saving'
+                  : reviewer.paused ? 'Resume' : 'Pause'}
+              </button>
+              <button
+                type="button"
+                onclick={() => runAction('trigger', reviewer.repo)}
+                disabled={actionBusy !== null || reviewer.paused}
+              >
+                {actionBusy === actionKey('trigger', reviewer.repo) ? 'Running' : 'Review'}
+              </button>
+              <button
+                type="button"
+                onclick={() => runAction('learn', reviewer.repo)}
+                disabled={actionBusy !== null || reviewer.paused}
+              >
+                {actionBusy === actionKey('learn', reviewer.repo) ? 'Running' : 'Learn'}
+              </button>
+              <button
+                type="button"
+                onclick={() => runAction('decay', reviewer.repo)}
+                disabled={actionBusy !== null}
+              >
+                {actionBusy === actionKey('decay', reviewer.repo) ? 'Running' : 'Decay'}
+              </button>
             </div>
           </article>
         {/each}
@@ -743,7 +828,8 @@
   }
 
   .refresh,
-  .control-strip button {
+  .control-strip button,
+  .repo-actions button {
     display: inline-flex;
     align-items: center;
     gap: 7px;
@@ -758,8 +844,15 @@
     cursor: pointer;
   }
 
+  .control-strip button.armed {
+    border-color: #efb8b8;
+    background: #fff1f1;
+    color: #8a2222;
+  }
+
   .refresh:disabled,
-  .control-strip button:disabled {
+  .control-strip button:disabled,
+  .repo-actions button:disabled {
     cursor: default;
     opacity: 0.55;
   }
@@ -848,6 +941,13 @@
     color: #6d7a83;
     font-size: 12px;
     font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .control-strip span:last-child.error {
+    color: #8a2222;
   }
 
   .grid {
@@ -1247,19 +1347,31 @@
     white-space: nowrap;
   }
 
-  .repo-row div:last-child {
+  .repo-row div:nth-child(2) {
     display: flex;
     flex-wrap: wrap;
     gap: 5px;
   }
 
-  .repo-row div:last-child span {
+  .repo-row div:nth-child(2) span {
     padding: 3px 6px;
     border: 1px solid #dbe2e7;
     border-radius: 5px;
     background: #f8fafb;
     color: #4d5c65;
     font-weight: 650;
+  }
+
+  .repo-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .repo-actions button {
+    min-height: 28px;
+    padding: 4px 8px;
+    font-size: 11px;
   }
 
   .log-stream {

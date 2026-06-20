@@ -85,7 +85,7 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
       if (await store.seen(fb.feedbackId)) continue;
       if (dailyLearn && learnedToday >= dailyLearn) { limited = 'daily-learn'; break; }
       if (dailyTokens && tokensToday >= dailyTokens) { limited = 'daily-tokens'; break; }
-      const out = await runCurator({ config, store, embedder, feedback: fb });
+      const out = await runCurator({ config, store, embedder, feedback: fb, autoActivate: settings.autoActivate });
       await store.mark(fb.feedbackId);
       curated++;
       if (dailyLearn) learnedToday = await store.incrCounter(counterKey('learn', day));

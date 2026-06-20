@@ -4,9 +4,10 @@
 #   npm run build
 #   mkdir -p ~/.config/systemd/user ~/.config/revuto
 #   echo 'GH_TOKEN=ghp_xxx' > ~/.config/revuto/env    # + GLM_API_KEY etc. (chmod 600)
-#   cp deploy/revuto.service ~/.config/systemd/user/revuto.service
-#   # edit WorkingDirectory below to your checkout, then:
-#   systemctl --user daemon-reload && systemctl --user enable --now revuto
+#   cp deploy/revuto*.service deploy/revuto*.timer ~/.config/systemd/user/
+#   # edit WorkingDirectory/ExecStart paths below if needed, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now revuto-surreal.service revuto-embedder.service revuto.service revuto-guard.timer
 #   journalctl --user -u revuto -f
 #
 # Config resolves from the vault by default ($REVUTO_VAULT or ~/revuto). Set
@@ -18,9 +19,10 @@
 # %h expands to the user's home directory.
 
 [Unit]
-Description=revuto autonomous PR reviewer daemon
-After=network-online.target
+Description=revuto autonomous PR reviewer daemon (review/learn/decay crons)
+After=network-online.target revuto-surreal.service revuto-embedder.service
 Wants=network-online.target
+Requires=revuto-surreal.service revuto-embedder.service
 StartLimitIntervalSec=300
 StartLimitBurst=20
 
@@ -31,7 +33,7 @@ WorkingDirectory=%h/projects/revuto
 #Environment=REVUTO_VAULT=%h/revuto
 EnvironmentFile=-%h/.config/revuto/env
 ExecStart=/usr/bin/env node --enable-source-maps dist/daemon/src/cli.js daemon
-Restart=on-failure
+Restart=always
 RestartSec=10
 
 [Install]

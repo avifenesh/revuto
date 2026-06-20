@@ -3,8 +3,8 @@
  * OpenAI-compatible endpoint drives the real curator tool loop.
  *
  *   feedback → curator create_concern (via the loop) → 4x reinforcement →
- *   curator graduate (list_skills → submit_skill) → draft skill in vault,
- *   source concern removed → decay deletes a stale concern.
+ *   curator graduate (list_skills → submit_skill) → draft/active skills in vault,
+ *   source concerns removed → decay deletes a stale concern.
  *
  *   npx tsx scripts/smoke/loop.ts
  */
@@ -86,6 +86,35 @@ assert.equal(skills.length, 1, 'one topic skill graduated');
 assert.equal(skills[0].status, 'draft', 'graduates as draft (awaits approval)');
 assert.deepEqual(skills[0].area, ['src/net/**'], 'skill inherits the concern area globs');
 
+// 3b. Auto-activate graduates directly to active through the same curator tool path.
+const autoRec = await store.createConcern({
+  areaBucket: 'src',
+  area: ['src/cache/**'],
+  subject: 'cache eviction ordering',
+  concern: 'preserve cache eviction ordering',
+  context: '',
+});
+for (let i = 0; i < 3; i++) await store.bumpConcern(autoRec.recordId);
+const autoSrv = await startFakeOpenAI((n) => {
+  if (n === 0) return { tool: 'list_skills', args: {} };
+  if (n === 1) return {
+    tool: 'submit_skill',
+    args: {
+      subject: 'cache eviction ordering',
+      description: 'Use when reviewing PRs that touch src/cache eviction cleanup.',
+      skill_md: '## Use when\nA PR changes cache eviction cleanup.\n\n## Patterns\n### Ordering drift\nSkip unless: cleanup ordering changes.\n\n## Do NOT flag\n- Refactors that do not alter eviction order.',
+      source_record_id: autoRec.recordId,
+    },
+  };
+  return { tool: 'curator_done', args: { decision: 'graduated', summary: 'graduated cache eviction ordering' } };
+});
+const out3 = await runCurator({ config: cfg(autoSrv.url), store, embedder: null, feedback, autoActivate: true });
+await autoSrv.close();
+assert.equal(out3.decision, 'graduated', 'auto-activate curator reported graduated');
+assert.equal(await store.getConcern(autoRec.recordId), null, 'auto-activated concern removed after graduation');
+const activeSkill = (await store.listSkills()).find((skill) => skill.slug === 'cache-eviction-ordering');
+assert.equal(activeSkill?.status, 'active', 'auto-activate graduates active');
+
 // 4. decay: a fresh concern survives a normal pass; an aged one is deleted
 const fresh = await store.createConcern({ areaBucket: 'a', area: ['a/**'], subject: 's', concern: 'c', context: '' });
 const survive = await runDecay(store);
@@ -96,4 +125,4 @@ const aggressive = await runDecay(store, { halfLifeMs: 1, floor: 0.5 });
 assert.ok(aggressive.deleted >= 1, 'aged concern decayed away below floor');
 
 await store.close();
-console.log('PASS: learn loop (curator create → 4x → graduate draft skill, concern removed) + decay');
+console.log('PASS: learn loop (curator create → 4x → graduate draft/active skills, concerns removed) + decay');

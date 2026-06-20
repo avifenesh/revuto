@@ -190,7 +190,12 @@ class ConverseLanguageModel {
       if (toolChoice) toolConfig.toolChoice = toolChoice;
       body.toolConfig = toolConfig;
     }
-    const extra = this.additionalFields(providerOptions);
+    // Adaptive thinking is incompatible with FORCED tool use: Bedrock rejects
+    // it ("Thinking may not be enabled when tool_choice forces tool use") when
+    // toolChoice is `required`/`any` or a specific `tool`. Only `auto` (or no
+    // tool choice) permits extended thinking, so suppress thinking there.
+    const thinkingAllowed = !forcesToolUse(options.toolChoice);
+    const extra = thinkingAllowed ? this.additionalFields(providerOptions) : undefined;
     if (extra) body.additionalModelRequestFields = extra;
     return body;
   }
@@ -198,6 +203,8 @@ class ConverseLanguageModel {
   // Build additionalModelRequestFields carrying the adaptive extended-thinking
   // config. opus-4-8+ uses thinking.type=adaptive + output_config.effort
   // (accepts low/medium/high/xhigh/max). Returns undefined when no thinking.
+  // Callers must also suppress this when tool use is forced (see buildRequestBody):
+  // Bedrock 400s on thinking + a forcing tool_choice.
   private additionalFields(providerOptions: JsonObject): JsonObject | undefined {
     const effort = this.spec.reasoningEffort ?? stringOption(providerOptions.reasoningEffort);
     if (!effort || NO_THINKING_EFFORTS.has(effort)) return undefined;
@@ -389,6 +396,14 @@ function toConverseToolChoice(choice: ModelCallOptions['toolChoice']): JsonObjec
     default:
       return undefined;
   }
+}
+
+// True when the tool choice COMPELS a tool call (`required`/`any` or a named
+// `tool`). Adaptive thinking is incompatible with these — Anthropic on Bedrock
+// 400s ("Thinking may not be enabled when tool_choice forces tool use"). `auto`
+// and `none` leave the model free, so thinking is fine there.
+function forcesToolUse(choice: ModelCallOptions['toolChoice']): boolean {
+  return choice?.type === 'required' || choice?.type === 'tool';
 }
 
 function responseContent(response: ConversePayload): JsonObject[] {

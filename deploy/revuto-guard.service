@@ -1,0 +1,7 @@
+[Unit]
+Description=revuto uptime guard
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/revuto/scripts/revuto-guard.sh

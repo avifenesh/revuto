@@ -1,0 +1,12 @@
+[Unit]
+Description=revuto SurrealDB (memory backend for the PR reviewer)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/surreal start --user root --pass root --bind 127.0.0.1:8000 surrealkv://%h/revuto/memory/surreal
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

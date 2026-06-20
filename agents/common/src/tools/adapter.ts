@@ -12,7 +12,7 @@
  * We convert the harness JSON Schema to Zod (best-effort, below) and wrap the
  * harness fn as the callback.
  */
-import { z, ZodTypeAny } from 'zod';
+import { z, type ZodTypeAny } from 'zod';
 import { tool } from '../tool-def.js';
 
 type HarnessFn<R, S> = (input: unknown, session: S) => Promise<R>;

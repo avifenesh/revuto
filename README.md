@@ -44,13 +44,14 @@ review (cron)  poll open PRs since cursor → check out PR head → select textb
 
 learn  (cron)  poll replies to the reviewer's comments since cursor → filter noise
        → dedup into the concerns store (bump count) → at 4× reinforcement, graduate
-       a draft topic skill into the vault and delete the source concern
+       a topic skill into the vault and delete the source concern
 
 decay  (daily) age out concerns that never reach the graduation threshold
 ```
 
-Graduated skills land as `draft` and are loaded by the reviewer only after
-`revuto approve` (or per-repo `autoActivate`).
+Graduated skills land as `draft` by default and are loaded by the reviewer only
+after `revuto approve`; repos with `autoActivate` enabled graduate skills as
+`active` immediately.
 
 ## Setup
 
@@ -81,6 +82,10 @@ After that, use the icon or:
 ```bash
 npm run dashboard:open
 ```
+
+The dashboard includes daemon controls (`start`, `restart`, `doctor`, guarded
+`stop`) and per-repo controls for pause/resume plus one-off review, learn, and
+decay runs.
 
 Useful checks:
 
@@ -211,7 +216,10 @@ revuto approve <owner/repo> <slug>   # activate a draft skill
 ```
 
 Run the daemon as a systemd user service to survive reboots — see
-`deploy/revuto.service`.
+`deploy/revuto.service`. For the full local stack, install the matching
+`deploy/revuto-surreal.service`, `deploy/revuto-embedder.service`, and
+`deploy/revuto-guard.timer` units too; the guard keeps the daemon, store, and
+embedder available for scheduled review/learn/decay runs.
 
 ## Development
 

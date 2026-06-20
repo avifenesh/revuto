@@ -47,6 +47,23 @@ assert.equal(await store.setSkillStatus(note.slug, 'active'), true, 'approve fli
 assert.ok((await selectSkills(store, null, ['src/cluster/foo.c'])).includes(note.slug), 'active skill selected for matching file');
 assert.equal(await selectSkills(store, null, ['docs/readme.md']), '', 'skill not selected for non-matching file');
 
+// 3b. auto-activate writes active skills directly.
+const rec2 = await store.createConcern({
+  areaBucket: 'src',
+  area: ['src/cache/**'],
+  subject: 'cache eviction ordering',
+  concern: 'Preserve eviction ordering invariants when touching cache cleanup.',
+  context: '',
+});
+const activeNote = await graduate(store, {
+  subject: 'cache eviction ordering',
+  description: 'Use when reviewing PRs that touch src/cache eviction cleanup.',
+  skillMd: '## Use when\nA PR changes cache eviction cleanup.\n\n## Patterns\n### Ordering drift\nSkip unless: cleanup ordering changes.',
+  sourceRecordId: rec2.recordId,
+  status: 'active',
+});
+assert.equal(activeNote.status, 'active', 'auto-activate graduates active');
+
 // 4. cursors + idempotency
 await store.setCursor('review', '2026-05-21T00:00:00Z');
 assert.equal(await store.getCursor('review'), '2026-05-21T00:00:00Z', 'cursor round-trip');

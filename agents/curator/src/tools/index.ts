@@ -9,15 +9,15 @@ import type { ToolDef } from '../../../common/src/tool-def.js';
  *   - 6 concerns-store CRUD tools (per-repo SQLite, optional embedding on create)
  *   - list_skills            — Phase 2: see accumulated topic skills (create-vs-revise)
  *   - search_skill_authoring — Phase 2: pull the skill-writing guidance
- *   - submit_skill           — graduate to a draft skill note in the vault
+ *   - submit_skill           — graduate to a skill note in the vault
  *   - curator_done           — terminal signal
  */
-export function assembleCuratorTools(deps: ConcernsStoreDeps): readonly ToolDef[] {
+export function assembleCuratorTools(deps: ConcernsStoreDeps & { autoActivate?: boolean }): readonly ToolDef[] {
   return [
     ...buildConcernsStoreTools(deps),
     buildListSkillsTool(deps.store),
     buildSkillAuthoringTool(),
-    buildSubmitSkillTool(deps.store),
+    buildSubmitSkillTool(deps.store, { autoActivate: deps.autoActivate }),
     buildCuratorDoneTool(),
   ];
 }

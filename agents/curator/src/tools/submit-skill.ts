@@ -1,18 +1,18 @@
 import { z } from 'zod';
 import { tool } from '../../../common/src/tool-def.js';
-import type { KnowledgeStore, SkillNote } from '../../../common/src/store/store.js';
+import type { KnowledgeStore, SkillNote, SkillStatus } from '../../../common/src/store/store.js';
 
 /**
  * Graduate a concern into a topic skill note in the vault.
  *
  * Unlike the old AgentCore-registry flow, graduation here:
- *   1. writes a markdown skill note (status: draft) into the repo's vault dir, and
+ *   1. writes a markdown skill note into the repo's vault dir, and
  *   2. deletes the source concern from the store.
  *
- * The skill stays `draft` until a human runs `revuto approve` (or the repo has
- * autoActivate). Drafts are not loaded by the reviewer. The skill's `area` globs
- * are inherited from the source concern so area-glob selection keeps working
- * even without an embedder.
+ * The skill is written as `active` when the repo has autoActivate enabled;
+ * otherwise it stays `draft` until a human runs `revuto approve`. Drafts are not
+ * loaded by the reviewer. The skill's `area` globs are inherited from the source
+ * concern so area-glob selection keeps working even without an embedder.
  */
 
 export interface GraduateInput {
@@ -20,6 +20,7 @@ export interface GraduateInput {
   readonly description: string;
   readonly skillMd: string;
   readonly sourceRecordId: string;
+  readonly status?: SkillStatus;
 }
 
 export async function graduate(store: KnowledgeStore, input: GraduateInput): Promise<SkillNote> {
@@ -32,7 +33,7 @@ export async function graduate(store: KnowledgeStore, input: GraduateInput): Pro
     description: input.description,
     area: source.area,
     body,
-    status: 'draft',
+    status: input.status ?? 'draft',
     sourceRecord: input.sourceRecordId,
   });
   // User rule: once it becomes a skill, remove it from the concerns DB.
@@ -56,7 +57,8 @@ Call this in Phase 2 BEFORE composing. Skills accumulate one per subject over ti
   });
 }
 
-export function buildSubmitSkillTool(store: KnowledgeStore) {
+export function buildSubmitSkillTool(store: KnowledgeStore, opts: { autoActivate?: boolean } = {}) {
+  const status: SkillStatus = opts.autoActivate ? 'active' : 'draft';
   return tool({
     name: 'submit_skill',
     description:
@@ -68,7 +70,7 @@ Inputs:
 - \`skill_md\`: the full skill body. Follow the structure from search_skill_authoring (## Use when, confidence ladder, ## Patterns with a "Skip unless" gate on every pattern, ## Do NOT flag). 50-250 lines.
 - \`source_record_id\`: the concern record_id this graduates from. Its area globs become the skill's selection area, and the concern is removed once the note is written.
 
-The note lands as status:draft in the vault; a human approves it (or autoActivate) before the reviewer uses it.`,
+The note lands as ${status} in the vault. When autoActivate is disabled it stays draft until a human approves it; when enabled it is immediately active for future reviews.`,
     inputSchema: z.object({
       subject: z.string().min(3).max(120),
       description: z.string().min(1).max(500),
@@ -82,6 +84,7 @@ The note lands as status:draft in the vault; a human approves it (or autoActivat
           description: input.description,
           skillMd: input.skill_md,
           sourceRecordId: input.source_record_id,
+          status,
         });
         return JSON.stringify({ ok: true, slug: note.slug, status: note.status, area: note.area });
       } catch (err) {

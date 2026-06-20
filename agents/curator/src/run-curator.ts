@@ -44,10 +44,15 @@ export interface RunCuratorOptions {
   readonly store: KnowledgeStore;
   readonly embedder: Embedder | null;
   readonly feedback: FeedbackEvent;
+  readonly autoActivate?: boolean;
 }
 
 export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcome> {
-  const tools = toAiSdkTools(assembleCuratorTools({ store: opts.store, embedder: opts.embedder }));
+  const tools = toAiSdkTools(assembleCuratorTools({
+    store: opts.store,
+    embedder: opts.embedder,
+    autoActivate: opts.autoActivate,
+  }));
 
   const model = buildChatModel(opts.config.models.curator);
   const maxOutputTokens = opts.config.limits.maxOutputTokens.curator;

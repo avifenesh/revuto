@@ -1,0 +1,21 @@
+# systemd user service for the local Revuto embedding server.
+#
+# Edit the llama.cpp build path or model path if your checkout/cache differs.
+# This unit intentionally restarts on clean exits: some llama-server builds shut
+# down with status 0 after embedding traffic, but Revuto expects the embedder to
+# remain available for dashboard probes and review jobs.
+
+[Unit]
+Description=revuto embedder (llama.cpp bge-small-en-v1.5, CPU)
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+Type=simple
+ExecStart=%h/projects/llama.cpp/build/bin/llama-server -m %h/ai-ml/models/bge-small-en-v1.5-f16.gguf --embedding --pooling cls -ngl 0 -c 512 --host 127.0.0.1 --port 8181 -a bge-small-en-v1.5
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

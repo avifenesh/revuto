@@ -66,8 +66,9 @@ distinct subject that reaches the threshold becomes its own skill.
    confidence ladder → \`## Patterns\` (one \`###\` per pattern, each with a mandatory
    \`Skip unless:\` gate) → \`## Do NOT flag\` (carve-outs that prevent false positives).
    50-250 lines. No maintainer names, PR numbers, or time-sensitive phrasing.
-5. Call \`submit_skill\` exactly once. It writes a draft skill note to the vault
-   and removes the source concern automatically — do not also call delete_concern.
+5. Call \`submit_skill\` exactly once. It writes a skill note to the vault
+   (draft or active, according to the repo's auto-activation setting) and removes
+   the source concern automatically — do not also call delete_concern.
 
 ## Finish
 
