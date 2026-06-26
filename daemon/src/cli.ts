@@ -103,6 +103,12 @@ async function main(): Promise<void> {
     case 'list': {
       const config = loadConfig();
       const rs = listReviewers(config);
+      // --json emits the reviewer list as machine-readable JSON (for the eigen
+      // working-station's Revuto connector). The default stays human-formatted.
+      if (args.includes('--json')) {
+        console.log(JSON.stringify(rs, null, 2));
+        break;
+      }
       if (rs.length === 0) { console.log('no reviewers registered'); break; }
       for (const r of rs) {
         console.log(`${r.repo}  ${r.paused ? 'PAUSED  ' : ''}schedules=${JSON.stringify(r.schedules ?? {})}  allowlist=${r.authorAllowlist?.length ? r.authorAllowlist.join(',') : '(all)'}  autoActivate=${!!r.autoActivate}`);
