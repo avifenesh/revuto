@@ -80,7 +80,7 @@
     "ai": "^6.0.188",
     "better-sqlite3": "^12.10.0",
     "gray-matter": "^4.0.3",
-    "node-cron": "^4.2.1",
+    "node-cron": "^4.5.0",
     "surrealdb": "^2.0.3",
     "zod": "^4.1.12"
   },
