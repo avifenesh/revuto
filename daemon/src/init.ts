@@ -74,7 +74,18 @@ export function scanRepo(dir: string): RepoFacts {
   let readmeExcerpt = '';
   for (const r of ['README.md', 'README.rst', 'README.txt', 'README']) {
     const p = join(dir, r);
-    if (existsSync(p) && statSync(p).isFile()) { readmeExcerpt = readFileSync(p, 'utf8').slice(0, 4000); break; }
+    try {
+      // Race-free: attempt the read directly; if the file disappears or is unreadable between
+      // directory walk and here, we simply skip it. This eliminates the TOCTOU flagged by
+      // CodeQL js/file-system-race.
+      const content = readFileSync(p, 'utf8');
+      if (content) {
+        readmeExcerpt = content.slice(0, 4000);
+        break;
+      }
+    } catch {
+      // best-effort excerpt; ignore missing/unreadable files
+    }
   }
 
   return { topDirs, languages, buildFiles, readmeExcerpt };
