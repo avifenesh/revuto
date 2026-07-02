@@ -66,12 +66,25 @@ async function main(): Promise<void> {
     case 'init-config': {
       const vault = defaultVaultPath();
       const dest = args.includes('--local') ? resolve('revuto.config.json') : join(vault, 'revuto.config.json');
-      if (existsSync(dest)) { console.log(`${dest} already exists — leaving it`); break; }
+      if (existsSync(dest)) {
+        console.log(`${dest} already exists — leaving it`);
+        break;
+      }
       const cfg = JSON.parse(readFileSync(join(engineRoot(), 'revuto.config.example.json'), 'utf8'));
-      cfg.vaultPath = vault; // config + skills + memory all live in the vault
+      cfg.vaultPath = vault;
       mkdirSync(dirname(dest), { recursive: true });
-      writeFileSync(dest, JSON.stringify(cfg, null, 2) + '\n');
-      console.log(`wrote ${dest}\nedit models, then: revuto doctor`);
+      // Use exclusive create (wx) + atomic write to eliminate TOCTOU race flagged by scanners.
+      // If another process created it between the exists check and here, we simply leave it.
+      try {
+        writeFileSync(dest, JSON.stringify(cfg, null, 2) + '\n', { flag: 'wx' });
+        console.log(`wrote ${dest}\nedit models, then: revuto doctor`);
+      } catch (e: any) {
+        if (e && e.code === 'EEXIST') {
+          console.log(`${dest} was created concurrently — leaving it`);
+        } else {
+          throw e;
+        }
+      }
       break;
     }
     case 'daemon': {
