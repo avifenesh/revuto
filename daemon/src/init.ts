@@ -11,7 +11,7 @@
  * repeats and graduates. Init produces the curated textbook only.
  */
 import { generateText } from 'ai';
-import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';

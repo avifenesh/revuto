@@ -10,7 +10,7 @@
  *   revuto approve <owner/repo> <skill-slug>   activate a draft skill
  */
 import cron from 'node-cron';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { loadConfig, defaultVaultPath } from '../../agents/common/src/config.js';
 import { engineRoot } from '../../agents/common/src/engine-root.js';
@@ -66,21 +66,17 @@ async function main(): Promise<void> {
     case 'init-config': {
       const vault = defaultVaultPath();
       const dest = args.includes('--local') ? resolve('revuto.config.json') : join(vault, 'revuto.config.json');
-      if (existsSync(dest)) {
-        console.log(`${dest} already exists — leaving it`);
-        break;
-      }
       const cfg = JSON.parse(readFileSync(join(engineRoot(), 'revuto.config.example.json'), 'utf8'));
       cfg.vaultPath = vault;
       mkdirSync(dirname(dest), { recursive: true });
-      // Use exclusive create (wx) + atomic write to eliminate TOCTOU race flagged by scanners.
-      // If another process created it between the exists check and here, we simply leave it.
+      // Exclusive create (wx) — no exists pre-check, so there is no TOCTOU window.
+      // EEXIST (file already there, or created concurrently) means "leave it".
       try {
         writeFileSync(dest, JSON.stringify(cfg, null, 2) + '\n', { flag: 'wx' });
         console.log(`wrote ${dest}\nedit models, then: revuto doctor`);
       } catch (e: any) {
         if (e && e.code === 'EEXIST') {
-          console.log(`${dest} was created concurrently — leaving it`);
+          console.log(`${dest} already exists — leaving it`);
         } else {
           throw e;
         }

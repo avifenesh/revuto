@@ -21,5 +21,8 @@
   },
   "dependencies": {
     "@lucide/svelte": "^1.17.0"
+  },
+  "overrides": {
+    "cookie": "^0.7.2"
   }
 }
