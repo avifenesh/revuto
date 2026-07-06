@@ -15,7 +15,7 @@ export interface ServiceStatus {
 }
 
 export interface ModelStatus {
-  role: 'review' | 'curator' | 'distill' | 'embedder';
+  role: string;
   enabled: boolean;
   name: string;
   api: string;

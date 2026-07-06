@@ -48,6 +48,12 @@ assert.equal(bumped!.reinforcementCount, 2, 'bump increments');
 await store.setCursor('review', '2026-05-21T00:00:00Z');
 assert.equal(await store.getCursor('review'), '2026-05-21T00:00:00Z', 'cursor round-trip');
 assert.equal(await store.seen('k1'), false);
+assert.equal(await store.claim('k1'), true, 'claim returns true for a new key');
+assert.equal(await store.claim('k1'), false, 'claim returns false for an existing key');
+const surrealRace = await Promise.all([store.claim('k2'), store.claim('k2')]);
+assert.equal(surrealRace.filter(Boolean).length, 1, 'only one concurrent claim wins');
+await store.unclaim('k2');
+assert.equal(await store.claim('k2'), true, 'unclaim releases the key so it can be reclaimed');
 await store.mark('k1');
 assert.equal(await store.seen('k1'), true, 'idempotency mark/seen');
 

@@ -46,10 +46,16 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
       if (pr.isDraft) { skipped++; continue; }                                                  // never touch drafts; reviewed once they're marked ready (updated_at bumps)
       if (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author)) { skipped++; continue; }
       const key = `${settings.repo}#${pr.number}@${pr.headSha}`;
-      if (await store.seen(key)) { skipped++; continue; }                                       // already reviewed this head — no re-iterate
       if (dailyReviews && reviewsToday >= dailyReviews) { limited = 'daily-reviews'; break; }
       if (dailyTokens && tokensToday >= dailyTokens) { limited = 'daily-tokens'; break; }
-      const outcome = await runReview({ repo: settings.repo, prNumber: pr.number, config, store, embedder }); // one review agent per new PR
+      if (!(await store.claim(key))) { skipped++; continue; }                                   // already reviewing/reviewed this head — no duplicate posts
+      let outcome: ReviewOutcome;
+      try {
+        outcome = await runReview({ repo: settings.repo, prNumber: pr.number, config, store, embedder }); // one review agent per new PR
+      } catch (err) {
+        await store.unclaim(key);                                                                // release the claim so a transient failure can be retried
+        throw err;
+      }
       await store.mark(key);
       reviewed++;
       if (dailyReviews) reviewsToday = await store.incrCounter(counterKey('reviews', day));
@@ -108,7 +114,7 @@ export async function decayRepo(config: ReviewerConfig, repo: string): Promise<D
 }
 
 /** On-demand single-PR review (CLI `revuto review <repo> <pr>`). */
-export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber: number): Promise<ReviewOutcome> {
+export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber: number, opts: { force?: boolean } = {}): Promise<ReviewOutcome> {
   const { octokit } = getOctokit(config.github);
   const parts = repo.split('/');
   const [owner, name] = parts;
@@ -124,8 +130,23 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
   }
   const store = await openStore(config, repo);
   const embedder = maybeEmbedder(config);
+  const key = `${repo}#${prNumber}@${pr.head.sha}`;
   try {
-    return await runReview({ repo, prNumber, config, store, embedder });
+    if (!opts.force && !(await store.claim(key))) {
+      return {
+        terminal: 'skip_review',
+        result: `#${prNumber} at ${pr.head.sha} was already reviewed or is currently being reviewed`,
+        headSha: pr.head.sha,
+        steps: 0,
+        tokens: 0,
+      };
+    }
+    const outcome = await runReview({ repo, prNumber, config, store, embedder });
+    await store.mark(key);
+    return outcome;
+  } catch (err) {
+    if (!opts.force) await store.unclaim(key);                                                   // release the claim so a transient failure can be retried
+    throw err;
   } finally {
     await store.close();
   }

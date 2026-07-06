@@ -52,9 +52,32 @@ type ResponsesPayload = {
 };
 
 const BEDROCK_SERVICE = 'bedrock';
+const MAX_RETRIES = 3;
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 
 export function buildResponsesModel(spec: ModelSpec): LanguageModel {
   return new ResponsesLanguageModel({ spec }) as unknown as LanguageModel;
+}
+
+function isRetryableStatus(status: number): boolean {
+  return RETRYABLE_STATUS.has(status);
+}
+
+async function sleepBackoff(attempt: number, signal?: AbortSignal): Promise<void> {
+  const base = Math.min(500 * 2 ** attempt, 4000);
+  const delay = base + Math.floor(Math.random() * 250);
+  await new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason ?? new Error('aborted'));
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delay);
+    const onAbort = (): void => {
+      clearTimeout(t);
+      reject(signal?.reason ?? new Error('aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 class ResponsesLanguageModel {
@@ -76,14 +99,42 @@ class ResponsesLanguageModel {
   async doGenerate(options: ModelCallOptions): Promise<JsonObject> {
     const body = this.buildRequestBody(options);
     const bodyText = JSON.stringify(body);
-    const response = await this.fetchResponses(bodyText, options);
-    const text = await response.text();
-    const json = parseJson(text, response.url);
-    if (!response.ok) {
-      const message = errorMessage(json) ?? `${response.status} ${response.statusText}`;
+    let lastErr: Error | undefined;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      let response: Response;
+      try {
+        response = await this.fetchResponses(bodyText, options);
+      } catch (err) {
+        if (options.abortSignal?.aborted) throw err;
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        if (attempt < MAX_RETRIES) {
+          await sleepBackoff(attempt, options.abortSignal);
+          continue;
+        }
+        throw new Error(`responses request failed after ${MAX_RETRIES + 1} attempts: ${lastErr.message}`);
+      }
+      const text = await response.text();
+      let json: unknown;
+      try {
+        json = parseJson(text, response.url);
+      } catch (parseErr) {
+        // A non-JSON body (e.g. an HTML gateway error page on 502/503/504) must not
+        // bypass the retry logic. Rethrow only when the response was otherwise OK.
+        if (response.ok) throw parseErr;
+        json = undefined;
+      }
+      if (response.ok) {
+        return this.toGenerateResult(json, body, Object.fromEntries(response.headers.entries()));
+      }
+      const message = (json !== undefined ? errorMessage(json) : undefined) ?? `${response.status} ${response.statusText}`;
+      if (isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
+        lastErr = new Error(`responses API call failed (${response.status}): ${message}`);
+        await sleepBackoff(attempt, options.abortSignal);
+        continue;
+      }
       throw new Error(`responses API call failed (${response.status}): ${message}`);
     }
-    return this.toGenerateResult(json, body, Object.fromEntries(response.headers.entries()));
+    throw lastErr ?? new Error('responses request failed');
   }
 
   async doStream(): Promise<never> {

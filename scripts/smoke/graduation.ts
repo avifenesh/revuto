@@ -68,6 +68,12 @@ assert.equal(activeNote.status, 'active', 'auto-activate graduates active');
 await store.setCursor('review', '2026-05-21T00:00:00Z');
 assert.equal(await store.getCursor('review'), '2026-05-21T00:00:00Z', 'cursor round-trip');
 assert.equal(await store.seen('octo/demo#1@abc'), false);
+assert.equal(await store.claim('octo/demo#1@abc'), true, 'claim returns true for a new key');
+assert.equal(await store.claim('octo/demo#1@abc'), false, 'claim returns false for an existing key');
+const sqliteRace = await Promise.all([store.claim('octo/demo#2@abc'), store.claim('octo/demo#2@abc')]);
+assert.equal(sqliteRace.filter(Boolean).length, 1, 'only one concurrent claim wins');
+await store.unclaim('octo/demo#2@abc');
+assert.equal(await store.claim('octo/demo#2@abc'), true, 'unclaim releases the key so it can be reclaimed');
 await store.mark('octo/demo#1@abc');
 assert.equal(await store.seen('octo/demo#1@abc'), true, 'idempotency mark/seen');
 

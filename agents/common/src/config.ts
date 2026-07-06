@@ -34,6 +34,8 @@ export interface ModelSpec {
   readonly apiKeyEnv?: string;
   /** Optional provider label for diagnostics. */
   readonly name?: string;
+  /** Ordered fallback models to try if this model call throws. */
+  readonly fallbacks?: readonly ModelSpec[];
 }
 
 export interface ReviewerConfig {
@@ -105,7 +107,9 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (m.awsRegion !== undefined && typeof m.awsRegion !== 'string') throw new Error(`config: models.${role}.awsRegion must be a string`);
   if (m.apiKeyEnv !== undefined && typeof m.apiKeyEnv !== 'string') throw new Error(`config: models.${role}.apiKeyEnv must be a string`);
   if (m.name !== undefined && typeof m.name !== 'string') throw new Error(`config: models.${role}.name must be a string`);
-  return { ...m, api, reasoningEffort, auth };
+  if (m.fallbacks !== undefined && !Array.isArray(m.fallbacks)) throw new Error(`config: models.${role}.fallbacks must be an array`);
+  const fallbacks = m.fallbacks?.map((fallback, i) => checkModel(fallback, `${role}.fallbacks[${i}]`));
+  return { ...m, api, reasoningEffort, auth, ...(fallbacks?.length ? { fallbacks } : {}) };
 }
 
 /** The default vault: $REVUTO_VAULT, else ~/revuto. The config + skills + reviewer notes live here. */

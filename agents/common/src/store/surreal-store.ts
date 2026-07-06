@@ -43,6 +43,14 @@ function mapConcern(row: any): ConcernRecord {
   };
 }
 
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const RETRYABLE_SURREAL_RE = /transaction conflict|write conflict|can be retried/i;
+
+function isRetryableSurreal(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return RETRYABLE_SURREAL_RE.test(message);
+}
+
 export class SurrealStore implements KnowledgeStore {
   readonly repo: string;
   private readonly db = new Surreal();
@@ -75,10 +83,10 @@ export class SurrealStore implements KnowledgeStore {
     const ns = ident(this.cfg.namespace);
     const dbName = ident(this.database);
     // SurrealDB v3 doesn't auto-create on USE; define them (DEFINE name can't be parameterized).
-    await this.db.query(`DEFINE NAMESPACE IF NOT EXISTS \`${ns}\``);
-    await this.db.query(`DEFINE DATABASE IF NOT EXISTS \`${dbName}\``);
+    await this.query(`DEFINE NAMESPACE IF NOT EXISTS \`${ns}\``);
+    await this.query(`DEFINE DATABASE IF NOT EXISTS \`${dbName}\``);
     // Define tables so reads before first write return [] instead of erroring (v3 strict).
-    await this.db.query(`
+    await this.query(`
       DEFINE TABLE IF NOT EXISTS concern SCHEMALESS;
       DEFINE TABLE IF NOT EXISTS cursor SCHEMALESS;
       DEFINE TABLE IF NOT EXISTS seen SCHEMALESS;
@@ -87,8 +95,20 @@ export class SurrealStore implements KnowledgeStore {
     `);
   }
 
+  private async query(sql: string, vars?: Record<string, unknown>): Promise<unknown[]> {
+    const waits = [50, 150, 350, 750];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return (await this.db.query(sql, vars)) as unknown[];
+      } catch (err) {
+        if (attempt >= waits.length || !isRetryableSurreal(err)) throw err;
+        await delay(waits[attempt]);
+      }
+    }
+  }
+
   private async rows(sql: string, vars?: Record<string, unknown>): Promise<any[]> {
-    const res = (await this.db.query(sql, vars)) as unknown[];
+    const res = await this.query(sql, vars);
     return (res[res.length - 1] as any[]) ?? [];
   }
 
@@ -189,6 +209,19 @@ export class SurrealStore implements KnowledgeStore {
   async seen(key: string): Promise<boolean> {
     const rows = await this.rows(`SELECT id FROM type::record('seen', $k)`, { k: key });
     return rows.length > 0;
+  }
+  async claim(key: string): Promise<boolean> {
+    try {
+      const rows = await this.rows(`CREATE type::record('seen', $k) SET at = $now`, { k: key, now: new Date().toISOString() });
+      return rows.length > 0;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/already exists|record.*exists/i.test(message)) return false;
+      throw err;
+    }
+  }
+  async unclaim(key: string): Promise<void> {
+    await this.rows(`DELETE type::record('seen', $k)`, { k: key });
   }
   async mark(key: string): Promise<void> {
     await this.rows(`UPSERT type::record('seen', $k) SET at = $now`, { k: key, now: new Date().toISOString() });

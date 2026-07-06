@@ -340,6 +340,28 @@ function modelStatus(role: ModelRole, spec: ModelSpec | null, probe?: ProbeStatu
   };
 }
 
+function chatModelStatuses(role: ModelRole, spec: ModelSpec, probes: Map<ModelRole, ProbeStatus>): ModelStatus[] {
+  return [
+    modelStatus(role, spec, probes.get(role)),
+    ...(spec.fallbacks ?? []).flatMap((fallback, i) => chatModelStatuses(`${role}.fallback${i + 1}`, fallback, probes))
+  ];
+}
+
+function modelFingerprint(spec: ModelSpec | null): unknown {
+  if (!spec) return null;
+  return {
+    baseURL: spec.baseURL,
+    model: spec.model,
+    api: spec.api ?? null,
+    auth: spec.auth ?? null,
+    reasoningEffort: spec.reasoningEffort ?? null,
+    awsRegion: spec.awsRegion ?? null,
+    apiKeyEnv: spec.apiKeyEnv ?? null,
+    apiKeyAvailable: spec.apiKeyEnv ? Boolean(process.env[spec.apiKeyEnv]) : null,
+    fallbacks: spec.fallbacks?.map(modelFingerprint) ?? []
+  };
+}
+
 function modelProbeKey(config: ReviewerConfig): string {
   const specs: Array<[ModelRole, ModelSpec | null]> = [
     ['review', config.models.review],
@@ -347,25 +369,13 @@ function modelProbeKey(config: ReviewerConfig): string {
     ['distill', config.models.distill],
     ['embedder', config.models.embedder]
   ];
-  return JSON.stringify(specs.map(([role, spec]) => spec
-    ? {
-        role,
-        baseURL: spec.baseURL,
-        model: spec.model,
-        api: spec.api ?? null,
-        auth: spec.auth ?? null,
-        reasoningEffort: spec.reasoningEffort ?? null,
-        awsRegion: spec.awsRegion ?? null,
-        apiKeyEnv: spec.apiKeyEnv ?? null,
-        apiKeyAvailable: spec.apiKeyEnv ? Boolean(process.env[spec.apiKeyEnv]) : null
-      }
-    : { role, disabled: true }));
+  return JSON.stringify(specs.map(([role, spec]) => ({ role, spec: modelFingerprint(spec) })));
 }
 
 function probeStatusesFromModelProbes(checkedAt: string, probes: Awaited<ReturnType<typeof runModelProbes>>): Map<ModelRole, ProbeStatus> {
   const out = new Map<ModelRole, ProbeStatus>();
   for (const probe of probes) {
-    const sharedRoles = probe.roles as ModelRole[];
+    const sharedRoles = probe.roles;
     for (const role of sharedRoles) {
       out.set(role, {
         state: probe.ok ? 'ok' : 'failed',
@@ -384,7 +394,11 @@ function probeStatusesFromModelProbes(checkedAt: string, probes: Awaited<ReturnT
 
 function failedProbeStatuses(config: ReviewerConfig, checkedAt: string, error: string): Map<ModelRole, ProbeStatus> {
   const out = new Map<ModelRole, ProbeStatus>();
-  for (const role of ['review', 'curator', 'distill'] as ModelRole[]) {
+  for (const role of [
+    ...chatModelStatuses('review', config.models.review, new Map()).map((model) => model.role),
+    ...chatModelStatuses('curator', config.models.curator, new Map()).map((model) => model.role),
+    ...chatModelStatuses('distill', config.models.distill, new Map()).map((model) => model.role)
+  ]) {
     out.set(role, { state: 'failed', kind: 'chat', checkedAt, ms: null, error, sharedRoles: [role], responseModel: null, responseId: null });
   }
   if (config.models.embedder) {
@@ -486,9 +500,9 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   const reviewers = config ? reviewersFor(config) : [];
   const models = config
     ? [
-        modelStatus('review', config.models.review, modelProbes.get('review')),
-        modelStatus('curator', config.models.curator, modelProbes.get('curator')),
-        modelStatus('distill', config.models.distill, modelProbes.get('distill')),
+        ...chatModelStatuses('review', config.models.review, modelProbes),
+        ...chatModelStatuses('curator', config.models.curator, modelProbes),
+        ...chatModelStatuses('distill', config.models.distill, modelProbes),
         modelStatus('embedder', config.models.embedder, modelProbes.get('embedder'))
       ]
     : [];
