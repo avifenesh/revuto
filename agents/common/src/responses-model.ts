@@ -114,11 +114,19 @@ class ResponsesLanguageModel {
         throw new Error(`responses request failed after ${MAX_RETRIES + 1} attempts: ${lastErr.message}`);
       }
       const text = await response.text();
-      const json = parseJson(text, response.url);
+      let json: unknown;
+      try {
+        json = parseJson(text, response.url);
+      } catch (parseErr) {
+        // A non-JSON body (e.g. an HTML gateway error page on 502/503/504) must not
+        // bypass the retry logic. Rethrow only when the response was otherwise OK.
+        if (response.ok) throw parseErr;
+        json = undefined;
+      }
       if (response.ok) {
         return this.toGenerateResult(json, body, Object.fromEntries(response.headers.entries()));
       }
-      const message = errorMessage(json) ?? `${response.status} ${response.statusText}`;
+      const message = (json !== undefined ? errorMessage(json) : undefined) ?? `${response.status} ${response.statusText}`;
       if (isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
         lastErr = new Error(`responses API call failed (${response.status}): ${message}`);
         await sleepBackoff(attempt, options.abortSignal);

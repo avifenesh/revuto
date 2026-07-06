@@ -173,6 +173,9 @@ export class SqliteStore implements KnowledgeStore {
     const info = this.db.prepare(`INSERT OR IGNORE INTO idempotency (key, created_at) VALUES (?, ?)`).run(key, new Date().toISOString());
     return info.changes > 0;
   }
+  async unclaim(key: string): Promise<void> {
+    this.db.prepare(`DELETE FROM idempotency WHERE key = ?`).run(key);
+  }
   async mark(key: string): Promise<void> {
     await this.claim(key);
   }

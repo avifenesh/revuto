@@ -72,6 +72,8 @@ assert.equal(await store.claim('octo/demo#1@abc'), true, 'claim returns true for
 assert.equal(await store.claim('octo/demo#1@abc'), false, 'claim returns false for an existing key');
 const sqliteRace = await Promise.all([store.claim('octo/demo#2@abc'), store.claim('octo/demo#2@abc')]);
 assert.equal(sqliteRace.filter(Boolean).length, 1, 'only one concurrent claim wins');
+await store.unclaim('octo/demo#2@abc');
+assert.equal(await store.claim('octo/demo#2@abc'), true, 'unclaim releases the key so it can be reclaimed');
 await store.mark('octo/demo#1@abc');
 assert.equal(await store.seen('octo/demo#1@abc'), true, 'idempotency mark/seen');
 

@@ -220,6 +220,9 @@ export class SurrealStore implements KnowledgeStore {
       throw err;
     }
   }
+  async unclaim(key: string): Promise<void> {
+    await this.rows(`DELETE type::record('seen', $k)`, { k: key });
+  }
   async mark(key: string): Promise<void> {
     await this.rows(`UPSERT type::record('seen', $k) SET at = $now`, { k: key, now: new Date().toISOString() });
   }
