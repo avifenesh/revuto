@@ -103,10 +103,11 @@ drop the config in the current dir instead (it still points `vaultPath` at the v
 
 Config keys: `vaultPath`, `github.tokenEnv`, per-role `models`, `schedules`,
 `limits`, and `store`. Model specs require `baseURL` and `model`; optional keys
-are `name`, `apiKeyEnv`, `api`, `auth`, `reasoningEffort`, and `awsRegion`
-(`embedder` may be `null`). See `revuto.config.example.json`. No secrets are
-stored — API keys are env-referenced via `apiKeyEnv`. `revuto doctor` checks
-model endpoints, the store backend, and the token before you run anything.
+are `name`, `apiKeyEnv`, `api`, `auth`, `reasoningEffort`, `awsRegion`, and
+`fallbacks` (`embedder` may be `null`). See `revuto.config.example.json`. No
+secrets are stored — API keys are env-referenced via `apiKeyEnv`. `revuto doctor`
+checks model endpoints, configured fallbacks, the store backend, and the token
+before you run anything.
 
 ## Providers
 
@@ -127,13 +128,35 @@ with `revuto doctor` before running.
 // Uses AWS_BEARER_TOKEN_BEDROCK when set; otherwise signs HTTP with the default AWS credential chain.
 {
   "name": "bedrock-mantle",
-  "baseURL": "https://bedrock-mantle.us-east-2.api.aws/v1",
+  "baseURL": "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
   "model": "openai.gpt-5.5",
   "api": "responses",
   "reasoningEffort": "xhigh",
   "auth": "auto",
   "apiKeyEnv": "AWS_BEARER_TOKEN_BEDROCK",
   "awsRegion": "us-east-2"
+}
+
+// fallback chain: try Mantle GPT-5.5 first, then Bedrock Runtime Claude Opus
+{
+  "name": "bedrock-mantle",
+  "baseURL": "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+  "model": "openai.gpt-5.5",
+  "api": "responses",
+  "reasoningEffort": "xhigh",
+  "auth": "auto",
+  "apiKeyEnv": "AWS_BEARER_TOKEN_BEDROCK",
+  "awsRegion": "us-east-2",
+  "fallbacks": [{
+    "name": "bedrock-converse",
+    "baseURL": "https://bedrock-runtime.us-east-2.amazonaws.com",
+    "model": "us.anthropic.claude-opus-4-8",
+    "api": "converse",
+    "reasoningEffort": "max",
+    "auth": "auto",
+    "apiKeyEnv": "AWS_BEARER_TOKEN_BEDROCK",
+    "awsRegion": "us-east-2"
+  }]
 }
 
 // a self-hosted agent exposing /v1 (e.g. Hermes)
@@ -147,6 +170,21 @@ The current Responses adapter covers Revuto's text + function-tool loop, bearer
 auth, and Bedrock SigV4 signing. It intentionally leaves streaming, stored
 conversation state, multimodal/file inputs, structured-output helpers, and built-in
 Responses tools unsupported for now.
+
+At run time, override a role with a primary/fallback chain instead of editing the
+config file:
+
+```bash
+revuto doctor --review-model gpt55,opus
+revuto review owner/repo 123 --review-model gpt55,opus
+revuto daemon --model review=gpt55@us-east-2,opus --model curator=opus,sonnet --model distill=opus,sonnet
+```
+
+Aliases are `gpt55`, `gpt54`, `opus`, and `sonnet`; OpenAI model ids use
+Bedrock Mantle (`https://bedrock-mantle.<region>.api.aws/openai/v1`) and
+Anthropic ids use Bedrock Runtime Converse
+(`https://bedrock-runtime.<region>.amazonaws.com`). Use `--bedrock-region` or
+append `@region` to one alias to change the generated endpoint.
 
 Tool calling is required (the reviewer/curator drive tools), so a local **chat** server
 must run with a tool-capable chat template — `scripts/llama-server.sh` passes `--jinja`

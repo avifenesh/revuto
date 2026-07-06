@@ -9,6 +9,12 @@
  */
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel, EmbeddingModel } from 'ai';
+import type {
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3GenerateResult,
+  LanguageModelV3StreamResult,
+} from '@ai-sdk/provider';
 import type { ModelSpec } from './config.js';
 import { buildResponsesModel } from './responses-model.js';
 import { buildConverseModel } from './converse-model.js';
@@ -28,14 +34,69 @@ function provider(spec: ModelSpec) {
 
 /** Chat/completion model for a role (review, curator, distill). */
 export function buildChatModel(spec: ModelSpec): LanguageModel {
-  if (spec.api === 'responses') return buildResponsesModel(spec);
-  if (spec.api === 'converse') return buildConverseModel(spec);
-  return provider(spec).chatModel(spec.model);
+  const primary = buildSingleChatModel(spec);
+  const fallbacks = (spec.fallbacks ?? []).map(buildChatModel) as LanguageModelV3[];
+  return fallbacks.length ? new FallbackLanguageModel([primary, ...fallbacks]) : primary;
 }
 
 /** Embedding model — only when an embedder is configured. */
 export function buildEmbeddingModel(spec: ModelSpec): EmbeddingModel {
   return provider(spec).textEmbeddingModel(spec.model);
+}
+
+function withoutFallbacks(spec: ModelSpec): ModelSpec {
+  const { fallbacks, ...single } = spec;
+  return single;
+}
+
+function buildSingleChatModel(spec: ModelSpec): LanguageModelV3 {
+  const single = withoutFallbacks(spec);
+  if (single.api === 'responses') return buildResponsesModel(single) as LanguageModelV3;
+  if (single.api === 'converse') return buildConverseModel(single) as LanguageModelV3;
+  return provider(single).chatModel(single.model) as LanguageModelV3;
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message));
+}
+
+class FallbackLanguageModel implements LanguageModelV3 {
+  readonly specificationVersion = 'v3' as const;
+  readonly provider: string;
+  readonly modelId: string;
+  readonly supportedUrls: LanguageModelV3['supportedUrls'];
+
+  constructor(private readonly models: readonly LanguageModelV3[]) {
+    this.provider = models.map((m) => m.provider).join(' -> ');
+    this.modelId = models.map((m) => m.modelId).join(' -> ');
+    this.supportedUrls = models[0]?.supportedUrls ?? {};
+  }
+
+  async doGenerate(options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
+    return this.tryModels((model) => model.doGenerate(options));
+  }
+
+  async doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
+    return this.tryModels((model) => model.doStream(options));
+  }
+
+  private async tryModels<T>(call: (model: LanguageModelV3) => PromiseLike<T>): Promise<T> {
+    const failures: string[] = [];
+    for (let i = 0; i < this.models.length; i++) {
+      const model = this.models[i];
+      try {
+        return await call(model);
+      } catch (err) {
+        if (isAbortError(err)) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        failures.push(`${model.provider}/${model.modelId}: ${message}`);
+        if (i < this.models.length - 1) {
+          console.warn(`[model-fallback] ${model.provider}/${model.modelId} failed; trying ${this.models[i + 1].provider}/${this.models[i + 1].modelId}`);
+        }
+      }
+    }
+    throw new Error(`all model fallbacks failed: ${failures.join(' | ')}`);
+  }
 }
 
 /** Total tokens from a generateText `usage`, for daily-budget accounting. */

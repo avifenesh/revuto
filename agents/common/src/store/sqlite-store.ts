@@ -169,8 +169,12 @@ export class SqliteStore implements KnowledgeStore {
   async seen(key: string): Promise<boolean> {
     return !!this.db.prepare(`SELECT 1 FROM idempotency WHERE key = ?`).get(key);
   }
+  async claim(key: string): Promise<boolean> {
+    const info = this.db.prepare(`INSERT OR IGNORE INTO idempotency (key, created_at) VALUES (?, ?)`).run(key, new Date().toISOString());
+    return info.changes > 0;
+  }
   async mark(key: string): Promise<void> {
-    this.db.prepare(`INSERT OR IGNORE INTO idempotency (key, created_at) VALUES (?, ?)`).run(key, new Date().toISOString());
+    await this.claim(key);
   }
 
   async incrCounter(key: string, by = 1): Promise<number> {

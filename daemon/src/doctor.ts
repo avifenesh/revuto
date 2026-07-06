@@ -27,12 +27,24 @@ export interface GithubProbe { readonly ok: boolean; readonly login?: string; re
 export interface StoreProbe { readonly backend: string; readonly ok: boolean; readonly ms: number; readonly error?: string; }
 export interface DoctorReport { readonly github: GithubProbe; readonly store: StoreProbe; readonly models: ModelProbe[]; }
 
+function withoutFallbacks(spec: ModelSpec): ModelSpec {
+  const { fallbacks, ...single } = spec;
+  return single;
+}
+
+function modelEntries(role: string, spec: ModelSpec, kind: 'chat' | 'embedding'): Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> {
+  return [
+    { role, spec: withoutFallbacks(spec), kind },
+    ...(spec.fallbacks ?? []).flatMap((fallback, i) => modelEntries(`${role}.fallback${i + 1}`, fallback, kind)),
+  ];
+}
+
 export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe[]> {
   // Dedupe roles that share an endpoint+model.
   const entries: Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> = [
-    { role: 'review', spec: config.models.review, kind: 'chat' },
-    { role: 'curator', spec: config.models.curator, kind: 'chat' },
-    { role: 'distill', spec: config.models.distill, kind: 'chat' },
+    ...modelEntries('review', config.models.review, 'chat'),
+    ...modelEntries('curator', config.models.curator, 'chat'),
+    ...modelEntries('distill', config.models.distill, 'chat'),
   ];
   if (config.models.embedder) entries.push({ role: 'embedder', spec: config.models.embedder, kind: 'embedding' });
 

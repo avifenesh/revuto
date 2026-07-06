@@ -95,6 +95,8 @@ export interface KnowledgeStore {
   getCursor(name: string): Promise<string | null>;
   setCursor(name: string, value: string): Promise<void>;
   seen(key: string): Promise<boolean>;
+  /** Atomically mark `key` as claimed; returns false if it already exists. */
+  claim(key: string): Promise<boolean>;
   mark(key: string): Promise<void>;
 
   // --- daily counters (rate/token limits) --------------------------------
