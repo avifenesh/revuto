@@ -78,7 +78,7 @@
     "@smithy/protocol-http": "^5.4.6",
     "@smithy/signature-v4": "^5.4.6",
     "ai": "^7.0.14",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^13.0.1",
     "gray-matter": "^4.0.3",
     "node-cron": "^4.5.0",
     "surrealdb": "^2.0.3",
