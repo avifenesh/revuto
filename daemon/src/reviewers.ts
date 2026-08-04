@@ -6,8 +6,17 @@
  * old CDK `routes[]` array.
  */
 import matter from 'gray-matter';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import type { Job } from './types.js';
 
@@ -31,6 +40,17 @@ function reviewersDir(config: ReviewerConfig): string {
 function noteName(repo: string): string {
   const [owner, name] = repo.split('/');
   return `${owner}__${name}.md`;
+}
+
+function writeFileAtomically(path: string, content: string): void {
+  const tempDir = mkdtempSync(join(dirname(path), '.revuto-write-'));
+  const tempPath = join(tempDir, 'content');
+  try {
+    writeFileSync(tempPath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    renameSync(tempPath, path);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 function parseNote(raw: string): ReviewerSettings | null {
@@ -76,7 +96,7 @@ export function writeReviewer(config: ReviewerConfig, s: ReviewerSettings): void
   if (s.botLogin) data.botLogin = s.botLogin;
   const [owner, name] = s.repo.split('/');
   const body = `# ${s.repo}\n\nRegistered reviewer. Skills live under \`skills/${owner}__${name}/\`; memory in \`memory/${owner}__${name}\` (SQLite or SurrealDB).\n`;
-  writeFileSync(join(dir, noteName(s.repo)), matter.stringify(body, data), 'utf8');
+  writeFileAtomically(join(dir, noteName(s.repo)), matter.stringify(body, data));
   updateIndex(config);
 }
 
@@ -91,7 +111,7 @@ export function updateIndex(config: ReviewerConfig): void {
     const allow = r.authorAllowlist?.length ? r.authorAllowlist.join(', ') : '(all)';
     lines.push(`| [[${owner}__${name}\\|${r.repo}]] | ${r.paused ? 'yes' : 'no'} | ${r.autoActivate ? 'yes' : 'no'} | ${allow} |`);
   }
-  writeFileSync(join(dir, '_index.md'), lines.join('\n') + '\n', 'utf8');
+  writeFileAtomically(join(dir, '_index.md'), lines.join('\n') + '\n');
 }
 
 /** Unregister a repo. With `purge`, also deletes its skill notes + SQLite memory file. */
