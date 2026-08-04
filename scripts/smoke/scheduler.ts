@@ -8,7 +8,14 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import cron from 'node-cron';
-import { mkdtempSync } from 'node:fs';
+import {
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -52,6 +59,19 @@ assert.equal(planAlpha.schedules.review, '*/5 * * * *', 'per-repo review overrid
 assert.equal(planAlpha.schedules.learn, '0 */4 * * *', 'learn falls back to config default');
 assert.equal(planBeta.schedules.review, '*/12 * * * *', 'beta uses config default review');
 
+if (process.platform !== 'win32') {
+  const alphaNote = join(vault, 'reviewers', 'octo__alpha.md');
+  assert.equal(statSync(alphaNote).mode & 0o777, 0o600, 'reviewer notes are private');
+
+  const victim = join(vault, 'symlink-victim.txt');
+  const linkedNote = join(vault, 'reviewers', 'octo__linked.md');
+  writeFileSync(victim, 'untouched\n');
+  symlinkSync(victim, linkedNote);
+  writeReviewer(config, { repo: 'octo/linked' });
+  assert.equal(readFileSync(victim, 'utf8'), 'untouched\n', 'reviewer writes do not follow destination symlinks');
+  assert.equal(lstatSync(linkedNote).isSymbolicLink(), false, 'reviewer write replaces the symlink itself');
+}
+
 for (const p of plan) {
   for (const expr of Object.values(p.schedules)) assert.ok(cron.validate(expr), `valid cron: ${expr}`);
 }
@@ -61,6 +81,17 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 await Promise.all([
   runQueuedForRepo(config, 'octo/alpha', async () => {
+    const ownerPath = join(
+      vault,
+      '.locks',
+      'repos',
+      `${Buffer.from('octo/alpha', 'utf8').toString('base64url')}.lock`,
+      'owner.json',
+    );
+    assert.equal(JSON.parse(readFileSync(ownerPath, 'utf8')).repo, 'octo/alpha', 'repo lock records its owner');
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(ownerPath).mode & 0o777, 0o600, 'repo lock owner metadata is private');
+    }
     events.push('alpha-1-start');
     await delay(30);
     events.push('alpha-1-end');

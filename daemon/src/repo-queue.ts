@@ -90,8 +90,8 @@ async function withRepoLock<T>(
 
   for (;;) {
     try {
-      await mkdir(join(config.vaultPath, '.locks', 'repos'), { recursive: true });
-      await mkdir(lockDir);
+      await mkdir(join(config.vaultPath, '.locks', 'repos'), { recursive: true, mode: 0o700 });
+      await mkdir(lockDir, { mode: 0o700 });
 
       try {
         await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
@@ -99,7 +99,7 @@ async function withRepoLock<T>(
           hostname: hostname(),
           repo,
           createdAt: new Date().toISOString(),
-        }, null, 2) + '\n');
+        }, null, 2) + '\n', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
         return await fn();
       } finally {
         await rm(lockDir, { recursive: true, force: true });
