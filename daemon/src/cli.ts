@@ -19,6 +19,7 @@ import { openStore } from '../../agents/common/src/store/open.js';
 import { listReviewers, readReviewer, writeReviewer, removeReviewer, setPaused, setSchedule } from './reviewers.js';
 import { reviewOnePr, reviewRepo, learnRepo, decayRepo } from './jobs.js';
 import { startDaemon } from './scheduler.js';
+import { startWebhookServer } from './github-webhook.js';
 import { runQueuedForRepo } from './repo-queue.js';
 import { runInit } from './init.js';
 import { runDoctor, doctorOk } from './doctor.js';
@@ -29,7 +30,7 @@ function usage(): void {
   console.log(`revuto <command>
 
   init-config [--local]           write a starter revuto.config.json into the vault (~/revuto or $REVUTO_VAULT); --local writes it to the current dir
-  daemon                          start the scheduler (review/learn/decay)
+  daemon                          start the scheduler and configured GitHub App webhook
   doctor                          ping model endpoints + store backend + GitHub token
   init <owner/repo> [maxPRs]      clone + onboard + backfill PRs + write textbook + register
   add <owner/repo>                register a repo (no onboarding)
@@ -87,7 +88,13 @@ async function main(): Promise<void> {
       break;
     }
     case 'daemon': {
-      startDaemon(config());
+      const cfg = config();
+      if (cfg.github.app) {
+        const app = cfg.github.app;
+        await startWebhookServer(cfg);
+        console.log(`webhook listening on http://${app.host}:${app.port}${app.path}`);
+      }
+      startDaemon(cfg);
       console.log('daemon running — Ctrl-C to stop');
       break;
     }

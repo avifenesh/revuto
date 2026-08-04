@@ -22,8 +22,9 @@ are in `docs/legacy-aws/`.
   or `sqlite` (zero-dep per-repo file) as opt-in via `store.backend`.
 - **Embedder optional.** Configured → vector dedup + vector skill selection.
   Omitted → LLM-judged dedup (curator reads candidates) + area-glob selection.
-- **Poll, don't webhook.** A node-cron daemon polls each repo's delta since a
-  persisted cursor. Reviewer registry = one vault note per repo (replaces CDK routes).
+- **Webhook first, polling fallback.** An optional GitHub App triggers reviews
+  for exact PR heads in real time; node-cron polling recovers missed deliveries
+  and runs learning/decay. Reviewer registry = one vault note per repo.
 - **Graduation at 4×, then delete.** A concern reinforced to 4 graduates into a
   `draft` topic skill note; the source concern is removed. Drafts need `approve`
   (or per-repo `autoActivate`) before the reviewer loads them.

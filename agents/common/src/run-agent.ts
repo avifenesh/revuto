@@ -13,7 +13,7 @@ import type { Octokit } from '@octokit/rest';
 import type { ReviewerConfig } from './config.js';
 import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEMENT } from './model.js';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
-import { getOctokit } from './github-auth.js';
+import { getOctokit, type GithubAuth } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
 import { toAiSdkTools, type ToolDef } from './tool-def.js';
 import { assembleCommonTools } from './tools/index.js';
@@ -42,6 +42,8 @@ export interface RunReviewOptions {
   readonly embedder?: Embedder | null;
   /** Override the tool set (per-repo build tools). Defaults to the common read/review tools. */
   readonly assembleTools?: AssembleTools;
+  /** Installation-scoped auth for GitHub App webhook runs. */
+  readonly githubAuth?: GithubAuth;
 }
 
 export interface ReviewOutcome {
@@ -55,7 +57,7 @@ export interface ReviewOutcome {
 
 export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> {
   const { config } = opts;
-  const { octokit, token } = getOctokit(config.github);
+  const { octokit, token } = opts.githubAuth ?? getOctokit(config.github);
 
   const [owner, name] = opts.repo.split('/');
   if (!owner || !name) throw new Error(`bad repo: ${opts.repo}`);

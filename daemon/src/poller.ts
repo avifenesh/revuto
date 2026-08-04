@@ -1,6 +1,6 @@
 /**
- * GitHub polling. Local has no public webhook, so each cron tick polls the
- * delta since the per-repo cursor:
+ * GitHub recovery polling. Each cron tick polls the delta since the per-repo
+ * cursor, covering webhook delivery or tunnel outages:
  *   - pollOpenPRs:  open PRs updated since the review cursor (→ review).
  *   - pollFeedback: human replies to the reviewer's own review comments since
  *     the learn cursor, noise-filtered (→ learn).
