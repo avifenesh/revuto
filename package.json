@@ -73,6 +73,7 @@
     "@agent-sh/harness-tools": "^0.7.1",
     "@ai-sdk/openai-compatible": "^2.0.47",
     "@aws-sdk/credential-provider-node": "^3.972.50",
+    "@octokit/auth-app": "^8.3.0",
     "@octokit/rest": "^22.0.1",
     "@smithy/hash-node": "^4.3.6",
     "@smithy/protocol-http": "^5.4.6",

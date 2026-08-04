@@ -14,8 +14,8 @@ into reusable topic skills.
 - **Supplier-agnostic.** Every model call is OpenAI-compatible. Bedrock (via a
   gateway), xAI/Grok, GLM, a local vLLM/Ollama — interchangeable per role
   (`review`, `curator`, `distill`, `embedder`) by editing config.
-- **Runs locally.** No webhooks, no cloud infra. A scheduler polls each repo on a
-  cron and learns from the delta since the last run.
+- **Runs locally.** An optional GitHub App webhook triggers reviews immediately;
+  the scheduler keeps polling as a recovery path and runs the learn/decay jobs.
 - **Embedder optional.** Configure a local or cloud embedding model for similarity
   dedup + skill selection, or omit it and fall back to LLM-judged dedup + area-glob
   selection.
@@ -39,8 +39,9 @@ zero external deps.
 init   clone repo → scan structure → backfill ≤1000 PRs → distill maintainer-
        essence → compose <vault>/skills/<repo>/_textbook.md → register reviewer
 
-review (cron)  poll open PRs since cursor → check out PR head → select textbook +
-       relevant active topic skills → LLM review → post_review / skip_review
+review (webhook + cron fallback)  claim exact PR head → check out PR head → select
+       textbook + relevant active topic skills → LLM review → post_review /
+       skip_review → complete the revuto-review check
 
 learn  (cron)  poll replies to the reviewer's comments since cursor → filter noise
        → dedup into the concerns store (bump count) → at 4× reinforcement, graduate
@@ -101,13 +102,68 @@ resolves in order: `$REVUTO_CONFIG` → `./revuto.config.json` (local override) 
 `<vault>/revuto.config.json` → `./reviewer.config.json`. Use `init-config --local` to
 drop the config in the current dir instead (it still points `vaultPath` at the vault).
 
-Config keys: `vaultPath`, `github.tokenEnv`, per-role `models`, `schedules`,
-`limits`, and `store`. Model specs require `baseURL` and `model`; optional keys
-are `name`, `apiKeyEnv`, `api`, `auth`, `reasoningEffort`, `awsRegion`, and
-`fallbacks` (`embedder` may be `null`). See `revuto.config.example.json`. No
-secrets are stored — API keys are env-referenced via `apiKeyEnv`. `revuto doctor`
-checks model endpoints, configured fallbacks, the store backend, and the token
-before you run anything.
+Config keys: `vaultPath`, `github.tokenEnv`, optional `github.app`, per-role
+`models`, `schedules`, `limits`, and `store`. Model specs require `baseURL` and
+`model`; optional keys are `name`, `apiKeyEnv`, `api`, `auth`,
+`reasoningEffort`, `awsRegion`, and `fallbacks` (`embedder` may be `null`). See
+`revuto.config.example.json`. No secrets are stored - API keys and the webhook
+secret are env-referenced. `revuto doctor` checks model endpoints, configured
+fallbacks, the store backend, and the token before you run anything.
+
+### Real-time GitHub App reviews
+
+Polling works without public infrastructure. For review-on-push, create one
+GitHub App and install it on each account you want Revuto to cover. Configure:
+
+- Repository permissions: **Contents: read**, **Pull requests: read/write**,
+  **Checks: read/write**, and **Metadata: read**.
+- Subscribe to the **Pull request** event. Revuto handles `opened`,
+  `synchronize`, `reopened`, and `ready_for_review`.
+- Set the webhook URL to a stable HTTPS endpoint that forwards to
+  `http://127.0.0.1:8787/github/webhook`.
+- Install the App on `agent-sh`, your personal account, or selected repositories.
+
+Add the App settings to `<vault>/revuto.config.json`:
+
+```json
+{
+  "github": {
+    "tokenEnv": "GH_TOKEN",
+    "app": {
+      "appId": 123456,
+      "privateKeyPath": "~/.config/revuto/revuto-review.pem",
+      "webhookSecretEnv": "REVUTO_GITHUB_WEBHOOK_SECRET",
+      "host": "127.0.0.1",
+      "port": 8787,
+      "path": "/github/webhook",
+      "allowedOwners": ["agent-sh", "avifenesh"],
+      "checkName": "revuto-review"
+    }
+  }
+}
+```
+
+Put the matching secret in the daemon environment, keep the PEM file mode
+`0600`, then restart `revuto daemon`. The daemon serves `GET /healthz` and
+validates every delivery with `X-Hub-Signature-256` before returning `202`.
+Each exact `repo#PR@headSHA` is claimed once. A clean `skip_review` completes
+the App check successfully; posted findings or review errors fail the check.
+
+A Tailscale Funnel can provide the stable HTTPS endpoint while the receiver
+stays bound to loopback:
+
+```bash
+tailscale funnel --bg --https=8443 \
+  --set-path=/github/webhook \
+  http://127.0.0.1:8787/github/webhook
+tailscale funnel status
+```
+
+Use the resulting public `https://<machine>.<tailnet>.ts.net:8443/github/webhook`
+URL in the App settings. Funnel configuration persists in Tailscale; keep the
+cron review schedule enabled as recovery for delivery or machine outages. After
+the first successful App check appears, require `revuto-review` in each
+repository's branch rules.
 
 ## Providers
 
@@ -235,7 +291,7 @@ Optional caps under `limits` (0 = unlimited; run/comment/token counts are per re
 ```bash
 revuto doctor                        # verify endpoints + GitHub token first
 revuto init <owner/repo> [maxPRs]    # onboard a repo (clone + backfill + textbook)
-revuto daemon                        # start the scheduler (review/learn/decay)
+revuto daemon                        # start scheduler + configured GitHub App webhook
 
 # lifecycle
 revuto add <owner/repo>              # register without onboarding
@@ -270,6 +326,7 @@ npx tsx scripts/smoke/loop.ts          # full learn loop (fake endpoint)
 npx tsx scripts/smoke/responses.ts     # /v1/responses + Bedrock Mantle auth
 npx tsx scripts/smoke/doctor.ts        # doctor probes + output shape
 npx tsx scripts/smoke/config.ts        # config defaults + model API validation
+npx tsx scripts/smoke/webhook.ts       # GitHub webhook HMAC + dispatch/check outcomes
 npx tsx scripts/smoke/scheduler.ts     # registry + schedule planning
 npx tsx scripts/smoke/scan.ts          # onboarding repo scan
 ```

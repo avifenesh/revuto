@@ -38,10 +38,32 @@ export interface ModelSpec {
   readonly fallbacks?: readonly ModelSpec[];
 }
 
+export interface GithubAppConfig {
+  /** Numeric ID shown on the GitHub App settings page. */
+  readonly appId: number;
+  /** PEM private key generated for the App. The file must not live in the repository. */
+  readonly privateKeyPath: string;
+  /** Environment variable containing the GitHub webhook secret. */
+  readonly webhookSecretEnv: string;
+  /** Local receiver bind address. Keep loopback when using a tunnel. */
+  readonly host: string;
+  readonly port: number;
+  readonly path: string;
+  /** Optional account allowlist. Empty means every account where the App is installed. */
+  readonly allowedOwners: readonly string[];
+  readonly checkName: string;
+}
+
+export interface GithubConfig {
+  readonly tokenEnv: string;
+  /** Optional real-time GitHub App receiver. Polling remains available without it. */
+  readonly app?: GithubAppConfig;
+}
+
 export interface ReviewerConfig {
   /** Obsidian vault (or plain dir) where skills + memory live. */
   readonly vaultPath: string;
-  readonly github: { readonly tokenEnv: string };
+  readonly github: GithubConfig;
   readonly models: {
     readonly review: ModelSpec;
     readonly curator: ModelSpec;
@@ -153,6 +175,49 @@ export function loadConfig(path?: string): ReviewerConfig {
   // inside the vault and the user controls everything (config + skills + reviewers) there.
   const vaultPath = raw.vaultPath ? resolveHome(raw.vaultPath) : dirname(file);
   const tokenEnv = raw.github?.tokenEnv ?? 'GH_TOKEN';
+  let githubApp: GithubAppConfig | undefined;
+  if (raw.github?.app !== undefined) {
+    const app = raw.github.app;
+    const appId = Number(requireField(app.appId, 'github.app.appId'));
+    if (!Number.isSafeInteger(appId) || appId <= 0) {
+      throw new Error('config: github.app.appId must be a positive integer');
+    }
+    const privateKeyPath = resolveHome(requireField(app.privateKeyPath, 'github.app.privateKeyPath'));
+    const webhookSecretEnv = app.webhookSecretEnv ?? 'REVUTO_GITHUB_WEBHOOK_SECRET';
+    const host = app.host ?? '127.0.0.1';
+    const port = app.port ?? 8787;
+    const webhookPath = app.path ?? '/github/webhook';
+    const allowedOwners = app.allowedOwners ?? [];
+    const checkName = app.checkName ?? 'revuto-review';
+    if (typeof webhookSecretEnv !== 'string' || !webhookSecretEnv.trim()) {
+      throw new Error('config: github.app.webhookSecretEnv must be a non-empty string');
+    }
+    if (typeof host !== 'string' || !host.trim()) {
+      throw new Error('config: github.app.host must be a non-empty string');
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('config: github.app.port must be an integer from 1 to 65535');
+    }
+    if (typeof webhookPath !== 'string' || !webhookPath.startsWith('/')) {
+      throw new Error('config: github.app.path must start with "/"');
+    }
+    if (!Array.isArray(allowedOwners) || allowedOwners.some((owner: unknown) => typeof owner !== 'string' || !owner.trim())) {
+      throw new Error('config: github.app.allowedOwners must be an array of non-empty strings');
+    }
+    if (typeof checkName !== 'string' || !checkName.trim()) {
+      throw new Error('config: github.app.checkName must be a non-empty string');
+    }
+    githubApp = {
+      appId,
+      privateKeyPath,
+      webhookSecretEnv,
+      host,
+      port,
+      path: webhookPath,
+      allowedOwners,
+      checkName,
+    };
+  }
   const models = {
     review: checkModel(raw.models?.review, 'review'),
     curator: checkModel(raw.models?.curator, 'curator'),
@@ -191,5 +256,5 @@ export function loadConfig(path?: string): ReviewerConfig {
     },
   };
 
-  return { vaultPath, github: { tokenEnv }, models, schedules, review, limits, store };
+  return { vaultPath, github: { tokenEnv, ...(githubApp ? { app: githubApp } : {}) }, models, schedules, review, limits, store };
 }

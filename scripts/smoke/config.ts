@@ -18,7 +18,18 @@ const dir = mkdtempSync(join(tmpdir(), 'revuto-cfg-'));
 const m = { baseURL: 'http://x/v1', model: 'm' };
 const responses = { ...m, api: 'responses', auth: 'auto', reasoningEffort: 'xhigh', awsRegion: 'us-east-2' };
 const file = join(dir, 'revuto.config.json');
-writeFileSync(file, JSON.stringify({ github: { tokenEnv: 'GH_TOKEN' }, models: { review: { ...responses, fallbacks: [m] }, curator: m, distill: m, embedder: null } }));
+writeFileSync(file, JSON.stringify({
+  github: {
+    tokenEnv: 'GH_TOKEN',
+    app: {
+      appId: 1234,
+      privateKeyPath: './secrets/revuto.pem',
+      webhookSecretEnv: 'REVUTO_TEST_WEBHOOK_SECRET',
+      allowedOwners: ['agent-sh', 'avifenesh'],
+    },
+  },
+  models: { review: { ...responses, fallbacks: [m] }, curator: m, distill: m, embedder: null },
+}));
 
 const c = loadConfig(file);
 assert.equal(c.vaultPath, dir, 'vaultPath defaults to the config file folder');
@@ -31,6 +42,13 @@ assert.equal(c.store.backend, 'surreal', 'store backend defaults to surreal');
 assert.ok(c.limits.maxOutputTokens.review > 0, 'review token cap default applied');
 assert.equal(c.limits.dailyTokens, 0, 'unset limits default to 0 (unlimited)');
 assert.equal(c.github.tokenEnv, 'GH_TOKEN', 'github token env read');
+assert.equal(c.github.app?.appId, 1234, 'GitHub App id read');
+assert.equal(c.github.app?.privateKeyPath, join(process.cwd(), 'secrets/revuto.pem'), 'GitHub App private key path resolved');
+assert.deepEqual(c.github.app?.allowedOwners, ['agent-sh', 'avifenesh'], 'GitHub App owner allowlist read');
+assert.equal(c.github.app?.host, '127.0.0.1', 'GitHub App receiver defaults to loopback');
+assert.equal(c.github.app?.port, 8787, 'GitHub App receiver default port applied');
+assert.equal(c.github.app?.path, '/github/webhook', 'GitHub App receiver default path applied');
+assert.equal(c.github.app?.checkName, 'revuto-review', 'GitHub App check name default applied');
 
 const gpt = modelPreset('us.openai-gpt-5-5');
 assert.equal(gpt.baseURL, 'https://bedrock-mantle.us-east-2.api.aws/openai/v1', 'gpt55 alias uses Bedrock Mantle OpenAI path');
@@ -54,6 +72,13 @@ const badFile = join(dir, 'bad-revuto.config.json');
 writeFileSync(badFile, JSON.stringify({ github: { tokenEnv: 'GH_TOKEN' }, models: { review: { ...m, api: 'response' }, curator: m, distill: m, embedder: null } }));
 assert.throws(() => loadConfig(badFile), /models\.review\.api must be one of chat, responses/, 'invalid model api fails fast');
 
+const badAppFile = join(dir, 'bad-app-revuto.config.json');
+writeFileSync(badAppFile, JSON.stringify({
+  github: { app: { appId: 1234, privateKeyPath: 'app.pem', port: 70000 } },
+  models: { review: m, curator: m, distill: m, embedder: null },
+}));
+assert.throws(() => loadConfig(badAppFile), /github\.app\.port must be an integer from 1 to 65535/, 'invalid webhook port fails fast');
+
 // Vault is the default config home: point $REVUTO_VAULT at a temp dir, drop a config
 // there, and confirm loadConfig() (no path arg) finds it from a cwd with no local config.
 const vault = mkdtempSync(join(tmpdir(), 'revuto-vault-'));
@@ -66,4 +91,4 @@ process.chdir(mkdtempSync(join(tmpdir(), 'revuto-cwd-'))); // no ./revuto.config
 const v = loadConfig();
 assert.equal(v.vaultPath, vault, 'config found in $REVUTO_VAULT with no path arg; vaultPath self-locates to the vault');
 
-console.log('PASS: config-in-vault default + responses/fallback model options + model override aliases + invalid-api validation + limit/store defaults');
+console.log('PASS: config-in-vault default + GitHub App receiver config + responses/fallback model options + model override aliases + invalid validation + limit/store defaults');
