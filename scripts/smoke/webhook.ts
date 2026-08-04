@@ -9,7 +9,10 @@
  */
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import {
@@ -27,13 +30,14 @@ assert.equal(verifyWebhookSignature(publishedPayload, publishedSecret, published
 assert.equal(verifyWebhookSignature(publishedPayload, publishedSecret, undefined), false, 'missing signature fails');
 
 const m = { baseURL: 'http://x/v1', model: 'm' };
+const vault = mkdtempSync(join(tmpdir(), 'revuto-webhook-smoke-'));
 const config: ReviewerConfig = {
-  vaultPath: '/tmp/revuto-webhook-smoke',
+  vaultPath: vault,
   github: {
     tokenEnv: 'GH_TOKEN',
     app: {
       appId: 1234,
-      privateKeyPath: '/tmp/unused-revuto-app.pem',
+      privateKeyPath: join(vault, 'unused-revuto-app.pem'),
       webhookSecretEnv: 'REVUTO_TEST_WEBHOOK_SECRET',
       host: '127.0.0.1',
       port: 8787,
@@ -44,7 +48,7 @@ const config: ReviewerConfig = {
   },
   models: { review: m, curator: m, distill: m, embedder: null },
   schedules: { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' },
-  review: { maxSteps: 1, allowWrite: false, workspaceDir: '/tmp/revuto-webhook-smoke/workspaces' },
+  review: { maxSteps: 1, allowWrite: false, workspaceDir: join(vault, 'workspaces') },
   limits: { maxOutputTokens: { review: 1, curator: 1, distill: 1 }, dailyReviews: 0, learnBatch: 0, dailyLearn: 0, dailyTokens: 0 },
   store: { backend: 'sqlite', surreal: { url: '', namespace: 'reviewer' } },
 };
@@ -143,4 +147,5 @@ assert.equal(checkResultForOutcome({
 }).conclusion, 'failure', 'missing terminal decision fails the check');
 
 await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+rmSync(vault, { recursive: true, force: true });
 console.log('PASS: GitHub webhook HMAC + HTTP filtering/dispatch + review check outcomes');
