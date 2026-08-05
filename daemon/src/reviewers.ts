@@ -37,8 +37,19 @@ function reviewersDir(config: ReviewerConfig): string {
   return join(config.vaultPath, 'reviewers');
 }
 
+export function isRepositorySlug(repo: string | undefined): repo is string {
+  if (!repo) return false;
+  const parts = repo.split('/');
+  return parts.length === 2 && parts.every((part) => part.length > 0);
+}
+
+function repositoryParts(repo: string): [string, string] {
+  if (!isRepositorySlug(repo)) throw new Error(`bad repo: ${repo} (expected owner/name)`);
+  return repo.split('/') as [string, string];
+}
+
 function noteName(repo: string): string {
-  const [owner, name] = repo.split('/');
+  const [owner, name] = repositoryParts(repo);
   return `${owner}__${name}.md`;
 }
 
@@ -56,8 +67,10 @@ function writeFileAtomically(path: string, content: string): void {
 function parseNote(raw: string): ReviewerSettings | null {
   const d = matter(raw).data as Record<string, unknown>;
   if (!d.repo) return null;
+  const repo = String(d.repo);
+  if (!isRepositorySlug(repo)) return null;
   return {
-    repo: String(d.repo),
+    repo,
     schedules: (d.schedules as ReviewerSettings['schedules']) ?? {},
     authorAllowlist: Array.isArray(d.authorAllowlist) ? d.authorAllowlist.map(String) : [],
     autoActivate: !!d.autoActivate,
@@ -79,11 +92,15 @@ export function listReviewers(config: ReviewerConfig): ReviewerSettings[] {
 }
 
 export function readReviewer(config: ReviewerConfig, repo: string): ReviewerSettings | null {
+  if (!isRepositorySlug(repo)) return null;
   const p = join(reviewersDir(config), noteName(repo));
-  return existsSync(p) ? parseNote(readFileSync(p, 'utf8')) : null;
+  if (!existsSync(p)) return null;
+  const settings = parseNote(readFileSync(p, 'utf8'));
+  return settings?.repo === repo ? settings : null;
 }
 
 export function writeReviewer(config: ReviewerConfig, s: ReviewerSettings): void {
+  const [owner, name] = repositoryParts(s.repo);
   const dir = reviewersDir(config);
   mkdirSync(dir, { recursive: true });
   const data: Record<string, unknown> = {
@@ -94,7 +111,6 @@ export function writeReviewer(config: ReviewerConfig, s: ReviewerSettings): void
     paused: s.paused ?? false,
   };
   if (s.botLogin) data.botLogin = s.botLogin;
-  const [owner, name] = s.repo.split('/');
   const body = `# ${s.repo}\n\nRegistered reviewer. Skills live under \`skills/${owner}__${name}/\`; memory in \`memory/${owner}__${name}\` (SQLite or SurrealDB).\n`;
   writeFileAtomically(join(dir, noteName(s.repo)), matter.stringify(body, data));
   updateIndex(config);
@@ -116,11 +132,12 @@ export function updateIndex(config: ReviewerConfig): void {
 
 /** Unregister a repo. With `purge`, also deletes its skill notes + SQLite memory file. */
 export function removeReviewer(config: ReviewerConfig, repo: string, opts: { purge?: boolean } = {}): boolean {
+  if (!isRepositorySlug(repo)) return false;
   const p = join(reviewersDir(config), noteName(repo));
   if (!existsSync(p)) return false;
   rmSync(p);
   if (opts.purge) {
-    const [owner, name] = repo.split('/');
+    const [owner, name] = repositoryParts(repo);
     const slug = `${owner}__${name}`;
     rmSync(join(config.vaultPath, 'skills', slug), { recursive: true, force: true });
     for (const ext of ['.sqlite', '.sqlite-wal', '.sqlite-shm']) {

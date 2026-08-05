@@ -65,6 +65,14 @@ function ownerAllowed(app: GithubAppConfig, owner: string): boolean {
   return app.allowedOwners.some((candidate) => candidate.toLowerCase() === normalized);
 }
 
+export async function runForRegisteredRepo<T>(
+  config: ReviewerConfig,
+  repo: string,
+  run: () => Promise<T>,
+): Promise<T | null> {
+  return readReviewer(config, repo) ? run() : null;
+}
+
 /**
  * Process one accepted pull_request event. The per-repo queue prevents a
  * synchronize event from racing another review or learn job; the store claim
@@ -91,19 +99,24 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
     detailsUrl: event.pull_request.html_url,
   };
   try {
-    const outcome = await runQueuedForRepo(config, event.repository.full_name, async () => {
-      auth = await getInstallationOctokit(app, event.installation.id);
-      return reviewOnePr(config, event.repository.full_name, event.number, {
-        githubAuth: auth,
-        expectedHeadSha: event.pull_request.head.sha,
-        onClaimed: async () => {
-          checkRunId = await createReviewCheck(auth!, app, target);
-        },
-      });
-    });
+    const outcome = await runQueuedForRepo(
+      config,
+      event.repository.full_name,
+      () => runForRegisteredRepo(config, event.repository.full_name, async () => {
+        auth = await getInstallationOctokit(app, event.installation.id);
+        return reviewOnePr(config, event.repository.full_name, event.number, {
+          githubAuth: auth,
+          expectedHeadSha: event.pull_request.head.sha,
+          onClaimed: async () => {
+            checkRunId = await createReviewCheck(auth!, app, target);
+          },
+        });
+      }),
+    );
 
-    // No check means this delivery was stale, draft, or already claimed.
-    if (!auth || checkRunId === undefined) return;
+    // No check means the repo was removed while queued, or the delivery was stale,
+    // draft, or already claimed.
+    if (outcome === null || !auth || checkRunId === undefined) return;
     await completeReviewCheck(auth, app, target, checkRunId, checkResultForOutcome(outcome));
     console.log(`[webhook] reviewed ${event.repository.full_name}#${event.number}@${event.pull_request.head.sha}`);
   } catch (err) {

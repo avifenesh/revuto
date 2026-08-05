@@ -9,7 +9,7 @@
  */
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,11 +17,12 @@ import { join } from 'node:path';
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import {
   createWebhookServer,
+  runForRegisteredRepo,
   verifyWebhookSignature,
   type PullRequestWebhook,
 } from '../../daemon/src/github-webhook.js';
 import { checkResultForOutcome } from '../../daemon/src/review-check.js';
-import { writeReviewer } from '../../daemon/src/reviewers.js';
+import { readReviewer, removeReviewer, writeReviewer } from '../../daemon/src/reviewers.js';
 
 const publishedSecret = "It's a Secret to Everybody";
 const publishedPayload = 'Hello, World!';
@@ -133,6 +134,22 @@ assert.equal(await unregistered.text(), 'ignored\n', 'unregistered repo is ident
 assert.equal(processCount, 0, 'unregistered repo does not dispatch');
 
 writeReviewer(config, { repo: event.repository.full_name, botLogin: 'revuto-review[bot]' });
+assert.throws(
+  () => writeReviewer(config, { repo: 'octo/demo/extra' }),
+  /expected owner\/name/,
+  'registration requires an exact owner/repo slug',
+);
+writeFileSync(
+  join(vault, 'reviewers', 'octo__demo.md'),
+  '---\nrepo: octo/demo/extra\n---\n',
+  'utf8',
+);
+assert.equal(
+  readReviewer(config, event.repository.full_name),
+  null,
+  'a colliding note whose stored repo differs is not registered',
+);
+writeReviewer(config, { repo: event.repository.full_name, botLogin: 'revuto-review[bot]' });
 const accepted = await post('pull_request', event);
 assert.equal(accepted.status, 202, 'reviewable PR is accepted immediately');
 assert.equal(await accepted.text(), 'accepted\n', 'reviewable PR response is explicit');
@@ -142,6 +159,15 @@ const dispatched = await Promise.race([
 ]);
 assert.equal(dispatched.number, 42, 'accepted PR dispatches in the background');
 assert.equal(processCount, 1, 'accepted PR dispatches once');
+
+assert.equal(removeReviewer(config, event.repository.full_name), true, 'registered repo is removed');
+let removedRepoRan = false;
+const removedRepoResult = await runForRegisteredRepo(config, event.repository.full_name, async () => {
+  removedRepoRan = true;
+  return 'reviewed';
+});
+assert.equal(removedRepoResult, null, 'a repo removed while queued is skipped');
+assert.equal(removedRepoRan, false, 'removal prevents the queued review callback from running');
 
 assert.equal(checkResultForOutcome({
   terminal: 'skip_review', result: '', headSha: 'a', steps: 1, tokens: 1,
