@@ -106,6 +106,7 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
         auth = await getInstallationOctokit(app, event.installation.id);
         return reviewOnePr(config, event.repository.full_name, event.number, {
           githubAuth: auth,
+          registeredOnly: true,
           expectedHeadSha: event.pull_request.head.sha,
           onClaimed: async () => {
             checkRunId = await createReviewCheck(auth!, app, target);

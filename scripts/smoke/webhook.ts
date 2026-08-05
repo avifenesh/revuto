@@ -15,6 +15,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
+import type { GithubAuth } from '../../agents/common/src/github-auth.js';
+import { reviewOnePr } from '../../daemon/src/jobs.js';
 import {
   createWebhookServer,
   runForRegisteredRepo,
@@ -168,6 +170,32 @@ const removedRepoResult = await runForRegisteredRepo(config, event.repository.fu
 });
 assert.equal(removedRepoResult, null, 'a repo removed while queued is skipped');
 assert.equal(removedRepoRan, false, 'removal prevents the queued review callback from running');
+
+writeReviewer(config, { repo: event.repository.full_name, botLogin: 'revuto-review[bot]' });
+const raceHeadSha = 'b'.repeat(40);
+const raceAuth = {
+  token: 'installation-token',
+  login: 'revuto-review[bot]',
+  octokit: {
+    pulls: {
+      get: async () => {
+        assert.equal(
+          removeReviewer(config, event.repository.full_name),
+          true,
+          'repo is removed while reviewOnePr awaits the PR',
+        );
+        return { data: { draft: false, head: { sha: raceHeadSha } } };
+      },
+    },
+  },
+} as unknown as GithubAuth;
+const removedDuringReview = await reviewOnePr(config, event.repository.full_name, event.number, {
+  githubAuth: raceAuth,
+  registeredOnly: true,
+});
+assert.equal(removedDuringReview.terminal, 'skip_review', 'webhook review skips a repo removed during setup');
+assert.equal(removedDuringReview.headSha, raceHeadSha, 'the skip result identifies the fetched PR head');
+assert.equal(readReviewer(config, event.repository.full_name), null, 'webhook review does not re-register the removed repo');
 
 assert.equal(checkResultForOutcome({
   terminal: 'skip_review', result: '', headSha: 'a', steps: 1, tokens: 1,
