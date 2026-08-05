@@ -3,7 +3,7 @@
  *
  * Covers the published GitHub HMAC vector, HTTP signature enforcement,
  * pull_request action/draft filtering, immediate acceptance, background
- * dispatch, and check-run outcome mapping.
+ * dispatch, check-run outcome mapping, and clean App approvals.
  *
  *   npx tsx scripts/smoke/webhook.ts
  */
@@ -23,7 +23,11 @@ import {
   verifyWebhookSignature,
   type PullRequestWebhook,
 } from '../../daemon/src/github-webhook.js';
-import { checkResultForOutcome } from '../../daemon/src/review-check.js';
+import {
+  checkResultForOutcome,
+  completeReviewCheck,
+  type ReviewCheckTarget,
+} from '../../daemon/src/review-check.js';
 import { readReviewer, removeReviewer, writeReviewer } from '../../daemon/src/reviewers.js';
 
 const publishedSecret = "It's a Secret to Everybody";
@@ -207,6 +211,70 @@ assert.equal(checkResultForOutcome({
   terminal: 'none', result: '', headSha: 'a', steps: 1, tokens: 1,
 }).conclusion, 'failure', 'missing terminal decision fails the check');
 
+const reviewCalls: Array<Record<string, unknown>> = [];
+const checkCalls: Array<Record<string, unknown>> = [];
+const checkAuth = {
+  token: 'installation-token',
+  login: 'revuto-review[bot]',
+  octokit: {
+    pulls: {
+      createReview: async (input: Record<string, unknown>) => {
+        reviewCalls.push(input);
+        return { data: { id: 1 } };
+      },
+    },
+    checks: {
+      update: async (input: Record<string, unknown>) => {
+        checkCalls.push(input);
+        return { data: { id: input.check_run_id } };
+      },
+    },
+  },
+} as unknown as GithubAuth;
+const checkTarget: ReviewCheckTarget = {
+  repo: 'octo/demo',
+  prNumber: 42,
+  headSha: 'c'.repeat(40),
+  detailsUrl: 'https://github.com/octo/demo/pull/42',
+};
+await completeReviewCheck(
+  checkAuth,
+  config.github.app!,
+  checkTarget,
+  100,
+  checkResultForOutcome({ terminal: 'skip_review', result: '', headSha: checkTarget.headSha, steps: 1, tokens: 1 }),
+);
+assert.equal(reviewCalls.length, 1, 'clean review submits one App review');
+assert.deepEqual(
+  {
+    owner: reviewCalls[0]?.owner,
+    repo: reviewCalls[0]?.repo,
+    pull_number: reviewCalls[0]?.pull_number,
+    commit_id: reviewCalls[0]?.commit_id,
+    event: reviewCalls[0]?.event,
+  },
+  {
+    owner: 'octo',
+    repo: 'demo',
+    pull_number: 42,
+    commit_id: checkTarget.headSha,
+    event: 'APPROVE',
+  },
+  'clean App approval is pinned to the reviewed head',
+);
+assert.match(String(reviewCalls[0]?.body), /revuto-signed/, 'clean App approval is visibly signed');
+assert.equal(checkCalls[0]?.conclusion, 'success', 'clean approval completes the check successfully');
+
+await completeReviewCheck(
+  checkAuth,
+  config.github.app!,
+  checkTarget,
+  101,
+  checkResultForOutcome({ terminal: 'post_review', result: '', headSha: checkTarget.headSha, steps: 1, tokens: 1 }),
+);
+assert.equal(reviewCalls.length, 1, 'a findings result does not submit an approval');
+assert.equal(checkCalls[1]?.conclusion, 'failure', 'findings still fail the App check');
+
 await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
 rmSync(vault, { recursive: true, force: true });
-console.log('PASS: GitHub webhook HMAC + HTTP filtering/dispatch + review check outcomes');
+console.log('PASS: GitHub webhook HMAC + HTTP filtering/dispatch + review checks/approvals');
