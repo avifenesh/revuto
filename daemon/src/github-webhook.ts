@@ -6,6 +6,7 @@ import type { GithubAppConfig, ReviewerConfig } from '../../agents/common/src/co
 import { getInstallationOctokit, type GithubAuth } from '../../agents/common/src/github-auth.js';
 import { reviewOnePr } from './jobs.js';
 import { runQueuedForRepo } from './repo-queue.js';
+import { readReviewer } from './reviewers.js';
 import {
   checkResultForError,
   checkResultForOutcome,
@@ -72,6 +73,10 @@ function ownerAllowed(app: GithubAppConfig, owner: string): boolean {
 export async function processPullRequestWebhook(config: ReviewerConfig, event: PullRequestWebhook): Promise<void> {
   const app = githubApp(config);
   if (!shouldReviewPullRequest(event)) return;
+  if (!readReviewer(config, event.repository.full_name)) {
+    console.warn(`[webhook] ignored ${event.repository.full_name}#${event.number}: repository is not registered`);
+    return;
+  }
   if (!ownerAllowed(app, event.repository.owner.login)) {
     console.warn(`[webhook] ignored ${event.repository.full_name}#${event.number}: owner is not allowed`);
     return;
@@ -181,6 +186,10 @@ export function createWebhookServer(config: ReviewerConfig, deps: WebhookServerD
         return;
       }
       if (!shouldReviewPullRequest(parsed.data)) {
+        respond(res, 202, 'ignored');
+        return;
+      }
+      if (!readReviewer(config, parsed.data.repository.full_name)) {
         respond(res, 202, 'ignored');
         return;
       }

@@ -21,6 +21,7 @@ import {
   type PullRequestWebhook,
 } from '../../daemon/src/github-webhook.js';
 import { checkResultForOutcome } from '../../daemon/src/review-check.js';
+import { writeReviewer } from '../../daemon/src/reviewers.js';
 
 const publishedSecret = "It's a Secret to Everybody";
 const publishedPayload = 'Hello, World!';
@@ -126,6 +127,12 @@ const draft = await post('pull_request', { ...event, pull_request: { ...event.pu
 assert.equal(draft.status, 202, 'draft PR is acknowledged');
 assert.equal(processCount, 0, 'draft PR does not dispatch');
 
+const unregistered = await post('pull_request', event);
+assert.equal(unregistered.status, 202, 'unregistered repo is acknowledged');
+assert.equal(await unregistered.text(), 'ignored\n', 'unregistered repo is identified as ignored');
+assert.equal(processCount, 0, 'unregistered repo does not dispatch');
+
+writeReviewer(config, { repo: event.repository.full_name, botLogin: 'revuto-review[bot]' });
 const accepted = await post('pull_request', event);
 assert.equal(accepted.status, 202, 'reviewable PR is accepted immediately');
 assert.equal(await accepted.text(), 'accepted\n', 'reviewable PR response is explicit');
