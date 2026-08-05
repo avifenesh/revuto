@@ -1,6 +1,7 @@
 import type { GithubAppConfig } from '../../agents/common/src/config.js';
 import type { GithubAuth } from '../../agents/common/src/github-auth.js';
 import type { ReviewOutcome } from '../../agents/common/src/run-agent.js';
+import { signReviewBody } from '../../agents/common/src/tools/gh.js';
 
 export interface ReviewCheckTarget {
   readonly repo: string;
@@ -84,6 +85,16 @@ export async function completeReviewCheck(
   result: CheckResult,
 ): Promise<void> {
   const [owner, repo] = ownerAndRepo(target);
+  if (result.conclusion === 'success') {
+    await auth.octokit.pulls.createReview({
+      owner,
+      repo,
+      pull_number: target.prNumber,
+      commit_id: target.headSha,
+      event: 'APPROVE',
+      body: signReviewBody('Revuto completed the review and found no evidence-backed concerns.'),
+    });
+  }
   await auth.octokit.checks.update({
     owner,
     repo,
