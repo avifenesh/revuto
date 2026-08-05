@@ -147,7 +147,9 @@ Put the matching secret in the daemon environment, keep the PEM file mode
 `0600`, then restart `revuto daemon`. The daemon serves `GET /healthz` and
 validates every delivery with `X-Hub-Signature-256` before returning `202`.
 Each exact `repo#PR@headSHA` is claimed once. A clean `skip_review` completes
-the App check successfully; posted findings or review errors fail the check.
+the App check successfully and submits an approving review from the App,
+anchored to that exact head. Posted findings or review errors fail the check
+without approving.
 
 A Tailscale Funnel can provide the stable HTTPS endpoint while the receiver
 stays bound to loopback:
