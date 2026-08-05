@@ -170,6 +170,8 @@ export async function decayRepo(config: ReviewerConfig, repo: string): Promise<D
 export interface ReviewOnePrOptions {
   readonly force?: boolean;
   readonly githubAuth?: GithubAuth;
+  /** Skip instead of auto-registering when the reviewer note is absent. */
+  readonly registeredOnly?: boolean;
   /** Ignore a stale webhook if the PR has advanced since GitHub sent it. */
   readonly expectedHeadSha?: string;
   /** Called after this exact PR head is claimed and before the model run begins. */
@@ -201,6 +203,15 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
   }
   // Reviewing surfaces the repo in the Obsidian index even if it wasn't init'd.
   if (!readReviewer(config, repo)) {
+    if (opts.registeredOnly) {
+      return {
+        terminal: 'skip_review',
+        result: `${repo} is no longer registered; ignoring the review request`,
+        headSha: pr.head.sha,
+        steps: 0,
+        tokens: 0,
+      };
+    }
     let botLogin = auth.login;
     if (!botLogin) {
       try {

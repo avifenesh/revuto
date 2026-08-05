@@ -16,7 +16,15 @@ import { loadConfig, defaultVaultPath, type ReviewerConfig } from '../../agents/
 import { engineRoot } from '../../agents/common/src/engine-root.js';
 import { getOctokit } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
-import { listReviewers, readReviewer, writeReviewer, removeReviewer, setPaused, setSchedule } from './reviewers.js';
+import {
+  isRepositorySlug,
+  listReviewers,
+  readReviewer,
+  writeReviewer,
+  removeReviewer,
+  setPaused,
+  setSchedule,
+} from './reviewers.js';
 import { reviewOnePr, reviewRepo, learnRepo, decayRepo } from './jobs.js';
 import { startDaemon } from './scheduler.js';
 import { startWebhookServer } from './github-webhook.js';
@@ -55,7 +63,7 @@ function requireReviewer(config: ReviewerConfig, repo: string) {
 }
 
 async function cmdAdd(config: ReviewerConfig, repo: string): Promise<void> {
-  if (!repo?.includes('/')) throw new Error('usage: revuto add <owner/repo>');
+  if (!isRepositorySlug(repo)) throw new Error('usage: revuto add <owner/repo>');
   const { octokit } = getOctokit(config.github);
   const botLogin = (await octokit.users.getAuthenticated()).data.login;
   writeReviewer(config, { repo, botLogin });
@@ -100,7 +108,7 @@ async function main(): Promise<void> {
     }
     case 'init': {
       const repo = args[0];
-      if (!repo?.includes('/')) throw new Error('usage: revuto init <owner/repo> [maxPRs]');
+      if (!isRepositorySlug(repo)) throw new Error('usage: revuto init <owner/repo> [maxPRs]');
       const maxPRs = args[1] ? parseInt(args[1], 10) : undefined;
       console.log(JSON.stringify(await runInit({ config: config(), repo, maxPRs }), null, 2));
       break;
