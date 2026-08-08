@@ -14,6 +14,7 @@ import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollOpenPRs, pollFeedback } from './poller.js';
 import { readReviewer, writeReviewer, type ReviewerSettings } from './reviewers.js';
 import {
+  assertReviewedHead,
   checkResultForError,
   checkResultForOutcome,
   completeReviewCheck,
@@ -90,6 +91,7 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
           embedder,
           githubAuth: reviewAuth,
         });
+        assertReviewedHead(target, outcome);
         if (outcome.terminal === 'none') throw new Error(`review of ${key} ended without a terminal decision`);
       } catch (err) {
         if (githubApp && checkRunId !== undefined) {
@@ -248,6 +250,7 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
       managedCheckRunId = await createReviewCheck(auth, githubApp, managedTarget);
     }
     const outcome = await runReview({ repo, prNumber, config, store, embedder, githubAuth: auth });
+    assertReviewedHead(managedTarget, outcome);
     if (outcome.terminal === 'none') {
       throw new Error(`review of ${repo}#${prNumber}@${pr.head.sha} ended without a terminal decision`);
     }

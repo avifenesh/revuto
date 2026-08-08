@@ -24,6 +24,7 @@ import {
   type PullRequestWebhook,
 } from '../../daemon/src/github-webhook.js';
 import {
+  assertReviewedHead,
   checkResultForOutcome,
   completeReviewCheck,
   type ReviewCheckTarget,
@@ -237,6 +238,27 @@ const checkTarget: ReviewCheckTarget = {
   headSha: 'c'.repeat(40),
   detailsUrl: 'https://github.com/octo/demo/pull/42',
 };
+assert.doesNotThrow(
+  () => assertReviewedHead(checkTarget, {
+    terminal: 'skip_review',
+    result: '',
+    headSha: checkTarget.headSha,
+    steps: 1,
+    tokens: 1,
+  }),
+  'a review of the claimed head is accepted',
+);
+assert.throws(
+  () => assertReviewedHead(checkTarget, {
+    terminal: 'skip_review',
+    result: '',
+    headSha: 'd'.repeat(40),
+    steps: 1,
+    tokens: 1,
+  }),
+  /head changed during review/,
+  'a review of a different head is rejected',
+);
 await completeReviewCheck(
   checkAuth,
   config.github.app!,
@@ -274,6 +296,39 @@ await completeReviewCheck(
 );
 assert.equal(reviewCalls.length, 1, 'a findings result does not submit an approval');
 assert.equal(checkCalls[1]?.conclusion, 'failure', 'findings still fail the App check');
+
+const approvalFailureCheckCalls: Array<Record<string, unknown>> = [];
+const approvalFailureAuth = {
+  token: 'installation-token',
+  login: 'revuto-review[bot]',
+  octokit: {
+    pulls: {
+      createReview: async () => {
+        throw new Error('approval denied');
+      },
+    },
+    checks: {
+      update: async (input: Record<string, unknown>) => {
+        approvalFailureCheckCalls.push(input);
+        return { data: { id: input.check_run_id } };
+      },
+    },
+  },
+} as unknown as GithubAuth;
+await completeReviewCheck(
+  approvalFailureAuth,
+  config.github.app!,
+  checkTarget,
+  102,
+  checkResultForOutcome({ terminal: 'skip_review', result: '', headSha: checkTarget.headSha, steps: 1, tokens: 1 }),
+);
+assert.equal(approvalFailureCheckCalls.length, 1, 'an approval failure still completes the App check');
+assert.equal(approvalFailureCheckCalls[0]?.conclusion, 'failure', 'an approval failure fails the App check');
+assert.match(
+  String((approvalFailureCheckCalls[0]?.output as Record<string, unknown> | undefined)?.summary),
+  /approval denied/,
+  'the failed check explains the approval error',
+);
 
 await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
 rmSync(vault, { recursive: true, force: true });
