@@ -71,7 +71,7 @@ const SIGNATURE = `${SIGNATURE_MARK}\n*This is an auto review done by [revuto]($
  * Prefix the attribution header to anything revuto posts, so every comment is
  * marked as an automated review. Idempotent — detected via the hidden sentinel.
  */
-function sign(body: string): string {
+export function signReviewBody(body: string): string {
   if (body.includes(SIGNATURE_MARK)) return body;
   return body.trim() ? `${SIGNATURE}\n\n---\n\n${body}` : SIGNATURE;
 }
@@ -137,7 +137,7 @@ Supply:
 - \`body\`: the summary body (markdown). Can be empty if every point is inline.
 - \`comments\`: an array of inline comments. Each item: { path, line, side?, body }. \`line\` is 1-indexed in the RIGHT file (side: "RIGHT" default). Use \`start_line\` + \`line\` for multi-line comments. Anchor only to lines present in the PR diff.
 
-The review is posted as event="COMMENT". REQUEST_CHANGES and APPROVE are not available to the reviewer — block/approve decisions belong to humans. If no issues, call \`skip_review\` instead of posting an empty review.
+The review is posted as event="COMMENT". REQUEST_CHANGES and APPROVE are not available to the model. If no issues, call \`skip_review\`; the GitHub App will submit a clean approval after the review run succeeds.
 
 The review is anchored at the PR head SHA already loaded in the workspace context (${deps.ctx.headSha}). You do not pass it.`,
     inputSchema: z.object({
@@ -159,8 +159,8 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
           pull_number: deps.ctx.prNumber,
           commit_id: deps.ctx.headSha,
           event: 'COMMENT',
-          body: sign(input.body),
-          comments: (input.comments as InlineComment[]).map((c) => ({ ...c, body: sign(c.body) })),
+          body: signReviewBody(input.body),
+          comments: (input.comments as InlineComment[]).map((c) => ({ ...c, body: signReviewBody(c.body) })),
         });
         return JSON.stringify({ ok: true, review_id: resp.data.id, url: resp.data.html_url });
       } catch (err: any) {
@@ -185,7 +185,7 @@ export function buildPostIssueCommentTool(deps: GhToolsDeps) {
           owner: deps.ctx.owner,
           repo: deps.ctx.repo,
           issue_number: deps.ctx.prNumber,
-          body: sign(input.body),
+          body: signReviewBody(input.body),
         });
         return JSON.stringify({ ok: true, comment_id: resp.data.id, url: resp.data.html_url });
       } catch (err: any) {

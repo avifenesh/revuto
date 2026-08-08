@@ -1,6 +1,7 @@
 import type { GithubAppConfig } from '../../agents/common/src/config.js';
 import type { GithubAuth } from '../../agents/common/src/github-auth.js';
 import type { ReviewOutcome } from '../../agents/common/src/run-agent.js';
+import { signReviewBody } from '../../agents/common/src/tools/gh.js';
 
 export interface ReviewCheckTarget {
   readonly repo: string;
@@ -16,18 +17,18 @@ export interface CheckResult {
 }
 
 export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
+  if (outcome.hasFindings || outcome.terminal === 'post_review') {
+    return {
+      conclusion: 'failure',
+      title: 'Revuto found review concerns',
+      summary: 'Revuto posted one or more findings on the pull request. Address the review comments and push a new head.',
+    };
+  }
   if (outcome.terminal === 'skip_review') {
     return {
       conclusion: 'success',
       title: 'Revuto review passed',
       summary: 'Revuto completed the review and found no evidence-backed concerns.',
-    };
-  }
-  if (outcome.terminal === 'post_review') {
-    return {
-      conclusion: 'failure',
-      title: 'Revuto found review concerns',
-      summary: 'Revuto posted one or more findings on the pull request. Address the review comments and push a new head.',
     };
   }
   return {
@@ -44,6 +45,14 @@ export function checkResultForError(err: unknown): CheckResult {
     title: 'Revuto review failed',
     summary: `Revuto could not complete this review.\n\n\`\`\`\n${message}\n\`\`\``,
   };
+}
+
+export function assertReviewedHead(target: ReviewCheckTarget, outcome: ReviewOutcome): void {
+  if (outcome.headSha !== target.headSha) {
+    throw new Error(
+      `pull request head changed during review: expected ${target.headSha}, reviewed ${outcome.headSha}`,
+    );
+  }
 }
 
 function ownerAndRepo(target: ReviewCheckTarget): [string, string] {
@@ -84,15 +93,32 @@ export async function completeReviewCheck(
   result: CheckResult,
 ): Promise<void> {
   const [owner, repo] = ownerAndRepo(target);
+  let finalResult = result;
+  if (result.conclusion === 'success') {
+    try {
+      await auth.octokit.pulls.createReview({
+        owner,
+        repo,
+        pull_number: target.prNumber,
+        commit_id: target.headSha,
+        event: 'APPROVE',
+        body: signReviewBody('Revuto completed the review and found no evidence-backed concerns.'),
+      });
+    } catch (err) {
+      finalResult = checkResultForError(
+        new Error(`could not submit the clean App approval: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }
+  }
   await auth.octokit.checks.update({
     owner,
     repo,
     check_run_id: checkRunId,
     name: app.checkName,
     status: 'completed',
-    conclusion: result.conclusion,
+    conclusion: finalResult.conclusion,
     completed_at: new Date().toISOString(),
     details_url: target.detailsUrl,
-    output: { title: result.title, summary: result.summary },
+    output: { title: finalResult.title, summary: finalResult.summary },
   });
 }

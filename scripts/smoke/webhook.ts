@@ -3,7 +3,7 @@
  *
  * Covers the published GitHub HMAC vector, HTTP signature enforcement,
  * pull_request action/draft filtering, immediate acceptance, background
- * dispatch, and check-run outcome mapping.
+ * dispatch, check-run outcome mapping, and clean App approvals.
  *
  *   npx tsx scripts/smoke/webhook.ts
  */
@@ -16,6 +16,7 @@ import { join } from 'node:path';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import type { GithubAuth } from '../../agents/common/src/github-auth.js';
+import { summarizeReviewSteps } from '../../agents/common/src/run-agent.js';
 import { reviewOnePr } from '../../daemon/src/jobs.js';
 import {
   createWebhookServer,
@@ -23,7 +24,12 @@ import {
   verifyWebhookSignature,
   type PullRequestWebhook,
 } from '../../daemon/src/github-webhook.js';
-import { checkResultForOutcome } from '../../daemon/src/review-check.js';
+import {
+  assertReviewedHead,
+  checkResultForOutcome,
+  completeReviewCheck,
+  type ReviewCheckTarget,
+} from '../../daemon/src/review-check.js';
 import { readReviewer, removeReviewer, writeReviewer } from '../../daemon/src/reviewers.js';
 
 const publishedSecret = "It's a Secret to Everybody";
@@ -198,15 +204,170 @@ assert.equal(removedDuringReview.headSha, raceHeadSha, 'the skip result identifi
 assert.equal(readReviewer(config, event.repository.full_name), null, 'webhook review does not re-register the removed repo');
 
 assert.equal(checkResultForOutcome({
-  terminal: 'skip_review', result: '', headSha: 'a', steps: 1, tokens: 1,
+  terminal: 'skip_review', hasFindings: false, result: '', headSha: 'a', steps: 1, tokens: 1,
 }).conclusion, 'success', 'clean review passes the check');
 assert.equal(checkResultForOutcome({
-  terminal: 'post_review', result: '', headSha: 'a', steps: 1, tokens: 1,
+  terminal: 'post_review', hasFindings: true, result: '', headSha: 'a', steps: 1, tokens: 1,
 }).conclusion, 'failure', 'posted findings fail the check');
 assert.equal(checkResultForOutcome({
-  terminal: 'none', result: '', headSha: 'a', steps: 1, tokens: 1,
+  terminal: 'none', hasFindings: false, result: '', headSha: 'a', steps: 1, tokens: 1,
 }).conclusion, 'failure', 'missing terminal decision fails the check');
+const issueCommentThenSkip = summarizeReviewSteps([{
+  toolResults: [
+    { toolName: 'post_issue_comment', output: '{"ok":true,"comment_id":1}' },
+    { toolName: 'skip_review', output: '{"ok":true,"skipped":true}' },
+  ],
+}]);
+assert.equal(issueCommentThenSkip.terminal, 'skip_review', 'a later skip remains the terminal decision');
+assert.equal(issueCommentThenSkip.hasFindings, true, 'a non-review finding is retained in the outcome');
+assert.equal(checkResultForOutcome({
+  ...issueCommentThenSkip,
+  headSha: 'a',
+  steps: 1,
+  tokens: 1,
+}).conclusion, 'failure', 'a posted issue finding prevents clean approval');
+
+const reviewCalls: Array<Record<string, unknown>> = [];
+const checkCalls: Array<Record<string, unknown>> = [];
+const checkAuth = {
+  token: 'installation-token',
+  login: 'revuto-review[bot]',
+  octokit: {
+    pulls: {
+      createReview: async (input: Record<string, unknown>) => {
+        reviewCalls.push(input);
+        return { data: { id: 1 } };
+      },
+    },
+    checks: {
+      update: async (input: Record<string, unknown>) => {
+        checkCalls.push(input);
+        return { data: { id: input.check_run_id } };
+      },
+    },
+  },
+} as unknown as GithubAuth;
+const checkTarget: ReviewCheckTarget = {
+  repo: 'octo/demo',
+  prNumber: 42,
+  headSha: 'c'.repeat(40),
+  detailsUrl: 'https://github.com/octo/demo/pull/42',
+};
+assert.doesNotThrow(
+  () => assertReviewedHead(checkTarget, {
+    terminal: 'skip_review',
+    hasFindings: false,
+    result: '',
+    headSha: checkTarget.headSha,
+    steps: 1,
+    tokens: 1,
+  }),
+  'a review of the claimed head is accepted',
+);
+assert.throws(
+  () => assertReviewedHead(checkTarget, {
+    terminal: 'skip_review',
+    hasFindings: false,
+    result: '',
+    headSha: 'd'.repeat(40),
+    steps: 1,
+    tokens: 1,
+  }),
+  /head changed during review/,
+  'a review of a different head is rejected',
+);
+await completeReviewCheck(
+  checkAuth,
+  config.github.app!,
+  checkTarget,
+  100,
+  checkResultForOutcome({
+    terminal: 'skip_review',
+    hasFindings: false,
+    result: '',
+    headSha: checkTarget.headSha,
+    steps: 1,
+    tokens: 1,
+  }),
+);
+assert.equal(reviewCalls.length, 1, 'clean review submits one App review');
+assert.deepEqual(
+  {
+    owner: reviewCalls[0]?.owner,
+    repo: reviewCalls[0]?.repo,
+    pull_number: reviewCalls[0]?.pull_number,
+    commit_id: reviewCalls[0]?.commit_id,
+    event: reviewCalls[0]?.event,
+  },
+  {
+    owner: 'octo',
+    repo: 'demo',
+    pull_number: 42,
+    commit_id: checkTarget.headSha,
+    event: 'APPROVE',
+  },
+  'clean App approval is pinned to the reviewed head',
+);
+assert.match(String(reviewCalls[0]?.body), /revuto-signed/, 'clean App approval is visibly signed');
+assert.equal(checkCalls[0]?.conclusion, 'success', 'clean approval completes the check successfully');
+
+await completeReviewCheck(
+  checkAuth,
+  config.github.app!,
+  checkTarget,
+  101,
+  checkResultForOutcome({
+    terminal: 'post_review',
+    hasFindings: true,
+    result: '',
+    headSha: checkTarget.headSha,
+    steps: 1,
+    tokens: 1,
+  }),
+);
+assert.equal(reviewCalls.length, 1, 'a findings result does not submit an approval');
+assert.equal(checkCalls[1]?.conclusion, 'failure', 'findings still fail the App check');
+
+const approvalFailureCheckCalls: Array<Record<string, unknown>> = [];
+const approvalFailureAuth = {
+  token: 'installation-token',
+  login: 'revuto-review[bot]',
+  octokit: {
+    pulls: {
+      createReview: async () => {
+        throw new Error('approval denied');
+      },
+    },
+    checks: {
+      update: async (input: Record<string, unknown>) => {
+        approvalFailureCheckCalls.push(input);
+        return { data: { id: input.check_run_id } };
+      },
+    },
+  },
+} as unknown as GithubAuth;
+await completeReviewCheck(
+  approvalFailureAuth,
+  config.github.app!,
+  checkTarget,
+  102,
+  checkResultForOutcome({
+    terminal: 'skip_review',
+    hasFindings: false,
+    result: '',
+    headSha: checkTarget.headSha,
+    steps: 1,
+    tokens: 1,
+  }),
+);
+assert.equal(approvalFailureCheckCalls.length, 1, 'an approval failure still completes the App check');
+assert.equal(approvalFailureCheckCalls[0]?.conclusion, 'failure', 'an approval failure fails the App check');
+assert.match(
+  String((approvalFailureCheckCalls[0]?.output as Record<string, unknown> | undefined)?.summary),
+  /approval denied/,
+  'the failed check explains the approval error',
+);
 
 await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
 rmSync(vault, { recursive: true, force: true });
-console.log('PASS: GitHub webhook HMAC + HTTP filtering/dispatch + review check outcomes');
+console.log('PASS: GitHub webhook HMAC + HTTP filtering/dispatch + review checks/approvals');
