@@ -48,6 +48,8 @@ export interface RunReviewOptions {
 
 export interface ReviewOutcome {
   readonly terminal: 'post_review' | 'skip_review' | 'none';
+  /** True when the run used a non-terminal finding tool such as post_issue_comment. */
+  readonly hasFindings: boolean;
   readonly result: string;
   readonly headSha: string;
   readonly steps: number;
@@ -103,7 +105,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     maxOutputTokens,
   });
 
-  let { terminal, result } = findTerminal(main.steps);
+  let { terminal, result, hasFindings } = summarizeReviewSteps(main.steps);
   let tokens = tokensFrom(main.usage);
   let stepCount = main.steps.length;
 
@@ -124,24 +126,29 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
       stopWhen: [stepCountIs(2), hasToolCall('post_review'), hasToolCall('skip_review')],
       maxOutputTokens,
     });
-    const f = findTerminal(forced.steps);
+    const f = summarizeReviewSteps(forced.steps);
     terminal = f.terminal;
     result = f.result;
+    hasFindings ||= f.hasFindings;
     tokens += tokensFrom(forced.usage);
     stepCount += forced.steps.length;
   }
 
-  return { terminal, result, headSha: ctx.headSha, steps: stepCount, tokens };
+  return { terminal, hasFindings, result, headSha: ctx.headSha, steps: stepCount, tokens };
 }
 
 type StepLike = { toolResults?: Array<{ toolName: string; output?: unknown; result?: unknown }> };
 
-/** Pull the terminal tool's outcome from a run's steps, if it called one. */
-function findTerminal(steps: readonly StepLike[]): { terminal: ReviewOutcome['terminal']; result: string } {
+/** Pull the terminal decision and any non-terminal findings from a run's steps. */
+export function summarizeReviewSteps(
+  steps: readonly StepLike[],
+): Pick<ReviewOutcome, 'terminal' | 'result' | 'hasFindings'> {
   let terminal: ReviewOutcome['terminal'] = 'none';
   let result = '';
+  let hasFindings = false;
   for (const step of steps) {
     for (const tr of step.toolResults ?? []) {
+      if (tr.toolName === 'post_issue_comment' || tr.toolName === 'post_review') hasFindings = true;
       if (tr.toolName === 'post_review' || tr.toolName === 'skip_review') {
         terminal = tr.toolName;
         const payload = tr.output ?? tr.result ?? {};
@@ -149,7 +156,7 @@ function findTerminal(steps: readonly StepLike[]): { terminal: ReviewOutcome['te
       }
     }
   }
-  return { terminal, result };
+  return { terminal, result, hasFindings };
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>

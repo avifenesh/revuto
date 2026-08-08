@@ -17,18 +17,18 @@ export interface CheckResult {
 }
 
 export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
+  if (outcome.hasFindings || outcome.terminal === 'post_review') {
+    return {
+      conclusion: 'failure',
+      title: 'Revuto found review concerns',
+      summary: 'Revuto posted one or more findings on the pull request. Address the review comments and push a new head.',
+    };
+  }
   if (outcome.terminal === 'skip_review') {
     return {
       conclusion: 'success',
       title: 'Revuto review passed',
       summary: 'Revuto completed the review and found no evidence-backed concerns.',
-    };
-  }
-  if (outcome.terminal === 'post_review') {
-    return {
-      conclusion: 'failure',
-      title: 'Revuto found review concerns',
-      summary: 'Revuto posted one or more findings on the pull request. Address the review comments and push a new head.',
     };
   }
   return {

@@ -16,6 +16,7 @@ import { join } from 'node:path';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import type { GithubAuth } from '../../agents/common/src/github-auth.js';
+import { summarizeReviewSteps } from '../../agents/common/src/run-agent.js';
 import { reviewOnePr } from '../../daemon/src/jobs.js';
 import {
   createWebhookServer,
@@ -203,14 +204,28 @@ assert.equal(removedDuringReview.headSha, raceHeadSha, 'the skip result identifi
 assert.equal(readReviewer(config, event.repository.full_name), null, 'webhook review does not re-register the removed repo');
 
 assert.equal(checkResultForOutcome({
-  terminal: 'skip_review', result: '', headSha: 'a', steps: 1, tokens: 1,
+  terminal: 'skip_review', hasFindings: false, result: '', headSha: 'a', steps: 1, tokens: 1,
 }).conclusion, 'success', 'clean review passes the check');
 assert.equal(checkResultForOutcome({
-  terminal: 'post_review', result: '', headSha: 'a', steps: 1, tokens: 1,
+  terminal: 'post_review', hasFindings: true, result: '', headSha: 'a', steps: 1, tokens: 1,
 }).conclusion, 'failure', 'posted findings fail the check');
 assert.equal(checkResultForOutcome({
-  terminal: 'none', result: '', headSha: 'a', steps: 1, tokens: 1,
+  terminal: 'none', hasFindings: false, result: '', headSha: 'a', steps: 1, tokens: 1,
 }).conclusion, 'failure', 'missing terminal decision fails the check');
+const issueCommentThenSkip = summarizeReviewSteps([{
+  toolResults: [
+    { toolName: 'post_issue_comment', output: '{"ok":true,"comment_id":1}' },
+    { toolName: 'skip_review', output: '{"ok":true,"skipped":true}' },
+  ],
+}]);
+assert.equal(issueCommentThenSkip.terminal, 'skip_review', 'a later skip remains the terminal decision');
+assert.equal(issueCommentThenSkip.hasFindings, true, 'a non-review finding is retained in the outcome');
+assert.equal(checkResultForOutcome({
+  ...issueCommentThenSkip,
+  headSha: 'a',
+  steps: 1,
+  tokens: 1,
+}).conclusion, 'failure', 'a posted issue finding prevents clean approval');
 
 const reviewCalls: Array<Record<string, unknown>> = [];
 const checkCalls: Array<Record<string, unknown>> = [];
@@ -241,6 +256,7 @@ const checkTarget: ReviewCheckTarget = {
 assert.doesNotThrow(
   () => assertReviewedHead(checkTarget, {
     terminal: 'skip_review',
+    hasFindings: false,
     result: '',
     headSha: checkTarget.headSha,
     steps: 1,
@@ -251,6 +267,7 @@ assert.doesNotThrow(
 assert.throws(
   () => assertReviewedHead(checkTarget, {
     terminal: 'skip_review',
+    hasFindings: false,
     result: '',
     headSha: 'd'.repeat(40),
     steps: 1,
@@ -264,7 +281,14 @@ await completeReviewCheck(
   config.github.app!,
   checkTarget,
   100,
-  checkResultForOutcome({ terminal: 'skip_review', result: '', headSha: checkTarget.headSha, steps: 1, tokens: 1 }),
+  checkResultForOutcome({
+    terminal: 'skip_review',
+    hasFindings: false,
+    result: '',
+    headSha: checkTarget.headSha,
+    steps: 1,
+    tokens: 1,
+  }),
 );
 assert.equal(reviewCalls.length, 1, 'clean review submits one App review');
 assert.deepEqual(
@@ -292,7 +316,14 @@ await completeReviewCheck(
   config.github.app!,
   checkTarget,
   101,
-  checkResultForOutcome({ terminal: 'post_review', result: '', headSha: checkTarget.headSha, steps: 1, tokens: 1 }),
+  checkResultForOutcome({
+    terminal: 'post_review',
+    hasFindings: true,
+    result: '',
+    headSha: checkTarget.headSha,
+    steps: 1,
+    tokens: 1,
+  }),
 );
 assert.equal(reviewCalls.length, 1, 'a findings result does not submit an approval');
 assert.equal(checkCalls[1]?.conclusion, 'failure', 'findings still fail the App check');
@@ -320,7 +351,14 @@ await completeReviewCheck(
   config.github.app!,
   checkTarget,
   102,
-  checkResultForOutcome({ terminal: 'skip_review', result: '', headSha: checkTarget.headSha, steps: 1, tokens: 1 }),
+  checkResultForOutcome({
+    terminal: 'skip_review',
+    hasFindings: false,
+    result: '',
+    headSha: checkTarget.headSha,
+    steps: 1,
+    tokens: 1,
+  }),
 );
 assert.equal(approvalFailureCheckCalls.length, 1, 'an approval failure still completes the App check');
 assert.equal(approvalFailureCheckCalls[0]?.conclusion, 'failure', 'an approval failure fails the App check');
