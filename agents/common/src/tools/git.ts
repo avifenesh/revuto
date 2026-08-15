@@ -22,6 +22,18 @@ const GIT_FORBIDDEN_ARG_PREFIXES: ReadonlyArray<string> = [
   '--exec', '-c core.', '-c alias.',
 ];
 
+/**
+ * Subcommands where git overloads exit 1 to report an empty result rather than a
+ * failure: `grep` found no match, `diff --exit-code` found differences. Those are
+ * answers, so they must not carry the ERROR prefix. Real failures on the same
+ * subcommands (bad regex, unknown ref, missing path) exit >1 or write to stderr.
+ */
+const GIT_EXIT_1_IS_A_RESULT: ReadonlySet<string> = new Set(['grep', 'diff']);
+
+function isEmptyResultExit(sub: string, r: { code: number; err: string }): boolean {
+  return r.code === 1 && !r.err.trim() && GIT_EXIT_1_IS_A_RESULT.has(sub);
+}
+
 function runBounded(cmd: string, args: readonly string[], opts: { cwd: string; timeoutMs: number; maxBytes: number }): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args as string[], { cwd: opts.cwd });
@@ -46,6 +58,13 @@ function runBounded(cmd: string, args: readonly string[], opts: { cwd: string; t
     child.stderr.on('data', (b: Buffer) => {
       if (err.length + b.length > 64_000) return;
       err = Buffer.concat([err, b]);
+    });
+    // Spawn failure (binary missing, EACCES). Without this listener an 'error'
+    // event on a ChildProcess is unhandled and takes the daemon down; the call
+    // has to come back as a failed call instead.
+    child.on('error', (e: Error) => {
+      clearTimeout(timer);
+      resolve({ code: 127, out: '', err: e.message });
     });
     child.on('close', (code) => {
       clearTimeout(timer);
@@ -91,7 +110,15 @@ Output is capped at 500 KB and 60 s.`,
         }
       }
       const r = await runBounded('git', args, { cwd: opts.workspaceRoot, timeoutMs: 60_000, maxBytes: 500_000 });
-      if (r.code !== 0) return `git exited ${r.code}\n${r.err}\n${r.out}`;
+      if (r.code !== 0) {
+        if (isEmptyResultExit(sub, r)) {
+          return r.out.trim() ? r.out : `git ${sub} returned no results (exit 1, no error output).`;
+        }
+        // ERROR prefix: the only signal the engine has that a call failed, and what
+        // keeps an unfetched SHA or a missing workspace out of the inspection count
+        // (trace.ts isToolErrorOutput, run-agent.ts summarizeReviewSteps).
+        return `ERROR git exited ${r.code}\n${r.err}\n${r.out}`;
+      }
       return r.out;
     },
   });

@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import type { GithubAppConfig, ReviewerConfig } from '../../agents/common/src/config.js';
 import { getInstallationOctokit, type GithubAuth } from '../../agents/common/src/github-auth.js';
+import { describeOutcome } from '../../agents/common/src/run-agent.js';
 import { reviewOnePr } from './jobs.js';
 import { runQueuedForRepo } from './repo-queue.js';
 import { readReviewer } from './reviewers.js';
@@ -119,7 +120,7 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
     // draft, or already claimed.
     if (outcome === null || !auth || checkRunId === undefined) return;
     await completeReviewCheck(auth, app, target, checkRunId, checkResultForOutcome(outcome));
-    console.log(`[webhook] reviewed ${event.repository.full_name}#${event.number}@${event.pull_request.head.sha}`);
+    console.log(`[webhook] reviewed ${event.repository.full_name}#${event.number}@${event.pull_request.head.sha}: ${describeOutcome(outcome)}`);
   } catch (err) {
     console.error(`[webhook] ${event.repository.full_name}#${event.number} failed: ${err instanceof Error ? err.message : String(err)}`);
     if (auth && checkRunId !== undefined) {

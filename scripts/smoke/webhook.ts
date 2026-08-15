@@ -16,7 +16,7 @@ import { join } from 'node:path';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import type { GithubAuth } from '../../agents/common/src/github-auth.js';
-import { summarizeReviewSteps } from '../../agents/common/src/run-agent.js';
+import { summarizeReviewSteps, type ReviewOutcome } from '../../agents/common/src/run-agent.js';
 import { reviewOnePr } from '../../daemon/src/jobs.js';
 import {
   createWebhookServer,
@@ -203,15 +203,45 @@ assert.equal(removedDuringReview.terminal, 'skip_review', 'webhook review skips 
 assert.equal(removedDuringReview.headSha, raceHeadSha, 'the skip result identifies the fetched PR head');
 assert.equal(readReviewer(config, event.repository.full_name), null, 'webhook review does not re-register the removed repo');
 
-assert.equal(checkResultForOutcome({
-  terminal: 'skip_review', hasFindings: false, result: '', headSha: 'a', steps: 1, tokens: 1,
-}).conclusion, 'success', 'clean review passes the check');
-assert.equal(checkResultForOutcome({
-  terminal: 'post_review', hasFindings: true, result: '', headSha: 'a', steps: 1, tokens: 1,
-}).conclusion, 'failure', 'posted findings fail the check');
-assert.equal(checkResultForOutcome({
-  terminal: 'none', hasFindings: false, result: '', headSha: 'a', steps: 1, tokens: 1,
-}).conclusion, 'failure', 'missing terminal decision fails the check');
+// One builder for every outcome this smoke feeds the gate. Hand-written literals
+// drifted the moment ReviewOutcome grew the inspection fields: the gate reads
+// `ranModel`/`inspections`, and a literal without them looked like a clean review
+// here while the gate was branching on undefined.
+const reviewed = (over: Partial<ReviewOutcome> = {}): ReviewOutcome => ({
+  terminal: 'skip_review',
+  hasFindings: false,
+  result: '',
+  headSha: 'a',
+  steps: 4,
+  tokens: 1,
+  inspections: 3,
+  toolErrors: 0,
+  forcedTerminal: false,
+  ranModel: true,
+  ...over,
+});
+
+assert.equal(checkResultForOutcome(reviewed()).conclusion, 'success', 'clean review passes the check');
+assert.equal(
+  checkResultForOutcome(reviewed({ terminal: 'post_review', hasFindings: true })).conclusion,
+  'failure',
+  'posted findings fail the check',
+);
+assert.equal(
+  checkResultForOutcome(reviewed({ terminal: 'none' })).conclusion,
+  'failure',
+  'missing terminal decision fails the check',
+);
+assert.equal(
+  checkResultForOutcome(reviewed({ inspections: 0, toolErrors: 3 })).conclusion,
+  'failure',
+  'a skip with nothing inspected fails the check instead of approving',
+);
+assert.equal(
+  checkResultForOutcome(reviewed({ forcedTerminal: true })).conclusion,
+  'failure',
+  'a skip the forced pass decided fails the check',
+);
 const issueCommentThenSkip = summarizeReviewSteps([{
   toolResults: [
     { toolName: 'post_issue_comment', output: '{"ok":true,"comment_id":1}' },
@@ -220,12 +250,11 @@ const issueCommentThenSkip = summarizeReviewSteps([{
 }]);
 assert.equal(issueCommentThenSkip.terminal, 'skip_review', 'a later skip remains the terminal decision');
 assert.equal(issueCommentThenSkip.hasFindings, true, 'a non-review finding is retained in the outcome');
-assert.equal(checkResultForOutcome({
-  ...issueCommentThenSkip,
-  headSha: 'a',
-  steps: 1,
-  tokens: 1,
-}).conclusion, 'failure', 'a posted issue finding prevents clean approval');
+assert.equal(
+  checkResultForOutcome(reviewed({ ...issueCommentThenSkip })).conclusion,
+  'failure',
+  'a posted issue finding prevents clean approval',
+);
 
 const reviewCalls: Array<Record<string, unknown>> = [];
 const checkCalls: Array<Record<string, unknown>> = [];
@@ -254,25 +283,11 @@ const checkTarget: ReviewCheckTarget = {
   detailsUrl: 'https://github.com/octo/demo/pull/42',
 };
 assert.doesNotThrow(
-  () => assertReviewedHead(checkTarget, {
-    terminal: 'skip_review',
-    hasFindings: false,
-    result: '',
-    headSha: checkTarget.headSha,
-    steps: 1,
-    tokens: 1,
-  }),
+  () => assertReviewedHead(checkTarget, reviewed({ headSha: checkTarget.headSha })),
   'a review of the claimed head is accepted',
 );
 assert.throws(
-  () => assertReviewedHead(checkTarget, {
-    terminal: 'skip_review',
-    hasFindings: false,
-    result: '',
-    headSha: 'd'.repeat(40),
-    steps: 1,
-    tokens: 1,
-  }),
+  () => assertReviewedHead(checkTarget, reviewed({ headSha: 'd'.repeat(40) })),
   /head changed during review/,
   'a review of a different head is rejected',
 );
@@ -281,14 +296,7 @@ await completeReviewCheck(
   config.github.app!,
   checkTarget,
   100,
-  checkResultForOutcome({
-    terminal: 'skip_review',
-    hasFindings: false,
-    result: '',
-    headSha: checkTarget.headSha,
-    steps: 1,
-    tokens: 1,
-  }),
+  checkResultForOutcome(reviewed({ headSha: checkTarget.headSha })),
 );
 assert.equal(reviewCalls.length, 1, 'clean review submits one App review');
 assert.deepEqual(
@@ -316,14 +324,7 @@ await completeReviewCheck(
   config.github.app!,
   checkTarget,
   101,
-  checkResultForOutcome({
-    terminal: 'post_review',
-    hasFindings: true,
-    result: '',
-    headSha: checkTarget.headSha,
-    steps: 1,
-    tokens: 1,
-  }),
+  checkResultForOutcome(reviewed({ terminal: 'post_review', hasFindings: true, headSha: checkTarget.headSha })),
 );
 assert.equal(reviewCalls.length, 1, 'a findings result does not submit an approval');
 assert.equal(checkCalls[1]?.conclusion, 'failure', 'findings still fail the App check');
@@ -351,14 +352,7 @@ await completeReviewCheck(
   config.github.app!,
   checkTarget,
   102,
-  checkResultForOutcome({
-    terminal: 'skip_review',
-    hasFindings: false,
-    result: '',
-    headSha: checkTarget.headSha,
-    steps: 1,
-    tokens: 1,
-  }),
+  checkResultForOutcome(reviewed({ headSha: checkTarget.headSha })),
 );
 assert.equal(approvalFailureCheckCalls.length, 1, 'an approval failure still completes the App check');
 assert.equal(approvalFailureCheckCalls[0]?.conclusion, 'failure', 'an approval failure fails the App check');
