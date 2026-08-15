@@ -17,6 +17,7 @@ import { getOctokit, type GithubAuth } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
 import { toAiSdkTools, type ToolDef } from './tool-def.js';
 import { assembleCommonTools } from './tools/index.js';
+import { writeReviewTrace, isToolErrorOutput, type TracePhase } from './trace.js';
 import { selectSkills } from './skills/select.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
@@ -55,10 +56,67 @@ export interface ReviewOutcome {
   readonly steps: number;
   /** Total tokens used by this review run (for daily-budget accounting). */
   readonly tokens: number;
+  /**
+   * Successful non-terminal, non-posting tool results (read/grep/glob/bash/lsp/git/gh).
+   * Zero means the run never looked at the code, so a `skip_review` is not a clean
+   * bill of health — see `checkResultForOutcome` in the daemon.
+   */
+  readonly inspections: number;
+  /** Tool results that came back as errors (`ERROR ...`). */
+  readonly toolErrors: number;
+  /** True when the terminal decision came from the terminal-tools-only recovery pass. */
+  readonly forcedTerminal: boolean;
+  /** False for PRs the engine declined to review at all (draft, stale delivery, ...). */
+  readonly ranModel: boolean;
+  /** JSONL trace of the run, when one could be written. */
+  readonly tracePath?: string;
 }
+
+/**
+ * Outcome for a PR the engine decided not to run the model on at all: a draft, a
+ * stale webhook delivery, an unregistered repo, or a head another run already
+ * claimed. `ranModel: false` keeps these apart from a real run that inspected
+ * nothing, which the daemon reports as a failed check.
+ */
+export function unreviewedOutcome(result: string, headSha: string): ReviewOutcome {
+  return {
+    terminal: 'skip_review',
+    hasFindings: false,
+    result,
+    headSha,
+    steps: 0,
+    tokens: 0,
+    inspections: 0,
+    toolErrors: 0,
+    forcedTerminal: false,
+    ranModel: false,
+  };
+}
+
+/** One-line log summary: what the run decided, and how much work is behind it. */
+export function describeOutcome(o: ReviewOutcome): string {
+  return [
+    `terminal=${o.terminal}`,
+    `findings=${o.hasFindings}`,
+    `inspections=${o.inspections}`,
+    `toolErrors=${o.toolErrors}`,
+    ...(o.forcedTerminal ? ['forced=true'] : []),
+    `steps=${o.steps}`,
+    `tokens=${o.tokens}`,
+    ...(o.tracePath ? [`trace=${o.tracePath}`] : []),
+  ].join(' ');
+}
+
+/**
+ * Step cap for the full-tool continuation pass: enough to finish an inspection
+ * that stalled, small enough that a model looping on tool calls cannot double the
+ * cost of the run.
+ */
+const CONTINUATION_MAX_STEPS = 25;
 
 export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> {
   const { config } = opts;
+  const startedAt = new Date();
   const { octokit, token } = opts.githubAuth ?? getOctokit(config.github);
 
   const [owner, name] = opts.repo.split('/');
@@ -105,21 +163,59 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     maxOutputTokens,
   });
 
-  let { terminal, result, hasFindings } = summarizeReviewSteps(main.steps);
+  let { terminal, result, hasFindings, inspections, toolErrors } = summarizeReviewSteps(main.steps);
   let tokens = tokensFrom(main.usage);
   let stepCount = main.steps.length;
+  let forcedTerminal = false;
+  const phases: TracePhase[] = [{ phase: 'main', steps: main.steps }];
+  const transcript = [
+    { role: 'user' as const, content: userMessage },
+    ...main.response.messages,
+  ];
 
-  // GLM-style failure: the model ended with prose instead of a terminal tool, so nothing
-  // was posted. Force a decision — replay the conversation with only the terminal tools and
-  // toolChoice "required" so the model must post_review or skip_review.
+  // The model ended with prose instead of a terminal tool, so nothing was posted.
+  // Recovery is two stages, in this order on purpose:
+  //
+  //   1. Continue with the FULL tool set, so a review that stalled mid-inspection
+  //      can finish the work it started.
+  //   2. Only if that also ends in prose, replay with the terminal tools alone and
+  //      toolChoice "required".
+  //
+  // Stage 2 first is what produced green checks with no review behind them: a model
+  // handed only post_review/skip_review truthfully reports it has nothing to inspect
+  // with and calls skip_review. A decision made there is flagged `forcedTerminal`,
+  // and `inspections` stays at whatever the earlier passes actually did.
+  if (terminal === 'none') {
+    const continued = await generateText({
+      model,
+      system,
+      messages: [
+        ...transcript,
+        { role: 'user', content: 'You stopped before calling a terminal tool, so nothing was posted and the review does not count. You still have the full tool set: finish the inspection you need, then call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.' },
+      ],
+      tools,
+      stopWhen: [stepCountIs(CONTINUATION_MAX_STEPS), hasToolCall('post_review'), hasToolCall('skip_review')],
+      maxOutputTokens,
+    });
+    const c = summarizeReviewSteps(continued.steps);
+    terminal = c.terminal;
+    result = c.result;
+    hasFindings ||= c.hasFindings;
+    inspections += c.inspections;
+    toolErrors += c.toolErrors;
+    tokens += tokensFrom(continued.usage);
+    stepCount += continued.steps.length;
+    phases.push({ phase: 'continuation', steps: continued.steps });
+    transcript.push(...continued.response.messages);
+  }
+
   if (terminal === 'none') {
     const forced = await generateText({
       model,
       system,
       messages: [
-        { role: 'user', content: userMessage },
-        ...main.response.messages,
-        { role: 'user', content: 'You ended without posting, which wastes the review. Call exactly one of `post_review` (with your findings) or `skip_review` (if nothing clears the bar) now — respond only with that tool call.' },
+        ...transcript,
+        { role: 'user', content: 'You ended without posting, which wastes the review. Call exactly one of `post_review` (with your findings) or `skip_review` (if nothing clears the bar) now — respond only with that tool call. You have no inspection tools in this turn, so base the call on what you already read; if that is nothing, say so in the skip reason.' },
       ],
       tools: { post_review: tools.post_review, skip_review: tools.skip_review },
       toolChoice: 'required',
@@ -130,33 +226,80 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     terminal = f.terminal;
     result = f.result;
     hasFindings ||= f.hasFindings;
+    toolErrors += f.toolErrors;
     tokens += tokensFrom(forced.usage);
     stepCount += forced.steps.length;
+    forcedTerminal = terminal !== 'none';
+    phases.push({ phase: 'forced', steps: forced.steps });
   }
 
-  return { terminal, hasFindings, result, headSha: ctx.headSha, steps: stepCount, tokens };
+  const outcome: ReviewOutcome = {
+    terminal,
+    hasFindings,
+    result,
+    headSha: ctx.headSha,
+    steps: stepCount,
+    tokens,
+    inspections,
+    toolErrors,
+    forcedTerminal,
+    ranModel: true,
+  };
+  const tracePath = writeReviewTrace({
+    vaultPath: config.vaultPath,
+    repo: opts.repo,
+    prNumber: opts.prNumber,
+    headSha: ctx.headSha,
+    model: config.models.review.model,
+    phases,
+    outcome: { ...outcome, result: outcome.result.slice(0, 8000) },
+    startedAt,
+  });
+
+  return { ...outcome, ...(tracePath ? { tracePath } : {}) };
 }
 
-type StepLike = { toolResults?: Array<{ toolName: string; output?: unknown; result?: unknown }> };
+type StepLike = {
+  toolResults?: Array<{ toolName: string; output?: unknown; result?: unknown }>;
+  content?: Array<{ type?: string }>;
+};
 
-/** Pull the terminal decision and any non-terminal findings from a run's steps. */
+/** Tools that end the run. Neither counts as inspecting the diff. */
+const TERMINAL_TOOLS = new Set(['post_review', 'skip_review']);
+/** Tools that put something on the PR. Findings, not inspection. */
+const POSTING_TOOLS = new Set(['post_review', 'post_issue_comment']);
+
+/**
+ * Pull the terminal decision, any non-terminal findings, and how much the run
+ * actually inspected out of a run's steps.
+ */
 export function summarizeReviewSteps(
   steps: readonly StepLike[],
-): Pick<ReviewOutcome, 'terminal' | 'result' | 'hasFindings'> {
+): Pick<ReviewOutcome, 'terminal' | 'result' | 'hasFindings' | 'inspections' | 'toolErrors'> {
   let terminal: ReviewOutcome['terminal'] = 'none';
   let result = '';
   let hasFindings = false;
+  let inspections = 0;
+  let toolErrors = 0;
   for (const step of steps) {
     for (const tr of step.toolResults ?? []) {
-      if (tr.toolName === 'post_issue_comment' || tr.toolName === 'post_review') hasFindings = true;
-      if (tr.toolName === 'post_review' || tr.toolName === 'skip_review') {
-        terminal = tr.toolName;
-        const payload = tr.output ?? tr.result ?? {};
+      const payload = tr.output ?? tr.result ?? {};
+      if (isToolErrorOutput(payload)) {
+        toolErrors++;
+      } else if (!TERMINAL_TOOLS.has(tr.toolName) && !POSTING_TOOLS.has(tr.toolName)) {
+        inspections++;
+      }
+      if (POSTING_TOOLS.has(tr.toolName)) hasFindings = true;
+      if (TERMINAL_TOOLS.has(tr.toolName)) {
+        terminal = tr.toolName as ReviewOutcome['terminal'];
         result = typeof payload === 'string' ? payload : JSON.stringify(payload);
       }
     }
+    // A call the SDK rejected outright (unknown tool, schema mismatch) never reaches
+    // toolResults, so count it here or the run looks cleaner than it was.
+    for (const part of step.content ?? []) if (part?.type === 'tool-error') toolErrors++;
   }
-  return { terminal, result, hasFindings };
+  return { terminal, result, hasFindings, inspections, toolErrors };
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>

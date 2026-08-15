@@ -206,7 +206,7 @@ export function buildSkipTool(deps: GhToolsDeps) {
     description:
 `Terminate the review with no posted content. Call this when the diff has no evidence-backed concerns AND nothing warrants an inline comment. Do NOT use this as cover for missing findings.
 
-By default, does not post anything. The agent transcript is still retained server-side for auditing.`,
+Posts nothing. Every run writes a local trace of its tool calls and results, so a skip is auditable after the fact: skipping without having inspected the diff fails the review check instead of passing it.`,
     inputSchema: z.object({
       reason: z.string().min(1).describe('One-sentence rationale; goes into logs, not GitHub.'),
     }),

@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "agents/common/src/**/*.ts",
+    "agents/curator/src/**/*.ts",
+    "daemon/src/**/*.ts",
+    "ops/src/**/*.ts",
+    "tests/**/*.ts"
+  ]
+}
