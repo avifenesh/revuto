@@ -10,10 +10,10 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel, EmbeddingModel } from 'ai';
 import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3GenerateResult,
-  LanguageModelV3StreamResult,
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4GenerateResult,
+  LanguageModelV4StreamResult,
 } from '@ai-sdk/provider';
 import type { ModelSpec } from './config.js';
 import { buildResponsesModel } from './responses-model.js';
@@ -35,7 +35,7 @@ function provider(spec: ModelSpec) {
 /** Chat/completion model for a role (review, curator, distill). */
 export function buildChatModel(spec: ModelSpec): LanguageModel {
   const primary = buildSingleChatModel(spec);
-  const fallbacks = (spec.fallbacks ?? []).map(buildChatModel) as LanguageModelV3[];
+  const fallbacks = (spec.fallbacks ?? []).map(buildChatModel) as LanguageModelV4[];
   return fallbacks.length ? new FallbackLanguageModel([primary, ...fallbacks]) : primary;
 }
 
@@ -49,38 +49,38 @@ function withoutFallbacks(spec: ModelSpec): ModelSpec {
   return single;
 }
 
-function buildSingleChatModel(spec: ModelSpec): LanguageModelV3 {
+function buildSingleChatModel(spec: ModelSpec): LanguageModelV4 {
   const single = withoutFallbacks(spec);
-  if (single.api === 'responses') return buildResponsesModel(single) as LanguageModelV3;
-  if (single.api === 'converse') return buildConverseModel(single) as LanguageModelV3;
-  return provider(single).chatModel(single.model) as LanguageModelV3;
+  if (single.api === 'responses') return buildResponsesModel(single) as LanguageModelV4;
+  if (single.api === 'converse') return buildConverseModel(single) as LanguageModelV4;
+  return provider(single).chatModel(single.model) as LanguageModelV4;
 }
 
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message));
 }
 
-class FallbackLanguageModel implements LanguageModelV3 {
-  readonly specificationVersion = 'v3' as const;
+class FallbackLanguageModel implements LanguageModelV4 {
+  readonly specificationVersion = 'v4' as const;
   readonly provider: string;
   readonly modelId: string;
-  readonly supportedUrls: LanguageModelV3['supportedUrls'];
+  readonly supportedUrls: LanguageModelV4['supportedUrls'];
 
-  constructor(private readonly models: readonly LanguageModelV3[]) {
+  constructor(private readonly models: readonly LanguageModelV4[]) {
     this.provider = models.map((m) => m.provider).join(' -> ');
     this.modelId = models.map((m) => m.modelId).join(' -> ');
     this.supportedUrls = models[0]?.supportedUrls ?? {};
   }
 
-  async doGenerate(options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
+  async doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
     return this.tryModels((model) => model.doGenerate(options));
   }
 
-  async doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
+  async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
     return this.tryModels((model) => model.doStream(options));
   }
 
-  private async tryModels<T>(call: (model: LanguageModelV3) => PromiseLike<T>): Promise<T> {
+  private async tryModels<T>(call: (model: LanguageModelV4) => PromiseLike<T>): Promise<T> {
     const failures: string[] = [];
     for (let i = 0; i < this.models.length; i++) {
       const model = this.models[i];

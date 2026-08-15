@@ -81,7 +81,7 @@ async function sleepBackoff(attempt: number, signal?: AbortSignal): Promise<void
 }
 
 class ResponsesLanguageModel {
-  readonly specificationVersion = 'v3';
+  readonly specificationVersion = 'v4';
   readonly modelId: string;
   readonly supportedUrls = {};
 

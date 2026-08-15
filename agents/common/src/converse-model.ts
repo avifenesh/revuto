@@ -6,7 +6,7 @@
  * are reachable only via the native Bedrock Runtime Converse API
  * (`https://bedrock-runtime.<region>.amazonaws.com/model/<id>/converse`), whose
  * wire format is content blocks (text / toolUse / toolResult), distinct from
- * both the Responses items and chat messages. This is a third `LanguageModelV3`
+ * both the Responses items and chat messages. This is a third `LanguageModelV4`
  * adapter alongside chat-completions and Responses, mirroring the structure of
  * `responses-model.ts` (same auth: Bearer token first, AWS SigV4 fallback).
  *
@@ -112,7 +112,7 @@ export function buildConverseModel(spec: ModelSpec): LanguageModel {
 }
 
 class ConverseLanguageModel {
-  readonly specificationVersion = 'v3';
+  readonly specificationVersion = 'v4';
   readonly modelId: string;
   readonly supportedUrls = {};
 
