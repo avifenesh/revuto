@@ -57,7 +57,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "tsx --test tests/*.test.ts",
     "dev": "tsx daemon/src/cli.ts",
     "dashboard:dev": "npm --prefix dashboard run dev --",
     "dashboard:build": "npm --prefix dashboard run build",

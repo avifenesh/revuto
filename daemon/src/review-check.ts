@@ -1,3 +1,5 @@
+import { basename } from 'node:path';
+
 import type { GithubAppConfig } from '../../agents/common/src/config.js';
 import type { GithubAuth } from '../../agents/common/src/github-auth.js';
 import type { ReviewOutcome } from '../../agents/common/src/run-agent.js';
@@ -25,10 +27,47 @@ export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
     };
   }
   if (outcome.terminal === 'skip_review') {
+    // A skip with no successful inspection call is not a clean bill of health: the
+    // model never read the code. That happens when its tool calls all failed, or
+    // when the decision came from the terminal-tools-only recovery pass, where it
+    // has nothing to inspect with. Reporting success there passes - and, for a
+    // GitHub App, approves - a pull request on a review that never happened.
+    // Two skips do not mean the diff is clean, and neither may pass:
+    //
+    //   - nothing was inspected: every tool call failed, or the run never made one,
+    //     so the model never read the code;
+    //   - the skip came from the forced terminal-only pass: the review stalled and
+    //     the skip is the fallback's doing, not a judgement on the diff.
+    //
+    // Reporting success for either passes - and, for a GitHub App, approves - a
+    // pull request on a review that did not happen.
+    if (outcome.ranModel && (outcome.inspections === 0 || outcome.forcedTerminal)) {
+      const uninspected = outcome.inspections === 0;
+      const detail = [
+        `Terminal decision: skip_review after ${outcome.steps} step(s) with ${outcome.inspections} successful inspection tool call(s).`,
+        outcome.toolErrors > 0 ? `Tool calls that failed: ${outcome.toolErrors}.` : null,
+        outcome.forcedTerminal
+          ? 'The decision came from the forced terminal-only pass, not from the review itself: the review stalled without deciding anything.'
+          : null,
+        // Basename only: the check summary is public, the vault path is local.
+        outcome.tracePath ? `Local trace: ${basename(outcome.tracePath)}` : null,
+        uninspected
+          ? 'Retry the review once the tool surface works; this check does not pass on an uninspected diff.'
+          : 'Retry the review; this check does not pass on a skip the review never decided on.',
+      ].filter(Boolean).join('\n\n');
+      return {
+        conclusion: 'failure',
+        title: uninspected ? 'Revuto skipped without inspecting the diff' : 'Revuto skipped without deciding',
+        summary: detail,
+      };
+    }
     return {
       conclusion: 'success',
       title: 'Revuto review passed',
-      summary: 'Revuto completed the review and found no evidence-backed concerns.',
+      summary: [
+        'Revuto completed the review and found no evidence-backed concerns.',
+        `Inspection: ${outcome.inspections} tool call(s) over ${outcome.steps} step(s).`,
+      ].join('\n\n'),
     };
   }
   return {

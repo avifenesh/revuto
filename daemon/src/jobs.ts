@@ -8,7 +8,7 @@ import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import { getOctokit, getRepositoryInstallationOctokit, type GithubAuth } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 import { maybeEmbedder } from '../../agents/common/src/memory/embedder.js';
-import { runReview, type ReviewOutcome } from '../../agents/common/src/run-agent.js';
+import { runReview, unreviewedOutcome, describeOutcome, type ReviewOutcome } from '../../agents/common/src/run-agent.js';
 import { runCurator } from '../../agents/curator/src/run-curator.js';
 import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollOpenPRs, pollFeedback } from './poller.js';
@@ -105,6 +105,7 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
         throw err;
       }
       await store.mark(key);
+      console.log(`[review] ${key}: ${describeOutcome(outcome)}`);
       if (githubApp && checkRunId !== undefined) {
         try {
           await completeReviewCheck(reviewAuth, githubApp, target, checkRunId, checkResultForOutcome(outcome));
@@ -191,37 +192,19 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
   if (parts.length !== 2 || !owner || !name) throw new Error(`bad repo: ${repo} (expected owner/name)`);
   const { data: pr } = await octokit.pulls.get({ owner, repo: name, pull_number: prNumber });
   if (opts.expectedHeadSha && pr.head.sha !== opts.expectedHeadSha) {
-    return {
-      terminal: 'skip_review',
-      hasFindings: false,
-      result: `#${prNumber} advanced from ${opts.expectedHeadSha} to ${pr.head.sha}; ignoring the stale delivery`,
-      headSha: pr.head.sha,
-      steps: 0,
-      tokens: 0,
-    };
+    return unreviewedOutcome(
+      `#${prNumber} advanced from ${opts.expectedHeadSha} to ${pr.head.sha}; ignoring the stale delivery`,
+      pr.head.sha,
+    );
   }
   if (pr.draft) {
     // Rule: never touch drafts. They get reviewed once marked ready (updated_at bumps → next poll).
-    return {
-      terminal: 'skip_review',
-      hasFindings: false,
-      result: `#${prNumber} is a draft — drafts are never reviewed`,
-      headSha: pr.head.sha,
-      steps: 0,
-      tokens: 0,
-    };
+    return unreviewedOutcome(`#${prNumber} is a draft — drafts are never reviewed`, pr.head.sha);
   }
   // Reviewing surfaces the repo in the Obsidian index even if it wasn't init'd.
   if (!readReviewer(config, repo)) {
     if (opts.registeredOnly) {
-      return {
-        terminal: 'skip_review',
-        hasFindings: false,
-        result: `${repo} is no longer registered; ignoring the review request`,
-        headSha: pr.head.sha,
-        steps: 0,
-        tokens: 0,
-      };
+      return unreviewedOutcome(`${repo} is no longer registered; ignoring the review request`, pr.head.sha);
     }
     let botLogin = auth.login;
     if (!botLogin) {
@@ -245,14 +228,10 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
   let managedCheckRunId: number | undefined;
   try {
     if (!opts.force && !(await store.claim(key))) {
-      return {
-        terminal: 'skip_review',
-        hasFindings: false,
-        result: `#${prNumber} at ${pr.head.sha} was already reviewed or is currently being reviewed`,
-        headSha: pr.head.sha,
-        steps: 0,
-        tokens: 0,
-      };
+      return unreviewedOutcome(
+        `#${prNumber} at ${pr.head.sha} was already reviewed or is currently being reviewed`,
+        pr.head.sha,
+      );
     }
     if (opts.onClaimed) {
       await opts.onClaimed(pr.head.sha);
