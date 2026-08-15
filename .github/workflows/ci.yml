@@ -32,6 +32,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      - run: npm test
       - name: Offline smokes
         run: |
           npx tsx scripts/smoke/graduation.ts
