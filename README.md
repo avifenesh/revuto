@@ -28,7 +28,7 @@ into reusable topic skills.
 npm i -g revuto          # or run ad-hoc: npx revuto <command>
 ```
 
-Needs Node ≥ 20. `better-sqlite3` ships prebuilt binaries. For the default SurrealDB
+Needs Node ≥ 22. `better-sqlite3` ships prebuilt binaries. For the default SurrealDB
 memory backend, install [SurrealDB](https://surrealdb.com) separately and start it
 with `revuto`'s `scripts/surreal-start.sh` — or set `store.backend` to `sqlite` for
 zero external deps.
