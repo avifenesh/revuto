@@ -57,10 +57,16 @@ function clip(value: unknown): unknown {
 
 type StepLike = {
   text?: unknown;
+  finishReason?: unknown;
+  usage?: { inputTokens?: unknown; outputTokens?: unknown };
   toolCalls?: Array<{ toolName?: string; input?: unknown; args?: unknown }>;
   toolResults?: Array<{ toolName?: string; output?: unknown; result?: unknown }>;
   content?: Array<{ type?: string; toolName?: string; error?: unknown }>;
 };
+
+function numberOr(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
 
 function stepRecord(phase: string, index: number, step: StepLike): Record<string, unknown> {
   const text = typeof step.text === 'string' ? step.text.trim() : '';
@@ -73,10 +79,18 @@ function stepRecord(phase: string, index: number, step: StepLike): Record<string
   const errors = (step.content ?? [])
     .filter((part) => part?.type === 'tool-error')
     .map((part) => ({ tool: part.toolName ?? '?', error: clip(part.error) }));
+  // finishReason and the token split are what explain a step that did nothing:
+  // "length" means the output cap ate the turn, "stop" with no calls means the
+  // model simply gave up, and either one ends the pass without a terminal tool.
+  const finishReason = typeof step.finishReason === 'string' ? step.finishReason : undefined;
+  const inTokens = numberOr(step.usage?.inputTokens);
+  const outTokens = numberOr(step.usage?.outputTokens);
   return {
     kind: 'step',
     phase,
     step: index,
+    ...(finishReason ? { finishReason } : {}),
+    ...(inTokens !== undefined || outTokens !== undefined ? { tokens: { in: inTokens, out: outTokens } } : {}),
     ...(text ? { text: clip(text) } : {}),
     ...(calls.length ? { calls } : {}),
     ...(results.length ? { results } : {}),

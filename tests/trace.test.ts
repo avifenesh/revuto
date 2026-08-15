@@ -89,6 +89,24 @@ test('each phase numbers its own steps', () => {
   }
 });
 
+test('a step records why it ended and what it cost', () => {
+  const v = vault();
+  try {
+    const trace = startReviewTrace(opts(v));
+    // The step that stalls a review has no text and no calls; finishReason is the
+    // only thing that says whether the output cap ate it or the model gave up.
+    trace.step('main', { finishReason: 'length', usage: { inputTokens: 61_234, outputTokens: 32_768 } });
+    trace.step('main', { finishReason: 'stop' });
+    const steps = records(trace.finish({})!).filter((r) => r.kind === 'step');
+    assert.equal(steps[0].finishReason, 'length');
+    assert.deepEqual(steps[0].tokens, { in: 61_234, out: 32_768 });
+    assert.equal(steps[1].finishReason, 'stop');
+    assert.equal('tokens' in steps[1], false);
+  } finally {
+    rmSync(v, { recursive: true, force: true });
+  }
+});
+
 test('failed tool results are marked and large output is clipped', () => {
   const v = vault();
   try {

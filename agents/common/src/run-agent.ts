@@ -7,7 +7,7 @@
  * when the agent calls a terminal tool (`post_review` / `skip_review`) or hits
  * the step cap.
  */
-import { generateText, stepCountIs, hasToolCall } from 'ai';
+import { generateText, stepCountIs, hasToolCall, type ModelMessage } from 'ai';
 import type { Octokit } from '@octokit/rest';
 
 import type { ReviewerConfig } from './config.js';
@@ -114,6 +114,23 @@ export function describeOutcome(o: ReviewOutcome): string {
  */
 const CONTINUATION_MAX_STEPS = 25;
 
+/**
+ * Messages to replay into a recovery pass: the original request plus every model
+ * turn each earlier pass produced.
+ *
+ * Take `responseMessages` (accumulated over all steps), never `response.messages`
+ * (the final step only). A stalled review ends on an empty step, so replaying just
+ * that step handed the recovery passes a transcript with no tool output in it -
+ * which is why a forced `skip_review` could truthfully say it had inspected
+ * nothing after 68 successful tool calls.
+ */
+export function reviewTranscript(
+  userMessage: string,
+  ...passes: ReadonlyArray<{ readonly responseMessages: readonly ModelMessage[] }>
+): ModelMessage[] {
+  return [{ role: 'user', content: userMessage }, ...passes.flatMap((pass) => [...pass.responseMessages])];
+}
+
 export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> {
   const { config } = opts;
   const startedAt = new Date();
@@ -178,10 +195,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   let tokens = tokensFrom(main.usage);
   let stepCount = main.steps.length;
   let forcedTerminal = false;
-  const transcript = [
-    { role: 'user' as const, content: userMessage },
-    ...main.response.messages,
-  ];
+  let transcript = reviewTranscript(userMessage, main);
 
   // The model ended with prose instead of a terminal tool, so nothing was posted.
   // Recovery is two stages, in this order on purpose:
@@ -216,7 +230,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     toolErrors += c.toolErrors;
     tokens += tokensFrom(continued.usage);
     stepCount += continued.steps.length;
-    transcript.push(...continued.response.messages);
+    transcript = reviewTranscript(userMessage, main, continued);
   }
 
   if (terminal === 'none') {
@@ -225,7 +239,14 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
       system,
       messages: [
         ...transcript,
-        { role: 'user', content: 'You ended without posting, which wastes the review. Call exactly one of `post_review` (with your findings) or `skip_review` (if nothing clears the bar) now — respond only with that tool call. You have no inspection tools in this turn, so base the call on what you already read; if that is nothing, say so in the skip reason.' },
+        {
+          role: 'user',
+          content: [
+            'You ended without posting, which wastes the review. Call exactly one of `post_review` (with your findings) or `skip_review` (if nothing clears the bar) now — respond only with that tool call.',
+            `This run already made ${inspections} successful inspection tool call(s); their output is in this conversation. Base the call on it.`,
+            'You have no inspection tools in this turn, so do not claim you read nothing when the transcript above shows otherwise.',
+          ].join(' '),
+        },
       ],
       tools: { post_review: tools.post_review, skip_review: tools.skip_review },
       toolChoice: 'required',

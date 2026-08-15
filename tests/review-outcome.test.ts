@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { summarizeReviewSteps, unreviewedOutcome, describeOutcome, type ReviewOutcome } from '../agents/common/src/run-agent.js';
+import { summarizeReviewSteps, unreviewedOutcome, describeOutcome, reviewTranscript, type ReviewOutcome } from '../agents/common/src/run-agent.js';
 import { checkResultForOutcome } from '../daemon/src/review-check.js';
 
 function outcome(over: Partial<ReviewOutcome> = {}): ReviewOutcome {
@@ -76,12 +76,22 @@ test('a skip with zero inspection fails the check instead of approving', () => {
   const result = checkResultForOutcome(outcome({ inspections: 0, toolErrors: 4, forcedTerminal: true, tracePath: '/home/someone/revuto/.traces/agent-sh__agnix/20260815T120000-pr1-abc1234.jsonl' }));
   assert.equal(result.conclusion, 'failure');
   assert.match(result.title, /without inspecting/);
-  assert.match(result.summary, /0 successful inspection tool calls/);
+  assert.match(result.summary, /0 successful inspection tool call\(s\)/);
   assert.match(result.summary, /Tool calls that failed: 4/);
   assert.match(result.summary, /forced terminal-only pass/);
   // The check summary is public; only the trace filename belongs in it.
   assert.match(result.summary, /Local trace: 20260815T120000-pr1-abc1234\.jsonl/);
   assert.doesNotMatch(result.summary, /home\/someone/);
+});
+
+test('a skip the forced pass decided fails the check even after real inspection', () => {
+  // What #79 actually produced: 68 inspection calls, then a stalled review whose
+  // skip reason came out of the terminal-only pass and claimed nothing was read.
+  const result = checkResultForOutcome(outcome({ inspections: 68, steps: 43, toolErrors: 2, forcedTerminal: true }));
+  assert.equal(result.conclusion, 'failure');
+  assert.match(result.title, /without deciding/);
+  assert.match(result.summary, /68 successful inspection tool call\(s\)/);
+  assert.match(result.summary, /the review stalled without deciding anything/);
 });
 
 test('a PR the engine never ran the model on still reports success', () => {
@@ -94,6 +104,28 @@ test('a PR the engine never ran the model on still reports success', () => {
 test('findings and unfinished runs fail the check', () => {
   assert.equal(checkResultForOutcome(outcome({ terminal: 'post_review', hasFindings: true })).conclusion, 'failure');
   assert.equal(checkResultForOutcome(outcome({ terminal: 'none', inspections: 4 })).conclusion, 'failure');
+});
+
+test('a recovery pass replays every earlier turn, not just the last step', () => {
+  const main = {
+    responseMessages: [
+      { role: 'assistant' as const, content: [{ type: 'tool-call' as const, toolCallId: '1', toolName: 'read', input: {} }] },
+      { role: 'tool' as const, content: [{ type: 'tool-result' as const, toolCallId: '1', toolName: 'read', output: { type: 'text' as const, value: 'fn main() {}' } }] },
+      // The empty turn that stalls the review and ends the pass.
+      { role: 'assistant' as const, content: [] },
+    ],
+  };
+  const continued = { responseMessages: [{ role: 'assistant' as const, content: [{ type: 'text' as const, text: 'still looking' }] }] };
+
+  const afterMain = reviewTranscript('review this', main);
+  assert.equal(afterMain.length, 4);
+  assert.equal(afterMain[0].role, 'user');
+  // The tool result must survive into the recovery pass, or it decides blind.
+  assert.equal(afterMain[2].role, 'tool');
+
+  const afterContinuation = reviewTranscript('review this', main, continued);
+  assert.equal(afterContinuation.length, 5);
+  assert.deepEqual(afterContinuation.at(-1), continued.responseMessages[0]);
 });
 
 test('describeOutcome surfaces inspection, forcing, and the trace', () => {
