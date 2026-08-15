@@ -24,13 +24,23 @@ function run(cmd: string, args: readonly string[], opts: { env?: NodeJS.ProcessE
       if (err.length + b.length > 64_000) return;
       err = Buffer.concat([err, b]);
     });
+    // Spawn failure (gh not installed, EACCES). Without this listener an 'error'
+    // event on a ChildProcess is unhandled and takes the daemon down; the call
+    // has to come back as a failed call instead.
+    child.on('error', (e: Error) => {
+      clearTimeout(timer);
+      resolve({ code: 127, out: '', err: e.message });
+    });
     child.on('close', (code) => {
       clearTimeout(timer);
       resolve({ code: code ?? 1, out: out.toString('utf8'), err: err.toString('utf8') });
     });
     if (opts.input) {
-      child.stdin.write(opts.input);
-      child.stdin.end();
+      // A stdin that breaks (spawn failed, child exited early) is reported through
+      // the 'error'/'close' paths above; an unhandled EPIPE here would be fatal.
+      child.stdin?.on('error', () => {});
+      child.stdin?.write(opts.input);
+      child.stdin?.end();
     }
   });
 }
@@ -117,7 +127,10 @@ Do NOT include a leading slash. Append query strings inline, e.g. \`repos/OWNER/
         timeoutMs: 30_000,
         maxBytes: 2_000_000,
       });
-      if (r.code !== 0) return `gh api failed (${r.code}): ${r.err}\n${r.out}`;
+      // ERROR prefix: the only signal the engine has that a call failed, and what
+      // keeps a rate-limited or 404 read out of the inspection count (trace.ts
+      // isToolErrorOutput, run-agent.ts summarizeReviewSteps).
+      if (r.code !== 0) return `ERROR gh api failed (${r.code}): ${r.err}\n${r.out}`;
       return r.out;
     },
   });
