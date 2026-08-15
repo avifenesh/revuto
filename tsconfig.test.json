@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "agents/common/src/**/*.ts",
+    "agents/curator/src/**/*.ts",
+    "daemon/src/**/*.ts",
+    "ops/src/**/*.ts",
+    "tests/**/*.ts",
+    // The smokes construct the same types the daemon does. Left unchecked, they
+    // kept building ReviewOutcome literals that lost fields the check gate reads.
+    "scripts/**/*.ts"
+  ]
+}
