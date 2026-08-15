@@ -9,7 +9,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { summarizeReviewSteps, unreviewedOutcome, describeOutcome, reviewTranscript, type ReviewOutcome } from '../agents/common/src/run-agent.js';
+import {
+  summarizeReviewSteps,
+  unreviewedOutcome,
+  describeOutcome,
+  reviewTranscript,
+  stalledOnOutputCap,
+  type ReviewOutcome,
+} from '../agents/common/src/run-agent.js';
 import { checkResultForOutcome } from '../daemon/src/review-check.js';
 
 function outcome(over: Partial<ReviewOutcome> = {}): ReviewOutcome {
@@ -126,6 +133,16 @@ test('a recovery pass replays every earlier turn, not just the last step', () =>
   const afterContinuation = reviewTranscript('review this', main, continued);
   assert.equal(afterContinuation.length, 5);
   assert.deepEqual(afterContinuation.at(-1), continued.responseMessages[0]);
+});
+
+test('a pass that dies on the output cap is recognized as a stall', () => {
+  // What both real stalls looked like in the trace: finishReason "length",
+  // 8192 output tokens, no tool call.
+  assert.equal(stalledOnOutputCap([{ finishReason: 'tool-calls', toolCalls: [{ toolName: 'read' }] }, { finishReason: 'length' }]), true);
+  // Cut off, but it still managed the call - the loop keeps going on its own.
+  assert.equal(stalledOnOutputCap([{ finishReason: 'length', toolCalls: [{ toolName: 'read' }] }]), false);
+  assert.equal(stalledOnOutputCap([{ finishReason: 'stop' }]), false);
+  assert.equal(stalledOnOutputCap([]), false);
 });
 
 test('describeOutcome surfaces inspection, forcing, and the trace', () => {

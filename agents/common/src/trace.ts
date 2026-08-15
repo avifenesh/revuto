@@ -122,8 +122,9 @@ export function startReviewTrace(opts: StartTraceOptions): TraceWriter {
   // 2026-08-15T12:34:56.789Z -> 20260815T123456 — sortable, filename-safe.
   const stamp = opts.startedAt.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '');
   // Timestamp first so a plain name sort is chronological — pruneTraces relies on it.
-  const file = join(dir, `${stamp}-pr${opts.prNumber}-${opts.headSha.slice(0, 7)}.jsonl`);
+  const base = `${stamp}-pr${opts.prNumber}-${opts.headSha.slice(0, 7)}`;
   const stepsPerPhase = new Map<string, number>();
+  let file = join(dir, `${base}.jsonl`);
   let live = true;
 
   const append = (record: Record<string, unknown>): void => {
@@ -144,7 +145,11 @@ export function startReviewTrace(opts: StartTraceOptions): TraceWriter {
 
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(file, '', 'utf8');
+    // "wx" so a second run never truncates a first one's trace. The stamp is whole
+    // seconds and `revuto review --force` bypasses the per-head claim, so two runs
+    // of the same head can land on the same name; they get -2, -3, ... instead of
+    // interleaving into one file.
+    file = openFresh(dir, base);
   } catch (err) {
     live = false;
     console.error(`[trace] could not open ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -174,6 +179,23 @@ export function startReviewTrace(opts: StartTraceOptions): TraceWriter {
       return live ? file : undefined;
     },
   };
+}
+
+/**
+ * Create `<dir>/<base>.jsonl`, or `<base>-2.jsonl`, `-3`, ... if that name is taken.
+ * Returns the path actually created; throws if none could be.
+ */
+function openFresh(dir: string, base: string): string {
+  for (let suffix = 1; suffix <= MAX_TRACES_PER_REPO; suffix++) {
+    const candidate = join(dir, suffix === 1 ? `${base}.jsonl` : `${base}-${suffix}.jsonl`);
+    try {
+      writeFileSync(candidate, '', { encoding: 'utf8', flag: 'wx' });
+      return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+  }
+  throw new Error(`${MAX_TRACES_PER_REPO} traces already exist for ${base}`);
 }
 
 /** Drop all but the newest MAX_TRACES_PER_REPO files. Names sort chronologically. */

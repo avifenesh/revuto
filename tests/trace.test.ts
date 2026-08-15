@@ -140,6 +140,25 @@ test('a step that cannot be serialized does not break the trace', () => {
   }
 });
 
+test('two runs of the same head in the same second get their own file', () => {
+  const v = vault();
+  try {
+    // `revuto review --force` bypasses the per-head claim, so this is reachable;
+    // the earlier run's trace must not be truncated out from under it.
+    const first = startReviewTrace(opts(v));
+    first.step('main', { toolResults: [{ toolName: 'read', output: 'first run' }] });
+    const second = startReviewTrace(opts(v));
+    second.step('main', { toolResults: [{ toolName: 'read', output: 'second run' }] });
+
+    assert.notEqual(first.path, second.path);
+    assert.equal(basename(second.path!), '20260815T120000-pr1373-abc1234-2.jsonl');
+    assert.equal(records(first.finish({})!)[1].results[0].output, 'first run');
+    assert.equal(records(second.finish({})!)[1].results[0].output, 'second run');
+  } finally {
+    rmSync(v, { recursive: true, force: true });
+  }
+});
+
 test('only the newest 50 traces per repo are kept', () => {
   const v = vault();
   try {

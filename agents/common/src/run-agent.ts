@@ -115,6 +115,39 @@ export function describeOutcome(o: ReviewOutcome): string {
 const CONTINUATION_MAX_STEPS = 25;
 
 /**
+ * How many full-tool continuation passes a stalled review gets. Each pass ends the
+ * same way the one before it did - on the per-turn output cap, mid-thought - but
+ * with the inspection it managed in between, so retrying is worth more than jumping
+ * straight to the terminal-only pass.
+ */
+const CONTINUATION_ATTEMPTS = 3;
+
+/**
+ * True when the pass died on the per-turn output limit without calling a tool.
+ *
+ * This is how reviews actually stall: the provider caps a turn at 8k output tokens,
+ * the model spends the whole cap reasoning, and `generateText` sees a step with no
+ * tool call and stops. Nothing is wrong with the review - it just never got to say
+ * anything - so the continuation is told to keep its turns short.
+ */
+export function stalledOnOutputCap(steps: readonly StepLike[]): boolean {
+  const last = steps.at(-1);
+  return !!last && last.finishReason === 'length' && (last.toolCalls?.length ?? 0) === 0;
+}
+
+function continuationPrompt(truncated: boolean): string {
+  return [
+    'You stopped before calling a terminal tool, so nothing was posted and the review does not count.',
+    truncated
+      ? 'Your last turn was cut off by the per-turn output limit before you could call anything, so keep every turn short from here: no long prose, call the tool instead.'
+      : null,
+    'You still have the full tool set: finish the inspection you need, then call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
  * Messages to replay into a recovery pass: the original request plus every model
  * turn each earlier pass produced.
  *
@@ -195,32 +228,33 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   let tokens = tokensFrom(main.usage);
   let stepCount = main.steps.length;
   let forcedTerminal = false;
+  const passes: Array<{ readonly responseMessages: readonly ModelMessage[] }> = [main];
   let transcript = reviewTranscript(userMessage, main);
+  let lastSteps: readonly StepLike[] = main.steps;
 
-  // The model ended with prose instead of a terminal tool, so nothing was posted.
-  // Recovery is two stages, in this order on purpose:
+  // The model ended without a terminal tool, so nothing was posted. Recovery is
+  // two stages, in this order on purpose:
   //
-  //   1. Continue with the FULL tool set, so a review that stalled mid-inspection
-  //      can finish the work it started.
-  //   2. Only if that also ends in prose, replay with the terminal tools alone and
-  //      toolChoice "required".
+  //   1. Continue with the FULL tool set - up to CONTINUATION_ATTEMPTS times, since
+  //      a pass that dies on the per-turn output cap usually gets real work done
+  //      first and dies again on the next cap rather than on the decision.
+  //   2. Only if those also end without a decision, replay with the terminal tools
+  //      alone and toolChoice "required".
   //
   // Stage 2 first is what produced green checks with no review behind them: a model
-  // handed only post_review/skip_review truthfully reports it has nothing to inspect
-  // with and calls skip_review. A decision made there is flagged `forcedTerminal`,
-  // and `inspections` stays at whatever the earlier passes actually did.
-  if (terminal === 'none') {
+  // handed only post_review/skip_review reports it has nothing to inspect with and
+  // calls skip_review. A decision made there is flagged `forcedTerminal`, and
+  // `inspections` stays at whatever the earlier passes actually did.
+  for (let attempt = 1; terminal === 'none' && attempt <= CONTINUATION_ATTEMPTS; attempt++) {
+    const phase = attempt === 1 ? 'continuation' : `continuation-${attempt}`;
     const continued = await generateText({
       model,
       system,
-      messages: [
-        ...transcript,
-        { role: 'user', content: 'You stopped before calling a terminal tool, so nothing was posted and the review does not count. You still have the full tool set: finish the inspection you need, then call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.' },
-      ],
+      messages: [...transcript, { role: 'user', content: continuationPrompt(stalledOnOutputCap(lastSteps)) }],
       tools,
       stopWhen: [stepCountIs(CONTINUATION_MAX_STEPS), hasToolCall('post_review'), hasToolCall('skip_review')],
       maxOutputTokens,
-      onStepFinish: (step) => trace.step('continuation', step),
+      onStepFinish: (step) => trace.step(phase, step),
     });
     const c = summarizeReviewSteps(continued.steps);
     terminal = c.terminal;
@@ -230,7 +264,9 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     toolErrors += c.toolErrors;
     tokens += tokensFrom(continued.usage);
     stepCount += continued.steps.length;
-    transcript = reviewTranscript(userMessage, main, continued);
+    passes.push(continued);
+    transcript = reviewTranscript(userMessage, ...passes);
+    lastSteps = continued.steps;
   }
 
   if (terminal === 'none') {
@@ -281,7 +317,9 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   return { ...outcome, ...(tracePath ? { tracePath } : {}) };
 }
 
-type StepLike = {
+export type StepLike = {
+  finishReason?: string;
+  toolCalls?: Array<{ toolName?: string }>;
   toolResults?: Array<{ toolName: string; output?: unknown; result?: unknown }>;
   content?: Array<{ type?: string }>;
 };
