@@ -11,7 +11,7 @@
  * Tracing is best effort: a failure here logs and returns undefined rather
  * than failing the review.
  */
-import { mkdirSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, appendFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Keep the newest N traces per repo. Old ones are pruned after every write. */
@@ -19,23 +19,26 @@ const MAX_TRACES_PER_REPO = 50;
 /** Per-field cap. Tool outputs are 512 KB at the source; a trace is a summary. */
 const MAX_FIELD_CHARS = 4000;
 
-/** One `generateText` call: the main pass, the continuation, or the forced pass. */
-export interface TracePhase {
-  readonly phase: string;
-  readonly steps: readonly unknown[];
-}
-
-export interface WriteTraceOptions {
+export interface StartTraceOptions {
   readonly vaultPath: string;
   /** "owner/name". */
   readonly repo: string;
   readonly prNumber: number;
   readonly headSha: string;
   readonly model: string;
-  readonly phases: readonly TracePhase[];
-  /** Anything JSON-serializable; written as the final `outcome` record. */
-  readonly outcome: Record<string, unknown>;
   readonly startedAt: Date;
+}
+
+export interface TraceWriter {
+  /** Path of the trace file, or undefined once writing has failed. */
+  readonly path: string | undefined;
+  /**
+   * Append one finished step. `phase` names the `generateText` call it came from:
+   * "main", "continuation", or "forced".
+   */
+  step(phase: string, step: unknown): void;
+  /** Append the outcome record, prune old traces, and return the path. */
+  finish(outcome: Record<string, unknown>): string | undefined;
 }
 
 function clip(value: unknown): unknown {
@@ -95,24 +98,45 @@ export function traceDir(vaultPath: string, repo: string): string {
   return join(vaultPath, '.traces', repo.replace('/', '__'));
 }
 
-/** Write the trace and return its path, or undefined when it could not be written. */
-export function writeReviewTrace(opts: WriteTraceOptions): string | undefined {
+/**
+ * Open a trace and return a writer. Steps are appended as they finish rather
+ * than buffered, so a run that is killed, times out, or throws still leaves
+ * everything it did behind - which is the whole point of having a trace.
+ */
+export function startReviewTrace(opts: StartTraceOptions): TraceWriter {
   const dir = traceDir(opts.vaultPath, opts.repo);
   // 2026-08-15T12:34:56.789Z -> 20260815T123456 — sortable, filename-safe.
   const stamp = opts.startedAt.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '');
   // Timestamp first so a plain name sort is chronological — pruneTraces relies on it.
   const file = join(dir, `${stamp}-pr${opts.prNumber}-${opts.headSha.slice(0, 7)}.jsonl`);
+  const stepsPerPhase = new Map<string, number>();
+  let live = true;
 
-  const lines: string[] = [];
-  const push = (record: Record<string, unknown>) => {
+  const append = (record: Record<string, unknown>): void => {
+    if (!live) return;
+    let line: string;
     try {
-      lines.push(JSON.stringify(record));
+      line = JSON.stringify(record);
     } catch {
-      lines.push(JSON.stringify({ kind: record.kind ?? 'unknown', error: 'record could not be serialized' }));
+      line = JSON.stringify({ kind: record.kind ?? 'unknown', error: 'record could not be serialized' });
+    }
+    try {
+      appendFileSync(file, `${line}\n`, 'utf8');
+    } catch (err) {
+      live = false;
+      console.error(`[trace] stopped writing ${file}: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
-  push({
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, '', 'utf8');
+  } catch (err) {
+    live = false;
+    console.error(`[trace] could not open ${file}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  append({
     kind: 'run',
     repo: opts.repo,
     pr: opts.prNumber,
@@ -120,20 +144,22 @@ export function writeReviewTrace(opts: WriteTraceOptions): string | undefined {
     model: opts.model,
     startedAt: opts.startedAt.toISOString(),
   });
-  for (const { phase, steps } of opts.phases) {
-    steps.forEach((step, i) => push(stepRecord(phase, i + 1, step as StepLike)));
-  }
-  push({ kind: 'outcome', ...opts.outcome });
 
-  try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
-    pruneTraces(dir);
-    return file;
-  } catch (err) {
-    console.error(`[trace] could not write ${file}: ${err instanceof Error ? err.message : String(err)}`);
-    return undefined;
-  }
+  return {
+    get path() {
+      return live ? file : undefined;
+    },
+    step(phase, step) {
+      const index = (stepsPerPhase.get(phase) ?? 0) + 1;
+      stepsPerPhase.set(phase, index);
+      append(stepRecord(phase, index, step as StepLike));
+    },
+    finish(outcome) {
+      append({ kind: 'outcome', ...outcome });
+      if (live) pruneTraces(dir);
+      return live ? file : undefined;
+    },
+  };
 }
 
 /** Drop all but the newest MAX_TRACES_PER_REPO files. Names sort chronologically. */

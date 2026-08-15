@@ -17,7 +17,7 @@ import { getOctokit, type GithubAuth } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
 import { toAiSdkTools, type ToolDef } from './tool-def.js';
 import { assembleCommonTools } from './tools/index.js';
-import { writeReviewTrace, isToolErrorOutput, type TracePhase } from './trace.js';
+import { startReviewTrace, isToolErrorOutput } from './trace.js';
 import { selectSkills } from './skills/select.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
@@ -154,6 +154,16 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
 
   const model = buildChatModel(config.models.review);
   const maxOutputTokens = config.limits.maxOutputTokens.review;
+  // Opened before the first call so a run that is killed mid-review still leaves
+  // every step it completed on disk.
+  const trace = startReviewTrace({
+    vaultPath: config.vaultPath,
+    repo: opts.repo,
+    prNumber: opts.prNumber,
+    headSha: ctx.headSha,
+    model: config.models.review.model,
+    startedAt,
+  });
   const main = await generateText({
     model,
     system,
@@ -161,13 +171,13 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     tools,
     stopWhen: [stepCountIs(config.review.maxSteps), hasToolCall('post_review'), hasToolCall('skip_review')],
     maxOutputTokens,
+    onStepFinish: (step) => trace.step('main', step),
   });
 
   let { terminal, result, hasFindings, inspections, toolErrors } = summarizeReviewSteps(main.steps);
   let tokens = tokensFrom(main.usage);
   let stepCount = main.steps.length;
   let forcedTerminal = false;
-  const phases: TracePhase[] = [{ phase: 'main', steps: main.steps }];
   const transcript = [
     { role: 'user' as const, content: userMessage },
     ...main.response.messages,
@@ -196,6 +206,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
       tools,
       stopWhen: [stepCountIs(CONTINUATION_MAX_STEPS), hasToolCall('post_review'), hasToolCall('skip_review')],
       maxOutputTokens,
+      onStepFinish: (step) => trace.step('continuation', step),
     });
     const c = summarizeReviewSteps(continued.steps);
     terminal = c.terminal;
@@ -205,7 +216,6 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     toolErrors += c.toolErrors;
     tokens += tokensFrom(continued.usage);
     stepCount += continued.steps.length;
-    phases.push({ phase: 'continuation', steps: continued.steps });
     transcript.push(...continued.response.messages);
   }
 
@@ -221,6 +231,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
       toolChoice: 'required',
       stopWhen: [stepCountIs(2), hasToolCall('post_review'), hasToolCall('skip_review')],
       maxOutputTokens,
+      onStepFinish: (step) => trace.step('forced', step),
     });
     const f = summarizeReviewSteps(forced.steps);
     terminal = f.terminal;
@@ -230,7 +241,6 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     tokens += tokensFrom(forced.usage);
     stepCount += forced.steps.length;
     forcedTerminal = terminal !== 'none';
-    phases.push({ phase: 'forced', steps: forced.steps });
   }
 
   const outcome: ReviewOutcome = {
@@ -245,16 +255,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     forcedTerminal,
     ranModel: true,
   };
-  const tracePath = writeReviewTrace({
-    vaultPath: config.vaultPath,
-    repo: opts.repo,
-    prNumber: opts.prNumber,
-    headSha: ctx.headSha,
-    model: config.models.review.model,
-    phases,
-    outcome: { ...outcome, result: outcome.result.slice(0, 8000) },
-    startedAt,
-  });
+  const tracePath = trace.finish({ ...outcome, result: outcome.result.slice(0, 8000) });
 
   return { ...outcome, ...(tracePath ? { tracePath } : {}) };
 }
