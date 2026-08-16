@@ -9,6 +9,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  DEFAULT_CLAIM_LEASE_MS,
   type KnowledgeStore, type ConcernRecord, type NewConcern, type MergedConcernFields,
   type SkillNote, type NewSkillNote, type SkillStatus,
 } from './store.js';
@@ -62,6 +63,9 @@ export class SqliteStore implements KnowledgeStore {
       CREATE INDEX IF NOT EXISTS idx_concerns_bucket ON concerns(area_bucket);
       CREATE TABLE IF NOT EXISTS cursors (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS idempotency (key TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+      -- In-flight leases, kept apart from the done markers in idempotency so a
+      -- claim can expire without ever making a completed key look unfinished.
+      CREATE TABLE IF NOT EXISTS claims (key TEXT PRIMARY KEY, claimed_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS skill_embeddings (slug TEXT PRIMARY KEY, text_hash TEXT NOT NULL, embedding BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS counters (key TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0);
     `);
@@ -169,15 +173,28 @@ export class SqliteStore implements KnowledgeStore {
   async seen(key: string): Promise<boolean> {
     return !!this.db.prepare(`SELECT 1 FROM idempotency WHERE key = ?`).get(key);
   }
-  async claim(key: string): Promise<boolean> {
-    const info = this.db.prepare(`INSERT OR IGNORE INTO idempotency (key, created_at) VALUES (?, ?)`).run(key, new Date().toISOString());
-    return info.changes > 0;
+  async claim(key: string, leaseMs = DEFAULT_CLAIM_LEASE_MS): Promise<boolean> {
+    const now = new Date().toISOString();
+    const cutoff = new Date(Date.now() - leaseMs).toISOString();
+    // One transaction: the read that decides and the write that takes the lease
+    // cannot be interleaved by a second worker on the same file.
+    return this.db.transaction(() => {
+      if (this.db.prepare(`SELECT 1 FROM idempotency WHERE key = ?`).get(key)) return false;
+      const inserted = this.db.prepare(`INSERT OR IGNORE INTO claims (key, claimed_at) VALUES (?, ?)`).run(key, now);
+      if (inserted.changes > 0) return true;
+      // Held by someone else - stealable only once the lease has aged out.
+      const stolen = this.db.prepare(`UPDATE claims SET claimed_at = ? WHERE key = ? AND claimed_at < ?`).run(now, key, cutoff);
+      return stolen.changes > 0;
+    })();
   }
   async unclaim(key: string): Promise<void> {
-    this.db.prepare(`DELETE FROM idempotency WHERE key = ?`).run(key);
+    this.db.prepare(`DELETE FROM claims WHERE key = ?`).run(key);
   }
   async mark(key: string): Promise<void> {
-    await this.claim(key);
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT OR IGNORE INTO idempotency (key, created_at) VALUES (?, ?)`).run(key, new Date().toISOString());
+      this.db.prepare(`DELETE FROM claims WHERE key = ?`).run(key);
+    })();
   }
 
   async incrCounter(key: string, by = 1): Promise<number> {

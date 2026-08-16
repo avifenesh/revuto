@@ -9,6 +9,7 @@ import { Surreal } from 'surrealdb';
 import { randomUUID } from 'node:crypto';
 
 import {
+  DEFAULT_CLAIM_LEASE_MS,
   type KnowledgeStore, type ConcernRecord, type NewConcern, type MergedConcernFields,
   type SkillNote, type NewSkillNote, type SkillStatus,
 } from './store.js';
@@ -90,6 +91,7 @@ export class SurrealStore implements KnowledgeStore {
       DEFINE TABLE IF NOT EXISTS concern SCHEMALESS;
       DEFINE TABLE IF NOT EXISTS cursor SCHEMALESS;
       DEFINE TABLE IF NOT EXISTS seen SCHEMALESS;
+      DEFINE TABLE IF NOT EXISTS claim SCHEMALESS;
       DEFINE TABLE IF NOT EXISTS skill_embedding SCHEMALESS;
       DEFINE TABLE IF NOT EXISTS counter SCHEMALESS;
     `);
@@ -210,21 +212,32 @@ export class SurrealStore implements KnowledgeStore {
     const rows = await this.rows(`SELECT id FROM type::record('seen', $k)`, { k: key });
     return rows.length > 0;
   }
-  async claim(key: string): Promise<boolean> {
+  async claim(key: string, leaseMs = DEFAULT_CLAIM_LEASE_MS): Promise<boolean> {
+    // A done marker in `seen` outranks everything: the head was already reviewed.
+    if (await this.seen(key)) return false;
+    const now = new Date().toISOString();
     try {
-      const rows = await this.rows(`CREATE type::record('seen', $k) SET at = $now`, { k: key, now: new Date().toISOString() });
+      const rows = await this.rows(`CREATE type::record('claim', $k) SET at = $now`, { k: key, now });
       return rows.length > 0;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (/already exists|record.*exists/i.test(message)) return false;
-      throw err;
+      if (!/already exists|record.*exists/i.test(message)) throw err;
     }
+    // Someone holds it. Steal only an expired lease - the WHERE is what keeps two
+    // pollers from both winning, since the first one's write moves `at` forward.
+    const cutoff = new Date(Date.now() - leaseMs).toISOString();
+    const stolen = await this.rows(
+      `UPDATE type::record('claim', $k) SET at = $now WHERE at < $cutoff RETURN AFTER`,
+      { k: key, now, cutoff },
+    );
+    return stolen.length > 0;
   }
   async unclaim(key: string): Promise<void> {
-    await this.rows(`DELETE type::record('seen', $k)`, { k: key });
+    await this.rows(`DELETE type::record('claim', $k)`, { k: key });
   }
   async mark(key: string): Promise<void> {
     await this.rows(`UPSERT type::record('seen', $k) SET at = $now`, { k: key, now: new Date().toISOString() });
+    await this.rows(`DELETE type::record('claim', $k)`, { k: key });
   }
 
   async incrCounter(key: string, by = 1): Promise<number> {

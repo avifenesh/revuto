@@ -66,7 +66,8 @@ const GH_API_READ_PATTERNS: ReadonlyArray<RegExp> = [
 ];
 
 export interface GhToolsDeps {
-  readonly token: string;
+  /** Resolved per call - see GithubAuth.token: a review outlives its token. */
+  readonly token: () => Promise<string>;
   readonly ctx: PrContext;
   readonly octokit: Octokit;
 }
@@ -122,8 +123,9 @@ Do NOT include a leading slash. Append query strings inline, e.g. \`repos/OWNER/
       const path = input.path.replace(/^\/+/, '');
       const matched = GH_API_READ_PATTERNS.some((r) => r.test(path));
       if (!matched) return `ERROR: path "${path}" is not on the allowlist.`;
+      const token = await deps.token();
       const r = await run('gh', ['api', path, '--method', 'GET'], {
-        env: { GH_TOKEN: deps.token, GITHUB_TOKEN: deps.token },
+        env: { GH_TOKEN: token, GITHUB_TOKEN: token },
         timeoutMs: 30_000,
         maxBytes: 2_000_000,
       });

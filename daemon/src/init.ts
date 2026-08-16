@@ -260,7 +260,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const [owner, name] = repo.split('/');
   const cloneDir = join(config.review.workspaceDir, `${owner}__${name}`);
   console.log(`[init] cloning ${repo} …`);
-  await cloneRepo(repo, token, cloneDir);
+  await cloneRepo(repo, await token(), cloneDir);
 
   console.log('[init] scanning repo structure …');
   const facts = scanRepo(cloneDir);

@@ -11,6 +11,15 @@
  * fits the same shape as the synchronous SQLite one.
  */
 
+/**
+ * How long a claim stays exclusive before another worker may steal it.
+ *
+ * Sized off the longest real review runs (20-40 minutes of model work) with
+ * headroom, so a live worker is never overtaken mid-review; a dead one costs at
+ * most this long before its head is picked up again.
+ */
+export const DEFAULT_CLAIM_LEASE_MS = 90 * 60 * 1000;
+
 export interface ConcernRecord {
   readonly recordId: string;
   readonly areaBucket: string;
@@ -95,8 +104,16 @@ export interface KnowledgeStore {
   getCursor(name: string): Promise<string | null>;
   setCursor(name: string, value: string): Promise<void>;
   seen(key: string): Promise<boolean>;
-  /** Atomically mark `key` as claimed; returns false if it already exists. */
-  claim(key: string): Promise<boolean>;
+  /**
+   * Atomically take a lease on `key`. Returns false when the key is already
+   * done (`mark`ed) or when another worker holds a lease that has not expired.
+   *
+   * The lease is what makes a killed worker recoverable: `unclaim` only runs
+   * from the error path, so a SIGTERM or a crash mid-operation would otherwise
+   * leave the key claimed forever and every later poll would skip it. A claim
+   * older than `leaseMs` is therefore stealable.
+   */
+  claim(key: string, leaseMs?: number): Promise<boolean>;
   /** Release a previously claimed `key` so a failed operation can be retried. */
   unclaim(key: string): Promise<void>;
   mark(key: string): Promise<void>;

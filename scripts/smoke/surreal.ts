@@ -56,6 +56,15 @@ await store.unclaim('k2');
 assert.equal(await store.claim('k2'), true, 'unclaim releases the key so it can be reclaimed');
 await store.mark('k1');
 assert.equal(await store.seen('k1'), true, 'idempotency mark/seen');
+assert.equal(await store.claim('k1'), false, 'a marked key is done, not claimable');
+
+// Same lease contract as the SQLite backend: a claim a killed worker never released
+// ages out, a claim a live worker still holds does not.
+assert.equal(await store.claim('k3'), true, 'claim taken');
+assert.equal(await store.claim('k3', 60_000), false, 'a fresh lease is not stealable');
+await new Promise((r) => setTimeout(r, 5));
+assert.equal(await store.claim('k3', 1), true, 'an expired lease is stealable');
+assert.equal(await store.claim('k1', 1), false, 'a done key is never stealable');
 
 // graduation writes a markdown skill in the vault + removes the concern
 const note = await graduate(store, { subject: 'reconnect backoff', description: 'Use when reviewing src/net reconnect.', skillMd: '## Use when\nreconnect changes.\n## Patterns\n### x\nSkip unless: y.', sourceRecordId: a.recordId });

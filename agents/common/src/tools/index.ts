@@ -8,7 +8,7 @@ import { buildGhApiReadTool, buildPostReviewTool, buildPostIssueCommentTool, bui
 export interface CommonToolsOpts {
   readonly ctx: PrContext;
   readonly octokit: Octokit;
-  readonly token: string;
+  readonly token: () => Promise<string>;
   readonly allowWrite?: boolean;
 }
 
