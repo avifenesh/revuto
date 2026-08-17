@@ -44,6 +44,47 @@ function mapConcern(row: any): ConcernRecord {
   };
 }
 
+/**
+ * Take a lease on `$k`, as one statement.
+ *
+ * The read that decides (is this head already done? does someone hold it?) and
+ * the write that takes the lease have to commit together: SurrealDB is shared
+ * across processes - a manual `revuto review <repo> <pr>` can land on the
+ * daemon's review tick - and as separate statements a worker could read `seen`
+ * as empty, have the finishing worker mark the key, and then still claim it and
+ * post a second review of the same SHA. SurrealDB runs each statement in its own
+ * transaction, and a block is one statement, so this is the Surreal counterpart
+ * of the SQLite backend's IMMEDIATE transaction. A losing writer gets a
+ * transaction conflict, which `query` retries.
+ */
+const CLAIM_BLOCK = `
+RETURN {
+  LET $done = (SELECT VALUE id FROM type::record('seen', $k));
+  IF array::len($done) > 0 { RETURN false };
+  LET $held = (SELECT VALUE at FROM type::record('claim', $k));
+  IF array::len($held) = 0 {
+    CREATE type::record('claim', $k) SET at = $now;
+    RETURN true;
+  };
+  IF $held[0] < $cutoff {
+    UPDATE type::record('claim', $k) SET at = $now;
+    RETURN true;
+  };
+  RETURN false;
+};`;
+
+/**
+ * Record `$k` as done and drop its lease, as one statement - so no reader ever
+ * sees a moment with neither a done marker nor a claim, which is the window a
+ * second worker would claim through.
+ */
+const MARK_BLOCK = `
+RETURN {
+  UPSERT type::record('seen', $k) SET at = $now;
+  DELETE type::record('claim', $k);
+  RETURN true;
+};`;
+
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const RETRYABLE_SURREAL_RE = /transaction conflict|write conflict|can be retried/i;
 
@@ -214,30 +255,19 @@ export class SurrealStore implements KnowledgeStore {
   }
   async claim(key: string, leaseMs = DEFAULT_CLAIM_LEASE_MS): Promise<boolean> {
     // A done marker in `seen` outranks everything: the head was already reviewed.
-    if (await this.seen(key)) return false;
-    const now = new Date().toISOString();
-    try {
-      const rows = await this.rows(`CREATE type::record('claim', $k) SET at = $now`, { k: key, now });
-      return rows.length > 0;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!/already exists|record.*exists/i.test(message)) throw err;
-    }
-    // Someone holds it. Steal only an expired lease - the WHERE is what keeps two
-    // pollers from both winning, since the first one's write moves `at` forward.
-    const cutoff = new Date(Date.now() - leaseMs).toISOString();
-    const stolen = await this.rows(
-      `UPDATE type::record('claim', $k) SET at = $now WHERE at < $cutoff RETURN AFTER`,
-      { k: key, now, cutoff },
-    );
-    return stolen.length > 0;
+    // An unexpired claim means someone is on it; an expired one is stealable.
+    const res = await this.query(CLAIM_BLOCK, {
+      k: key,
+      now: new Date().toISOString(),
+      cutoff: new Date(Date.now() - leaseMs).toISOString(),
+    });
+    return res[res.length - 1] === true;
   }
   async unclaim(key: string): Promise<void> {
     await this.rows(`DELETE type::record('claim', $k)`, { k: key });
   }
   async mark(key: string): Promise<void> {
-    await this.rows(`UPSERT type::record('seen', $k) SET at = $now`, { k: key, now: new Date().toISOString() });
-    await this.rows(`DELETE type::record('claim', $k)`, { k: key });
+    await this.query(MARK_BLOCK, { k: key, now: new Date().toISOString() });
   }
 
   async incrCounter(key: string, by = 1): Promise<number> {
