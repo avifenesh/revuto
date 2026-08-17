@@ -25,7 +25,7 @@ import type { Embedder } from './memory/embedder.js';
 export interface AssembleBaseOpts {
   readonly ctx: PrContext;
   readonly octokit: Octokit;
-  readonly token: string;
+  readonly token: () => Promise<string>;
   readonly allowWrite: boolean;
   readonly config: ReviewerConfig;
 }
@@ -176,7 +176,9 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   const ctx = await prepareWorkspace(
     { repo: opts.repo, pr_number: opts.prNumber },
     octokit,
-    token,
+    // Clone/fetch run here at the top of the review, so one resolve is enough;
+    // the tools below get the getter, since they run for the next half hour.
+    await token(),
     workspaceRoot,
   );
 

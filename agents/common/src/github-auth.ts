@@ -13,7 +13,15 @@ import type { GithubAppConfig } from './config.js';
 
 export interface GithubAuth {
   readonly octokit: Octokit;
-  readonly token: string;
+  /**
+   * Token for the subprocesses that need one (git over HTTPS, the `gh` CLI).
+   * Resolved per use, never captured: an installation token lives 60 minutes
+   * (@octokit/auth-app caches it for 59) while a review runs for tens of
+   * minutes, so a job that claims a head late in a cached token's life would
+   * otherwise reach its post_review call holding an expired credential and get
+   * a 401 after all the model work was already paid for.
+   */
+  token(): Promise<string>;
   /** Login used for comments/reviews, when known. */
   readonly login?: string;
 }
@@ -40,7 +48,8 @@ export function getOctokit(opts: { tokenEnv: string }): GithubAuth {
     throw new Error(`no GitHub token: set $${opts.tokenEnv} or run \`gh auth login\``);
   }
 
-  cached = { octokit: new Octokit({ auth: token }), token };
+  const personalToken = token;
+  cached = { octokit: new Octokit({ auth: personalToken }), token: async () => personalToken };
   return cached;
 }
 
@@ -48,18 +57,20 @@ function appCacheKey(config: GithubAppConfig): string {
   return `${config.appId}:${config.privateKeyPath}`;
 }
 
+function readPrivateKey(config: GithubAppConfig): string {
+  try {
+    return readFileSync(config.privateKeyPath, 'utf8');
+  } catch (err) {
+    throw new Error(`cannot read GitHub App private key ${config.privateKeyPath}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 function getAppAuth(config: GithubAppConfig): AppAuth {
   const key = appCacheKey(config);
   const existing = appAuthCache.get(key);
   if (existing) return existing;
 
-  let privateKey: string;
-  try {
-    privateKey = readFileSync(config.privateKeyPath, 'utf8');
-  } catch (err) {
-    throw new Error(`cannot read GitHub App private key ${config.privateKeyPath}: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  const auth = createAppAuth({ appId: config.appId, privateKey });
+  const auth = createAppAuth({ appId: config.appId, privateKey: readPrivateKey(config) });
   appAuthCache.set(key, auth);
   return auth;
 }
@@ -80,10 +91,22 @@ async function getAppBotLogin(config: GithubAppConfig): Promise<string> {
 
 /** Create an installation-scoped client from the installation ID in a webhook payload. */
 export async function getInstallationOctokit(config: GithubAppConfig, installationId: number): Promise<GithubAuth> {
-  const installation = await getAppAuth(config)({ type: 'installation', installationId });
+  // authStrategy rather than a token string: the strategy's hook re-authenticates
+  // on every request, so a request made after the cached installation token aged
+  // out mints a new one instead of sending a dead credential. Handing
+  // `new Octokit({ auth: <token> })` a token captured at claim time is what made
+  // long reviews fail at the finish line with "Bad credentials".
+  const octokit = new Octokit({
+    authStrategy: createAppAuth,
+    auth: { appId: config.appId, privateKey: readPrivateKey(config), installationId },
+  });
   return {
-    octokit: new Octokit({ auth: installation.token }),
-    token: installation.token,
+    octokit,
+    // Same hook, same cache - so git/gh subprocesses get a live token too.
+    token: async () => {
+      const installation = (await octokit.auth({ type: 'installation' })) as { token: string };
+      return installation.token;
+    },
     login: await getAppBotLogin(config),
   };
 }

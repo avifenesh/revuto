@@ -76,6 +76,16 @@ await store.unclaim('octo/demo#2@abc');
 assert.equal(await store.claim('octo/demo#2@abc'), true, 'unclaim releases the key so it can be reclaimed');
 await store.mark('octo/demo#1@abc');
 assert.equal(await store.seen('octo/demo#1@abc'), true, 'idempotency mark/seen');
+assert.equal(await store.claim('octo/demo#1@abc'), false, 'a marked key is done, not claimable');
+
+// A claim expires, because `unclaim` only runs from the error path: a SIGTERM or a
+// crash mid-review used to leave the head claimed forever and every later poll
+// skipped it. The lease bounds that to leaseMs; a live worker keeps its claim.
+assert.equal(await store.claim('octo/demo#4@abc'), true, 'claim taken');
+assert.equal(await store.claim('octo/demo#4@abc', 60_000), false, 'a fresh lease is not stealable');
+await new Promise((r) => setTimeout(r, 5));
+assert.equal(await store.claim('octo/demo#4@abc', 1), true, 'an expired lease is stealable');
+assert.equal(await store.claim('octo/demo#1@abc', 1), false, 'a done key is never stealable');
 
 // 5. daily counters (the limit-enforcement primitive)
 assert.equal(await store.getCounter('reviews:2026-05-21'), 0, 'absent counter is 0');

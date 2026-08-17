@@ -180,7 +180,7 @@ assert.equal(removedRepoRan, false, 'removal prevents the queued review callback
 writeReviewer(config, { repo: event.repository.full_name, botLogin: 'revuto-review[bot]' });
 const raceHeadSha = 'b'.repeat(40);
 const raceAuth = {
-  token: 'installation-token',
+  token: async () => 'installation-token',
   login: 'revuto-review[bot]',
   octokit: {
     pulls: {
@@ -259,7 +259,7 @@ assert.equal(
 const reviewCalls: Array<Record<string, unknown>> = [];
 const checkCalls: Array<Record<string, unknown>> = [];
 const checkAuth = {
-  token: 'installation-token',
+  token: async () => 'installation-token',
   login: 'revuto-review[bot]',
   octokit: {
     pulls: {
@@ -331,7 +331,7 @@ assert.equal(checkCalls[1]?.conclusion, 'failure', 'findings still fail the App 
 
 const approvalFailureCheckCalls: Array<Record<string, unknown>> = [];
 const approvalFailureAuth = {
-  token: 'installation-token',
+  token: async () => 'installation-token',
   login: 'revuto-review[bot]',
   octokit: {
     pulls: {

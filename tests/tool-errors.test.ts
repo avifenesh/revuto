@@ -89,7 +89,7 @@ test('an off-allowlist git subcommand is an ERROR', async () => {
 });
 
 test('an off-allowlist gh api path is an ERROR', async () => {
-  const gh = buildGhApiReadTool({ token: 'unused', ctx: {}, octokit: {} } as unknown as GhToolsDeps);
+  const gh = buildGhApiReadTool({ token: async () => 'unused', ctx: {}, octokit: {} } as unknown as GhToolsDeps);
   const out = (await gh.callback({ path: 'repos/o/r/pulls/1/merge' })) as string;
   assert.equal(isToolErrorOutput(out), true);
   assert.equal(asStep('gh_api_read', out).inspections, 0);
@@ -106,7 +106,7 @@ test('a binary that cannot be spawned fails the call instead of taking the proce
     const gitOut = await gitCall(dir, ['log', '--oneline', '-1']);
     assert.equal(isToolErrorOutput(gitOut), true, `expected an ERROR result, got: ${gitOut.slice(0, 200)}`);
 
-    const gh = buildGhApiReadTool({ token: 'unused', ctx: {}, octokit: {} } as unknown as GhToolsDeps);
+    const gh = buildGhApiReadTool({ token: async () => 'unused', ctx: {}, octokit: {} } as unknown as GhToolsDeps);
     const ghOut = (await gh.callback({ path: 'repos/o/r/pulls/1' })) as string;
     assert.equal(isToolErrorOutput(ghOut), true, `expected an ERROR result, got: ${ghOut.slice(0, 200)}`);
 
