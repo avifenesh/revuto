@@ -178,6 +178,16 @@ export class SqliteStore implements KnowledgeStore {
     const cutoff = new Date(Date.now() - leaseMs).toISOString();
     // One transaction: the read that decides and the write that takes the lease
     // cannot be interleaved by a second worker on the same file.
+    //
+    // `.immediate()`, not the DEFERRED default: this reads (`idempotency`) before
+    // it writes, and in WAL mode a deferred transaction takes its read snapshot at
+    // that SELECT. If another process commits before the write, the upgrade fails
+    // with SQLITE_BUSY_SNAPSHOT, which SQLite does not route through the busy
+    // handler - better-sqlite3's `timeout` would not retry it and `claim` would
+    // throw instead of answering. Two processes on one repo file is normal here:
+    // a manual `revuto review <repo> <pr>` can land on the daemon's review tick.
+    // BEGIN IMMEDIATE takes the write lock up front, so contention waits (and is
+    // retried by the busy handler) rather than erroring at commit.
     return this.db.transaction(() => {
       if (this.db.prepare(`SELECT 1 FROM idempotency WHERE key = ?`).get(key)) return false;
       const inserted = this.db.prepare(`INSERT OR IGNORE INTO claims (key, claimed_at) VALUES (?, ?)`).run(key, now);
@@ -185,7 +195,7 @@ export class SqliteStore implements KnowledgeStore {
       // Held by someone else - stealable only once the lease has aged out.
       const stolen = this.db.prepare(`UPDATE claims SET claimed_at = ? WHERE key = ? AND claimed_at < ?`).run(now, key, cutoff);
       return stolen.changes > 0;
-    })();
+    }).immediate();
   }
   async unclaim(key: string): Promise<void> {
     this.db.prepare(`DELETE FROM claims WHERE key = ?`).run(key);

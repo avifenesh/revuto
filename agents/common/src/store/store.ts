@@ -112,6 +112,11 @@ export interface KnowledgeStore {
    * from the error path, so a SIGTERM or a crash mid-operation would otherwise
    * leave the key claimed forever and every later poll would skip it. A claim
    * older than `leaseMs` is therefore stealable.
+   *
+   * A done marker is not: it has no lease, by design. Keys claimed by the older
+   * code that wrote claims into the done markers therefore read as finished even
+   * if their operation never completed - `--force`, which bypasses the claim, is
+   * the way to re-run one of those.
    */
   claim(key: string, leaseMs?: number): Promise<boolean>;
   /** Release a previously claimed `key` so a failed operation can be retried. */

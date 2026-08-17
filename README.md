@@ -271,6 +271,14 @@ cursors, idempotency) has two backends, set in `store.backend`:
 - `sqlite` — opt-in, zero dependency; a per-repo SQLite file under `<vault>/memory/`
   (no server to run). Set `"store": { "backend": "sqlite" }`.
 
+Both backends keep in-flight claims (`claims` / `claim`) apart from the done markers
+(`idempotency` / `seen`). A claim is released when the review completes or fails, and is
+stealable after a 90-minute lease, so a worker killed mid-review no longer strands its
+head - the next poll retakes it. A done marker never expires. Heads recorded before the
+lease existed were written to the done markers, so a review the old code lost that way
+still reads as finished; re-run it with `revuto review <owner/repo> <pr> --force`, which
+bypasses the claim entirely.
+
 ## Limits
 
 Optional caps under `limits` (0 = unlimited; run/comment/token counts are per repo per UTC day, enforced via store counters):
