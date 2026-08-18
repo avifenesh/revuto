@@ -29,6 +29,7 @@ function outcome(over: Partial<ReviewOutcome> = {}): ReviewOutcome {
     tokens: 1000,
     inspections: 6,
     toolErrors: 0,
+    postFailures: 0,
     forcedTerminal: false,
     ranModel: true,
     ...over,
@@ -60,6 +61,50 @@ test('summarizeReviewSteps does not count terminal or posting tools as inspectio
   assert.equal(s.terminal, 'post_review');
   assert.equal(s.hasFindings, true);
   assert.equal(s.inspections, 0);
+});
+
+test('a posting call that failed is not a finding', () => {
+  // agent-sh/agent-workspace-linux#70: the run posted a clean review, and reading
+  // findings out of the attempt rather than the result reported "posted one or more
+  // findings" on a pull request that had none. Same shape when the API rejects the
+  // call: nothing reached the PR, so nothing was found.
+  const s = summarizeReviewSteps([
+    step([{ toolName: 'post_review', output: 'ERROR status=422: Unprocessable Entity' }]),
+    step([{ toolName: 'skip_review', output: '{"ok":true,"skipped":true}' }]),
+  ]);
+  assert.equal(s.hasFindings, false);
+  assert.equal(s.postFailures, 1);
+  assert.equal(s.toolErrors, 1);
+  // The failed post decided nothing, so the skip that followed is the decision.
+  assert.equal(s.terminal, 'skip_review');
+});
+
+test('an empty review refused, then skipped, is a clean pass', () => {
+  // The end-to-end #70 shape after the fix: the model reaches for post_review with
+  // nothing anchored, the guard turns it away, and it decides skip_review. Nothing
+  // was lost, the diff really is clean, and the check has to pass — otherwise the
+  // false failure just moves from `hasFindings` to `postFailures`.
+  const s = summarizeReviewSteps([
+    step([{ toolName: 'read', output: 'workflow contents' }]),
+    step([{ toolName: 'post_review', output: 'ERROR no_inline_comments: post_review needs at least one inline comment.' }]),
+    step([{ toolName: 'skip_review', output: '{"ok":true,"skipped":true}' }]),
+  ]);
+  assert.equal(s.hasFindings, false);
+  assert.equal(s.postFailures, 0);
+  assert.equal(s.terminal, 'skip_review');
+  assert.equal(s.inspections, 1);
+  const result = checkResultForOutcome(outcome({ ...s, ranModel: true }));
+  assert.equal(result.conclusion, 'success');
+  assert.match(result.title, /passed/);
+});
+
+test('a review that could not be posted fails the check instead of approving', () => {
+  const result = checkResultForOutcome(outcome({ postFailures: 1, toolErrors: 1, tracePath: '/vault/.traces/x/20260818T220000-pr70-b851423.jsonl' }));
+  assert.equal(result.conclusion, 'failure');
+  assert.match(result.title, /could not post/);
+  assert.match(result.summary, /Posting calls that failed: 1/);
+  assert.match(result.summary, /Local trace: 20260818T220000-pr70-b851423\.jsonl/);
+  assert.doesNotMatch(result.summary, /vault/);
 });
 
 test('summarizeReviewSteps counts failed tool calls as errors, not inspection', () => {

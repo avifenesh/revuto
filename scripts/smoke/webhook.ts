@@ -216,6 +216,7 @@ const reviewed = (over: Partial<ReviewOutcome> = {}): ReviewOutcome => ({
   tokens: 1,
   inspections: 3,
   toolErrors: 0,
+  postFailures: 0,
   forcedTerminal: false,
   ranModel: true,
   ...over,
@@ -241,6 +242,11 @@ assert.equal(
   checkResultForOutcome(reviewed({ forcedTerminal: true })).conclusion,
   'failure',
   'a skip the forced pass decided fails the check',
+);
+assert.equal(
+  checkResultForOutcome(reviewed({ postFailures: 1, toolErrors: 1 })).conclusion,
+  'failure',
+  'a skip after a posting call that failed fails the check',
 );
 const issueCommentThenSkip = summarizeReviewSteps([{
   toolResults: [

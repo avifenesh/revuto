@@ -26,6 +26,21 @@ export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
       summary: 'Revuto posted one or more findings on the pull request. Address the review comments and push a new head.',
     };
   }
+  // The run tried to put something on the pull request and the call came back
+  // ERROR, so whatever it meant to say reached nobody. Whichever way it ended
+  // afterwards, this is not a review anyone can read, and a `skip_review` that
+  // follows a failed post is not the model calling the diff clean.
+  if (outcome.postFailures > 0) {
+    return {
+      conclusion: 'failure',
+      title: 'Revuto could not post its review',
+      summary: [
+        `Posting calls that failed: ${outcome.postFailures}. Terminal decision: ${outcome.terminal}.`,
+        'Nothing reached the pull request, so this check does not pass on it. Retry the review, or inspect the daemon logs for the posting error.',
+        outcome.tracePath ? `Local trace: ${basename(outcome.tracePath)}` : null,
+      ].filter(Boolean).join('\n\n'),
+    };
+  }
   if (outcome.terminal === 'skip_review') {
     // A skip with no successful inspection call is not a clean bill of health: the
     // model never read the code. That happens when its tool calls all failed, or

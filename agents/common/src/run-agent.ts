@@ -17,6 +17,7 @@ import { getOctokit, type GithubAuth } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
 import { toAiSdkTools, type ToolDef } from './tool-def.js';
 import { assembleCommonTools } from './tools/index.js';
+import { refusedEmptyReview } from './tools/gh.js';
 import { startReviewTrace, isToolErrorOutput } from './trace.js';
 import { selectSkills } from './skills/select.js';
 import type { KnowledgeStore } from './store/store.js';
@@ -49,7 +50,11 @@ export interface RunReviewOptions {
 
 export interface ReviewOutcome {
   readonly terminal: 'post_review' | 'skip_review' | 'none';
-  /** True when the run used a non-terminal finding tool such as post_issue_comment. */
+  /**
+   * True when a posting tool actually put findings on the pull request. A posting
+   * call that came back `ERROR` posted nothing and does not set this — see
+   * `postFailures` for that case.
+   */
   readonly hasFindings: boolean;
   readonly result: string;
   readonly headSha: string;
@@ -64,6 +69,12 @@ export interface ReviewOutcome {
   readonly inspections: number;
   /** Tool results that came back as errors (`ERROR ...`). */
   readonly toolErrors: number;
+  /**
+   * Posting calls that came back as errors. The run tried to put something on the
+   * pull request and failed, so a later clean `skip_review` is not a clean bill of
+   * health: the findings it meant to post never reached anyone.
+   */
+  readonly postFailures: number;
   /** True when the terminal decision came from the terminal-tools-only recovery pass. */
   readonly forcedTerminal: boolean;
   /** False for PRs the engine declined to review at all (draft, stale delivery, ...). */
@@ -88,6 +99,7 @@ export function unreviewedOutcome(result: string, headSha: string): ReviewOutcom
     tokens: 0,
     inspections: 0,
     toolErrors: 0,
+    postFailures: 0,
     forcedTerminal: false,
     ranModel: false,
   };
@@ -100,6 +112,7 @@ export function describeOutcome(o: ReviewOutcome): string {
     `findings=${o.hasFindings}`,
     `inspections=${o.inspections}`,
     `toolErrors=${o.toolErrors}`,
+    ...(o.postFailures > 0 ? [`postFailures=${o.postFailures}`] : []),
     ...(o.forcedTerminal ? ['forced=true'] : []),
     `steps=${o.steps}`,
     `tokens=${o.tokens}`,
@@ -226,7 +239,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     onStepFinish: (step) => trace.step('main', step),
   });
 
-  let { terminal, result, hasFindings, inspections, toolErrors } = summarizeReviewSteps(main.steps);
+  let { terminal, result, hasFindings, inspections, toolErrors, postFailures } = summarizeReviewSteps(main.steps);
   let tokens = tokensFrom(main.usage);
   let stepCount = main.steps.length;
   let forcedTerminal = false;
@@ -264,6 +277,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     hasFindings ||= c.hasFindings;
     inspections += c.inspections;
     toolErrors += c.toolErrors;
+    postFailures += c.postFailures;
     tokens += tokensFrom(continued.usage);
     stepCount += continued.steps.length;
     passes.push(continued);
@@ -297,6 +311,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     result = f.result;
     hasFindings ||= f.hasFindings;
     toolErrors += f.toolErrors;
+    postFailures += f.postFailures;
     tokens += tokensFrom(forced.usage);
     stepCount += forced.steps.length;
     forcedTerminal = terminal !== 'none';
@@ -311,6 +326,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     tokens,
     inspections,
     toolErrors,
+    postFailures,
     forcedTerminal,
     ranModel: true,
   };
@@ -337,22 +353,34 @@ const POSTING_TOOLS = new Set(['post_review', 'post_issue_comment']);
  */
 export function summarizeReviewSteps(
   steps: readonly StepLike[],
-): Pick<ReviewOutcome, 'terminal' | 'result' | 'hasFindings' | 'inspections' | 'toolErrors'> {
+): Pick<ReviewOutcome, 'terminal' | 'result' | 'hasFindings' | 'inspections' | 'toolErrors' | 'postFailures'> {
   let terminal: ReviewOutcome['terminal'] = 'none';
   let result = '';
   let hasFindings = false;
   let inspections = 0;
   let toolErrors = 0;
+  let postFailures = 0;
   for (const step of steps) {
     for (const tr of step.toolResults ?? []) {
       const payload = tr.output ?? tr.result ?? {};
+      const posting = POSTING_TOOLS.has(tr.toolName);
+      const isTerminal = TERMINAL_TOOLS.has(tr.toolName);
+      // A call that failed did not do its job, so it decides nothing: it is neither
+      // an inspection, nor a finding, nor a terminal decision. Reading findings out
+      // of the attempt rather than the result is what reported a `post_review` the
+      // API rejected — and a clean one carrying no comments — as posted findings.
       if (isToolErrorOutput(payload)) {
         toolErrors++;
-      } else if (!TERMINAL_TOOLS.has(tr.toolName) && !POSTING_TOOLS.has(tr.toolName)) {
-        inspections++;
+        // One posting failure loses nothing: the empty-review guard turning away a
+        // post that carried no findings. A `skip_review` after that is a real clean
+        // decision, so counting it here would fail the check on a clean review —
+        // the very thing this reports on.
+        if (posting && !refusedEmptyReview(payload)) postFailures++;
+        continue;
       }
-      if (POSTING_TOOLS.has(tr.toolName)) hasFindings = true;
-      if (TERMINAL_TOOLS.has(tr.toolName)) {
+      if (!isTerminal && !posting) inspections++;
+      if (posting) hasFindings = true;
+      if (isTerminal) {
         terminal = tr.toolName as ReviewOutcome['terminal'];
         result = typeof payload === 'string' ? payload : JSON.stringify(payload);
       }
@@ -361,7 +389,7 @@ export function summarizeReviewSteps(
     // toolResults, so count it here or the run looks cleaner than it was.
     for (const part of step.content ?? []) if (part?.type === 'tool-error') toolErrors++;
   }
-  return { terminal, result, hasFindings, inspections, toolErrors };
+  return { terminal, result, hasFindings, inspections, toolErrors, postFailures };
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>
