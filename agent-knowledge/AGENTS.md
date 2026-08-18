@@ -39,3 +39,14 @@ Full source metadata with quality scores is in `resources/`.
 | Guide | Sources File |
 |-------|-------------|
 | skill-writing-best-practices.md | [resources/skill-writing-best-practices-sources.json](resources/skill-writing-best-practices-sources.json) |
+
+## Worktree and tmp hygiene (owner, 2026-08-17)
+
+- When work in a git worktree is finished — merged, banked, or abandoned — clean it up
+  as part of finishing: `git worktree remove <path>` AND delete its branch
+  (`git branch -d`; `-D` only once the owner's merge/abandon decision is recorded).
+  A closed lane leaves no `wt-*` directory and no stale branch behind.
+- Every use of /tmp (or any scratch space) is cleaned by the task that created it:
+  delete scratch files and dirs when the task closes, not when disk pressure finds
+  them. Motivating incident 2026-08-17: 7 GB of dead lane dirs in /tmp plus an
+  unthrottled upload storm flooded 25 GB of swap and stalled the rig.
