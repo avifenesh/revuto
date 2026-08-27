@@ -33,6 +33,7 @@ import { runInit } from './init.js';
 import { runDoctor, doctorOk } from './doctor.js';
 import { isJob } from './types.js';
 import { applyModelOverrides, extractModelOverrideArgs, modelOverrideUsage } from './model-overrides.js';
+import { reconcileStaleReviewChecks } from './check-reconciliation.js';
 
 function usage(): void {
   console.log(`revuto <command>
@@ -99,6 +100,10 @@ async function main(): Promise<void> {
       const cfg = config();
       if (cfg.github.app) {
         const app = cfg.github.app;
+        const reconciled = await reconcileStaleReviewChecks(cfg);
+        if (reconciled.completed > 0 || reconciled.failedRepos > 0) {
+          console.log(`check reconciliation: completed=${reconciled.completed} failed_repos=${reconciled.failedRepos}`);
+        }
         await startWebhookServer(cfg);
         console.log(`webhook listening on http://${app.host}:${app.port}${app.path}`);
       }
