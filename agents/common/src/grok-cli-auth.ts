@@ -238,6 +238,8 @@ function parseExpiresAt(value?: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+const ORPHAN_LOCK_MS = 30_000;
+
 interface LockOwner {
   pid: number;
   hostname: string;
@@ -256,34 +258,32 @@ function isProcessAlive(pid: number): boolean {
 function tryCleanStaleLock(lockDir: string): boolean {
   try {
     const ownerPath = join(lockDir, 'owner.json');
-    let isStale = false;
+    let owner: Partial<LockOwner> | null = null;
     try {
       const raw = readFileSync(ownerPath, 'utf8');
-      const owner = JSON.parse(raw) as Partial<LockOwner>;
-      if (typeof owner.pid === 'number') {
-        if (owner.hostname === hostname() && !isProcessAlive(owner.pid)) {
-          isStale = true;
-        } else if (typeof owner.createdAt === 'number' && Date.now() - owner.createdAt > LOCK_WAIT_MS) {
-          isStale = true;
-        }
-      }
+      owner = JSON.parse(raw) as Partial<LockOwner>;
     } catch {
+      // owner file missing or unparseable
+    }
+
+    if (owner && typeof owner.pid === 'number' && owner.hostname === hostname()) {
+      if (!isProcessAlive(owner.pid)) {
+        rmSync(lockDir, { recursive: true, force: true });
+        return true;
+      }
+      return false; // Live owner on this host: never steal!
+    }
+
+    // Owner-less orphan or unreadable owner: check mtime
+    if (!owner) {
       try {
         const st = statSync(lockDir);
-        if (Date.now() - st.mtimeMs > LOCK_WAIT_MS) {
-          isStale = true;
+        if (Date.now() - st.mtimeMs >= ORPHAN_LOCK_MS) {
+          rmSync(lockDir, { recursive: true, force: true });
+          return true;
         }
       } catch {
         // stat failed
-      }
-    }
-
-    if (isStale) {
-      try {
-        rmSync(lockDir, { recursive: true, force: true });
-        return true;
-      } catch {
-        // ignore
       }
     }
   } catch {
@@ -295,6 +295,7 @@ function tryCleanStaleLock(lockDir: string): boolean {
 async function withAuthLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const lockDir = `${path}.revuto-lock`;
   const started = Date.now();
+  let acquired = false;
   while (true) {
     try {
       mkdirSync(lockDir);
@@ -307,6 +308,7 @@ async function withAuthLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
       } catch {
         // owner write is best-effort
       }
+      acquired = true;
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
@@ -316,7 +318,6 @@ async function withAuthLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
       }
 
       if (Date.now() - started > LOCK_WAIT_MS) {
-        tryCleanStaleLock(lockDir);
         throw new Error(`timeout waiting for Grok Code CLI auth lock (${lockDir})`);
       }
       await sleep(50);
@@ -325,10 +326,12 @@ async function withAuthLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } finally {
-    try {
-      rmSync(lockDir, { recursive: true, force: true });
-    } catch {
-      // lock dir is best-effort
+    if (acquired) {
+      try {
+        rmSync(lockDir, { recursive: true, force: true });
+      } catch {
+        // lock dir is best-effort
+      }
     }
   }
 }

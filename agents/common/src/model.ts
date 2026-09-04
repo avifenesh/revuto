@@ -18,11 +18,12 @@ import type {
 import type { ModelSpec } from './config.js';
 import { buildResponsesModel } from './responses-model.js';
 import { buildConverseModel } from './converse-model.js';
-import { grokCLIHeaders, usesGrokCLIAuth } from './grok-cli-auth.js';
+import { grokCLIHeaders, grokCLIToken, usesGrokCLIAuth } from './grok-cli-auth.js';
 
 export function resolveApiKey(spec: ModelSpec): string {
-  if (!spec.apiKeyEnv) return ''; // keyless local endpoints (Ollama/vLLM) are fine
-  return process.env[spec.apiKeyEnv] ?? '';
+  if (spec.apiKeyEnv) return process.env[spec.apiKeyEnv] ?? '';
+  if (spec.auth === 'grok') return process.env.GROK_API_KEY ?? '';
+  return '';
 }
 
 function provider(spec: ModelSpec) {
@@ -30,8 +31,21 @@ function provider(spec: ModelSpec) {
   return createOpenAICompatible({
     name: spec.name ?? new URL(spec.baseURL).host,
     baseURL: spec.baseURL,
-    apiKey: resolveApiKey(spec) || undefined,
-    ...(isGrok ? { headers: grokCLIHeaders(spec.model) } : {}),
+    apiKey: isGrok ? undefined : (resolveApiKey(spec) || undefined),
+    ...(isGrok
+      ? {
+          headers: grokCLIHeaders(spec.model),
+          fetch: async (url: string | URL | Request, init?: RequestInit) => {
+            const token = resolveApiKey(spec) || (await grokCLIToken());
+            const headers = new Headers(init?.headers);
+            headers.set('authorization', `Bearer ${token}`);
+            for (const [k, v] of Object.entries(grokCLIHeaders(spec.model))) {
+              headers.set(k, v);
+            }
+            return fetch(url, { ...init, headers });
+          },
+        }
+      : {}),
   });
 }
 
