@@ -76,7 +76,17 @@ jobs:
           node-version: 22
       - run: npm ci
       - name: Audit (critical blocks; high reported)
-        run: npm audit --audit-level=critical
+        run: |
+          output=$(npm audit --audit-level=critical 2>&1) || {
+            status=$?
+            echo "$output"
+            if echo "$output" | grep -qE "503 Service Unavailable|audit endpoint returned an error|ENOTFOUND|ETIMEDOUT"; then
+              echo "::warning::npm registry audit endpoint unavailable (503/network error); skipping non-blocking audit gate"
+              exit 0
+            fi
+            exit $status
+          }
+          echo "$output"
       - name: High advisories (non-blocking)
         run: npm audit --audit-level=high || true
 

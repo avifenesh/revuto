@@ -34,6 +34,7 @@ import { runDoctor, doctorOk } from './doctor.js';
 import { isJob } from './types.js';
 import { applyModelOverrides, extractModelOverrideArgs, modelOverrideUsage } from './model-overrides.js';
 import { reconcileStaleReviewChecks } from './check-reconciliation.js';
+import { isReviewOutcomeSuccessful } from './review-check.js';
 
 function usage(): void {
   console.log(`revuto <command>
@@ -153,6 +154,21 @@ async function main(): Promise<void> {
       const cfg = config();
       const outcome = await runQueuedForRepo(cfg, repo, () => reviewOnePr(cfg, repo, pr, { force: args.includes('--force') }));
       console.log(JSON.stringify(outcome, null, 2));
+      if (!isReviewOutcomeSuccessful(outcome)) {
+        const reason = !outcome.ranModel
+          ? `review not run (${outcome.result})`
+          : outcome.terminal === 'none'
+          ? 'review ended without a terminal decision'
+          : outcome.postFailures > 0
+          ? `posting calls failed (${outcome.postFailures})`
+          : outcome.terminal === 'skip_review' && outcome.inspections === 0
+          ? 'skipped without inspecting the diff'
+          : outcome.terminal === 'skip_review' && outcome.forcedTerminal
+          ? 'skipped by forced terminal-only pass'
+          : 'review failed';
+        console.error(`revuto review failed: ${reason}`);
+        process.exitCode = 1;
+      }
       break;
     }
     case 'learn': {

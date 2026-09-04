@@ -26,8 +26,8 @@ export interface ModelSpec {
   readonly api?: 'chat' | 'responses' | 'converse';
   /** Reasoning effort for Responses/reasoning models. "max" is the adaptive-thinking ceiling for Converse Claude (opus-4-8+). */
   readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. */
-  readonly auth?: 'auto' | 'bearer' | 'aws' | 'none';
+  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. */
+  readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'none';
   /** AWS region for SigV4-signed bedrock-mantle requests. */
   readonly awsRegion?: string;
   /** Env var holding the API key. Omit for keyless local endpoints. */
@@ -104,7 +104,42 @@ const DEFAULT_REVIEW = { maxSteps: 150, allowWrite: false, workspaceDir: '' };
 const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
 const MODEL_APIS = ['chat', 'responses', 'converse'] as const;
 const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-const AUTH_MODES = ['auto', 'bearer', 'aws', 'none'] as const;
+const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'none'] as const;
+
+/**
+ * Auto-load environment variables from ~/.config/revuto/env or <vault>/env if present.
+ * Does not overwrite existing non-empty environment variables.
+ */
+export function loadRevutoEnv(vaultPath?: string): void {
+  const candidates = [
+    join(homedir(), '.config', 'revuto', 'env'),
+    join(homedir(), '.config', 'gh-shared', 'token.env'),
+    join(homedir(), '.hermes', '.env'),
+    join(vaultPath ?? defaultVaultPath(), 'env'),
+  ];
+  for (const file of candidates) {
+    if (!existsSync(file)) continue;
+    try {
+      const content = readFileSync(file, 'utf8');
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx <= 0) continue;
+        const key = trimmed.slice(0, eqIdx).trim();
+        let val = trimmed.slice(eqIdx + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        if (process.env[key] === undefined || process.env[key] === '') {
+          process.env[key] = val;
+        }
+      }
+    } catch {
+      /* ignore read errors */
+    }
+  }
+}
 
 function requireField<T>(v: T | undefined, name: string): T {
   if (v === undefined || v === null || v === '') throw new Error(`config: required field "${name}" is missing`);
@@ -160,6 +195,7 @@ export function resolveConfigPath(path?: string): string {
 }
 
 export function loadConfig(path?: string): ReviewerConfig {
+  loadRevutoEnv();
   const file = resolveConfigPath(path);
   let raw: any;
   if (!existsSync(file)) {
@@ -174,6 +210,7 @@ export function loadConfig(path?: string): ReviewerConfig {
   // vaultPath defaults to the config file's own folder — so the config can live
   // inside the vault and the user controls everything (config + skills + reviewers) there.
   const vaultPath = raw.vaultPath ? resolveHome(raw.vaultPath) : dirname(file);
+  loadRevutoEnv(vaultPath);
   const tokenEnv = raw.github?.tokenEnv ?? 'GH_TOKEN';
   let githubApp: GithubAppConfig | undefined;
   if (raw.github?.app !== undefined) {

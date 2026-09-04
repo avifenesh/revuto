@@ -18,6 +18,14 @@ export interface CheckResult {
   readonly summary: string;
 }
 
+export function isReviewOutcomeSuccessful(outcome: ReviewOutcome): boolean {
+  if (!outcome.ranModel) return false;
+  if (outcome.terminal === 'none') return false;
+  if (outcome.postFailures > 0) return false;
+  if (outcome.terminal === 'skip_review' && (outcome.inspections === 0 || outcome.forcedTerminal)) return false;
+  return true;
+}
+
 export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
   if (outcome.hasFindings || outcome.terminal === 'post_review') {
     return {
@@ -42,6 +50,17 @@ export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
     };
   }
   if (outcome.terminal === 'skip_review') {
+    if (!outcome.ranModel) {
+      return {
+        conclusion: 'failure',
+        title: 'Revuto did not review this pull request',
+        summary: [
+          'Revuto did not run a review on this pull request.',
+          outcome.result ? `Reason: ${outcome.result}` : null,
+          'This check does not pass on an unreviewed pull request.',
+        ].filter(Boolean).join('\n\n'),
+      };
+    }
     // A skip with no successful inspection call is not a clean bill of health: the
     // model never read the code. That happens when its tool calls all failed, or
     // when the decision came from the terminal-tools-only recovery pass, where it

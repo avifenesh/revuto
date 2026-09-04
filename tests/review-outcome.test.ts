@@ -17,7 +17,7 @@ import {
   stalledOnOutputCap,
   type ReviewOutcome,
 } from '../agents/common/src/run-agent.js';
-import { checkResultForOutcome } from '../daemon/src/review-check.js';
+import { checkResultForOutcome, isReviewOutcomeSuccessful } from '../daemon/src/review-check.js';
 
 function outcome(over: Partial<ReviewOutcome> = {}): ReviewOutcome {
   return {
@@ -146,11 +146,23 @@ test('a skip the forced pass decided fails the check even after real inspection'
   assert.match(result.summary, /the review stalled without deciding anything/);
 });
 
-test('a PR the engine never ran the model on still reports success', () => {
+test('a PR the engine never ran the model on fails the check instead of approving', () => {
   const skipped = unreviewedOutcome('#7 is a draft - drafts are never reviewed', 'b'.repeat(40));
   assert.equal(skipped.ranModel, false);
   assert.equal(skipped.inspections, 0);
-  assert.equal(checkResultForOutcome(skipped).conclusion, 'success');
+  const result = checkResultForOutcome(skipped);
+  assert.equal(result.conclusion, 'failure');
+  assert.match(result.title, /did not review/);
+});
+
+test('isReviewOutcomeSuccessful requires active model execution and inspection', () => {
+  assert.equal(isReviewOutcomeSuccessful(outcome()), true);
+  assert.equal(isReviewOutcomeSuccessful(outcome({ terminal: 'post_review', hasFindings: true })), true);
+  assert.equal(isReviewOutcomeSuccessful(unreviewedOutcome('draft', 'a'.repeat(40))), false);
+  assert.equal(isReviewOutcomeSuccessful(outcome({ terminal: 'none' })), false);
+  assert.equal(isReviewOutcomeSuccessful(outcome({ inspections: 0 })), false);
+  assert.equal(isReviewOutcomeSuccessful(outcome({ forcedTerminal: true })), false);
+  assert.equal(isReviewOutcomeSuccessful(outcome({ postFailures: 1 })), false);
 });
 
 test('findings and unfinished runs fail the check', () => {

@@ -87,6 +87,8 @@ async function withRepoLock<T>(
 ): Promise<T> {
   const lockDir = repoLockDir(config, repo);
   const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
+  const start = Date.now();
+  let loggedWait = false;
 
   for (;;) {
     try {
@@ -100,6 +102,9 @@ async function withRepoLock<T>(
           repo,
           createdAt: new Date().toISOString(),
         }, null, 2) + '\n', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+        if (loggedWait) {
+          console.error(`[repo-queue] acquired lock on ${repo} after ${Date.now() - start}ms`);
+        }
         return await fn();
       } finally {
         await rm(lockDir, { recursive: true, force: true });
@@ -107,6 +112,12 @@ async function withRepoLock<T>(
     } catch (err) {
       if (!isAlreadyExists(err)) throw err;
       if (await removeStaleLock(lockDir)) continue;
+      if (!loggedWait && Date.now() - start >= 1000) {
+        loggedWait = true;
+        const owner = await readOwner(lockDir);
+        const ownerDesc = owner ? `pid ${owner.pid} on ${owner.hostname} since ${owner.createdAt}` : 'another process';
+        console.error(`[repo-queue] waiting for repository lock on ${repo} (held by ${ownerDesc})...`);
+      }
       await delay(pollMs);
     }
   }

@@ -86,6 +86,7 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
         outcome = await runReview({
           repo: settings.repo,
           prNumber: pr.number,
+          headSha: pr.headSha,
           config,
           store,
           embedder,
@@ -197,9 +198,9 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
       pr.head.sha,
     );
   }
-  if (pr.draft) {
-    // Rule: never touch drafts. They get reviewed once marked ready (updated_at bumps → next poll).
-    return unreviewedOutcome(`#${prNumber} is a draft — drafts are never reviewed`, pr.head.sha);
+  if (pr.draft && !opts.force) {
+    // Rule: never touch drafts unless explicitly forced. They get reviewed once marked ready (updated_at bumps → next poll).
+    return unreviewedOutcome(`#${prNumber} is a draft — drafts are never reviewed unless forced`, pr.head.sha);
   }
   // Reviewing surfaces the repo in the Obsidian index even if it wasn't init'd.
   if (!readReviewer(config, repo)) {
@@ -238,7 +239,7 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
     } else if (githubApp) {
       managedCheckRunId = await createReviewCheck(auth, githubApp, managedTarget);
     }
-    const outcome = await runReview({ repo, prNumber, config, store, embedder, githubAuth: auth });
+    const outcome = await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth });
     assertReviewedHead(managedTarget, outcome);
     if (outcome.terminal === 'none') {
       throw new Error(`review of ${repo}#${prNumber}@${pr.head.sha} ended without a terminal decision`);

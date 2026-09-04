@@ -9,6 +9,7 @@ export interface InvocationPayload {
   readonly pr_number: number;
   readonly pr_title?: string;
   readonly pr_body?: string;
+  readonly headSha?: string;
 }
 
 export interface PrContext {
@@ -113,7 +114,8 @@ export async function prepareWorkspace(
   const { data: pr } = await octokit.pulls.get({ owner, repo: repoName, pull_number: payload.pr_number });
 
   await ensureClone(owner, repoName, workspaceRoot, token);
-  const headSha = await checkoutPr(workspaceRoot, pr.head.sha);
+  const targetHeadSha = payload.headSha ?? pr.head.sha;
+  const headSha = await checkoutPr(workspaceRoot, targetHeadSha);
 
   // Base SHA comes from the PR object, not the ref name — the ref may have
   // advanced since the PR was opened. Fetch the base ref + sha explicitly.

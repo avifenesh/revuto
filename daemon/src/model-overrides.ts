@@ -99,7 +99,18 @@ export function modelPreset(alias: string, defaultRegion = DEFAULT_BEDROCK_REGIO
     return bedrockMantle('openai.gpt-5.5', region);
   }
 
-  throw new Error(`unknown model alias "${alias}". Use gpt55, gpt54, opus, sonnet, an openai.* model id, or an anthropic Bedrock model id; append @region to change region.`);
+  if (compact === 'grok' || compact === 'grok46' || compact === 'grokcode' || compact === 'grok4dot6') {
+    return {
+      name: 'grok-code',
+      baseURL: 'https://cli-chat-proxy.grok.com/v1',
+      model: 'grok-4.6',
+      api: 'responses',
+      reasoningEffort: 'xhigh',
+      auth: 'grok',
+    };
+  }
+
+  throw new Error(`unknown model alias "${alias}". Use gpt55, gpt54, opus, sonnet, grok, an openai.* model id, or an anthropic Bedrock model id; append @region to change region.`);
 }
 
 export function modelOverrideUsage(): string {
@@ -110,7 +121,7 @@ export function modelOverrideUsage(): string {
   --distill-model <alias[,fallback...]> override distill model chain
   --bedrock-region <region>           default region for aliases (default: us-east-2)
 
-Aliases: gpt55, gpt54, opus, sonnet. Append @region for one entry, e.g.
+Aliases: gpt55, gpt54, opus, sonnet, grok. Append @region for one entry, e.g.
   revuto review owner/repo 123 --review-model gpt55,opus
   revuto daemon --model review=gpt55@us-east-2,opus --model curator=opus,sonnet
 `;
