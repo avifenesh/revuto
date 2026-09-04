@@ -87,6 +87,7 @@ class ResponsesLanguageModel {
   readonly supportedUrls = {};
 
   private readonly spec: ModelSpec;
+  private lastGrokToken?: string;
 
   constructor({ spec }: ResponsesModelOptions) {
     this.spec = spec;
@@ -129,7 +130,7 @@ class ResponsesLanguageModel {
       }
       const message = (json !== undefined ? (errorMessage(json) ?? JSON.stringify(json)) : text) || `${response.status} ${response.statusText}`;
       if (response.status === 401 && usesGrokCLIAuth(this.spec) && attempt < MAX_RETRIES) {
-        await refreshGrokCLIToken({ force: true });
+        await refreshGrokCLIToken({ force: true, rejectedToken: this.lastGrokToken });
         lastErr = new Error(`responses API call failed (${response.status}): ${message}`);
         continue;
       }
@@ -185,6 +186,7 @@ class ResponsesLanguageModel {
       ...(grok ? grokCLIHeaders(this.spec.model) : {}),
     };
     const apiKey = grok ? await grokCLIToken() : resolveApiKey(this.spec);
+    if (grok && apiKey) this.lastGrokToken = apiKey;
     const auth = this.spec.auth ?? 'auto';
     if (grok || ((auth === 'auto' || auth === 'bearer') && apiKey)) {
       if (!apiKey) {

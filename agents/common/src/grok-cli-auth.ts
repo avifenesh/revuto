@@ -6,8 +6,8 @@
  * via the stored refresh_token and write the new pair back so the daemon and
  * the Grok CLI keep sharing one session.
  */
-import { mkdirSync, readFileSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 
 import type { ModelSpec } from './config.js';
@@ -30,7 +30,7 @@ type GrokAuthFile = Record<string, GrokAuthEntry>;
 type CachedToken = { token: string; expiresAtMs: number; path: string };
 
 let cached: CachedToken | null = null;
-let refreshInFlight: Promise<string> | null = null;
+let refreshInFlight: { promise: Promise<string>; force: boolean } | null = null;
 
 export function grokAuthPath(): string {
   return process.env.REVUTO_GROK_AUTH_FILE || join(homedir(), '.grok', 'auth.json');
@@ -92,13 +92,21 @@ export async function grokCLIToken(): Promise<string> {
   return refreshGrokCLIToken();
 }
 
-export async function refreshGrokCLIToken(opts: { force?: boolean } = {}): Promise<string> {
-  if (opts.force) cached = null;
-  if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = doRefresh().finally(() => {
-    refreshInFlight = null;
+export async function refreshGrokCLIToken(opts: { force?: boolean; rejectedToken?: string } = {}): Promise<string> {
+  const force = Boolean(opts.force);
+  if (force) cached = null;
+
+  if (refreshInFlight && (!force || refreshInFlight.force)) {
+    return refreshInFlight.promise;
+  }
+
+  const promise = doRefresh(force, opts.rejectedToken).finally(() => {
+    if (refreshInFlight?.promise === promise) {
+      refreshInFlight = null;
+    }
   });
-  return refreshInFlight;
+  refreshInFlight = { promise, force };
+  return promise;
 }
 
 function readFreshToken(path: string, now: number): Omit<CachedToken, 'path'> | null {
@@ -115,14 +123,16 @@ function readFreshToken(path: string, now: number): Omit<CachedToken, 'path'> | 
   return best;
 }
 
-async function doRefresh(): Promise<string> {
+async function doRefresh(force = false, rejectedToken?: string): Promise<string> {
   const path = grokAuthPath();
   return withAuthLock(path, async () => {
     const now = Date.now();
     const raced = readFreshToken(path, now);
     if (raced) {
-      cached = { ...raced, path };
-      return raced.token;
+      if (!force || (rejectedToken && raced.token !== rejectedToken)) {
+        cached = { ...raced, path };
+        return raced.token;
+      }
     }
 
     const raw = readAuthFile(path);
@@ -228,16 +238,85 @@ function parseExpiresAt(value?: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+interface LockOwner {
+  pid: number;
+  hostname: string;
+  createdAt: number;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return typeof err === 'object' && err !== null && 'code' in err && (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function tryCleanStaleLock(lockDir: string): boolean {
+  try {
+    const ownerPath = join(lockDir, 'owner.json');
+    let isStale = false;
+    try {
+      const raw = readFileSync(ownerPath, 'utf8');
+      const owner = JSON.parse(raw) as Partial<LockOwner>;
+      if (typeof owner.pid === 'number') {
+        if (owner.hostname === hostname() && !isProcessAlive(owner.pid)) {
+          isStale = true;
+        } else if (typeof owner.createdAt === 'number' && Date.now() - owner.createdAt > LOCK_WAIT_MS) {
+          isStale = true;
+        }
+      }
+    } catch {
+      try {
+        const st = statSync(lockDir);
+        if (Date.now() - st.mtimeMs > LOCK_WAIT_MS) {
+          isStale = true;
+        }
+      } catch {
+        // stat failed
+      }
+    }
+
+    if (isStale) {
+      try {
+        rmSync(lockDir, { recursive: true, force: true });
+        return true;
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 async function withAuthLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const lockDir = `${path}.revuto-lock`;
   const started = Date.now();
   while (true) {
     try {
       mkdirSync(lockDir);
+      try {
+        writeFileSync(
+          join(lockDir, 'owner.json'),
+          JSON.stringify({ pid: process.pid, hostname: hostname(), createdAt: Date.now() }),
+          { mode: 0o600 },
+        );
+      } catch {
+        // owner write is best-effort
+      }
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+
+      if (tryCleanStaleLock(lockDir)) {
+        continue;
+      }
+
       if (Date.now() - started > LOCK_WAIT_MS) {
+        tryCleanStaleLock(lockDir);
         throw new Error(`timeout waiting for Grok Code CLI auth lock (${lockDir})`);
       }
       await sleep(50);
@@ -247,7 +326,7 @@ async function withAuthLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
     return await fn();
   } finally {
     try {
-      rmdirSync(lockDir);
+      rmSync(lockDir, { recursive: true, force: true });
     } catch {
       // lock dir is best-effort
     }
