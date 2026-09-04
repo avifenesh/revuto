@@ -36,6 +36,7 @@ export type AssembleTools = (opts: AssembleBaseOpts) => Promise<readonly ToolDef
 export interface RunReviewOptions {
   readonly repo: string; // "owner/name"
   readonly prNumber: number;
+  readonly headSha?: string;
   readonly config: ReviewerConfig;
   /** Per-repo skill ("textbook") + selected topic skills, appended to the system prompt. */
   readonly skillMarkdown?: string;
@@ -187,7 +188,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   const workspaceRoot = `${config.review.workspaceDir}/${owner}__${name}`;
 
   const ctx = await prepareWorkspace(
-    { repo: opts.repo, pr_number: opts.prNumber },
+    { repo: opts.repo, pr_number: opts.prNumber, headSha: opts.headSha },
     octokit,
     // Clone/fetch run here at the top of the review, so one resolve is enough;
     // the tools below get the getter, since they run for the next half hour.

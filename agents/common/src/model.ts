@@ -18,17 +18,20 @@ import type {
 import type { ModelSpec } from './config.js';
 import { buildResponsesModel } from './responses-model.js';
 import { buildConverseModel } from './converse-model.js';
+import { grokCLIHeaders, usesGrokCLIAuth } from './grok-cli-auth.js';
 
-function resolveApiKey(spec: ModelSpec): string {
+export function resolveApiKey(spec: ModelSpec): string {
   if (!spec.apiKeyEnv) return ''; // keyless local endpoints (Ollama/vLLM) are fine
   return process.env[spec.apiKeyEnv] ?? '';
 }
 
 function provider(spec: ModelSpec) {
+  const isGrok = usesGrokCLIAuth(spec);
   return createOpenAICompatible({
     name: spec.name ?? new URL(spec.baseURL).host,
     baseURL: spec.baseURL,
     apiKey: resolveApiKey(spec) || undefined,
+    ...(isGrok ? { headers: grokCLIHeaders(spec.model) } : {}),
   });
 }
 
@@ -60,16 +63,26 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message));
 }
 
-class FallbackLanguageModel implements LanguageModelV4 {
+export class FallbackLanguageModel implements LanguageModelV4 {
   readonly specificationVersion = 'v4' as const;
   readonly provider: string;
   readonly modelId: string;
   readonly supportedUrls: LanguageModelV4['supportedUrls'];
 
+  private primaryIndex = 0;
+  private readonly consecutiveFailures: number[];
+  private static readonly DEMOTION_THRESHOLD = 2;
+
   constructor(private readonly models: readonly LanguageModelV4[]) {
     this.provider = models.map((m) => m.provider).join(' -> ');
     this.modelId = models.map((m) => m.modelId).join(' -> ');
     this.supportedUrls = models[0]?.supportedUrls ?? {};
+    this.consecutiveFailures = new Array(models.length).fill(0);
+  }
+
+  /** Current active model index (0 unless dead primary has been demoted). */
+  getActiveIndex(): number {
+    return this.primaryIndex;
   }
 
   async doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
@@ -82,16 +95,32 @@ class FallbackLanguageModel implements LanguageModelV4 {
 
   private async tryModels<T>(call: (model: LanguageModelV4) => PromiseLike<T>): Promise<T> {
     const failures: string[] = [];
-    for (let i = 0; i < this.models.length; i++) {
+    for (let i = this.primaryIndex; i < this.models.length; i++) {
       const model = this.models[i];
       try {
-        return await call(model);
+        const result = await call(model);
+        this.consecutiveFailures[i] = 0;
+        return result;
       } catch (err) {
         if (isAbortError(err)) throw err;
         const message = err instanceof Error ? err.message : String(err);
         failures.push(`${model.provider}/${model.modelId}: ${message}`);
+        this.consecutiveFailures[i]++;
+
         if (i < this.models.length - 1) {
-          console.warn(`[model-fallback] ${model.provider}/${model.modelId} failed; trying ${this.models[i + 1].provider}/${this.models[i + 1].modelId}`);
+          console.warn(`[model-fallback] ${model.provider}/${model.modelId} failed: ${message}; trying ${this.models[i + 1].provider}/${this.models[i + 1].modelId}`);
+        }
+
+        if (
+          i === this.primaryIndex &&
+          this.consecutiveFailures[i] >= FallbackLanguageModel.DEMOTION_THRESHOLD &&
+          this.primaryIndex < this.models.length - 1
+        ) {
+          this.primaryIndex++;
+          const next = this.models[this.primaryIndex];
+          console.warn(
+            `[model-fallback] demoting dead primary ${model.provider}/${model.modelId} after ${this.consecutiveFailures[i]} consecutive failures; primary is now ${next.provider}/${next.modelId}`,
+          );
         }
       }
     }

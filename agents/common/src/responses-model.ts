@@ -5,6 +5,7 @@ import { SignatureV4 } from '@smithy/signature-v4';
 import type { LanguageModel } from 'ai';
 
 import type { ModelSpec } from './config.js';
+import { grokCLIHeaders, grokCLIToken, refreshGrokCLIToken, usesGrokCLIAuth } from './grok-cli-auth.js';
 
 type JsonObject = Record<string, unknown>;
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue | undefined };
@@ -126,7 +127,12 @@ class ResponsesLanguageModel {
       if (response.ok) {
         return this.toGenerateResult(json, body, Object.fromEntries(response.headers.entries()));
       }
-      const message = (json !== undefined ? errorMessage(json) : undefined) ?? `${response.status} ${response.statusText}`;
+      const message = (json !== undefined ? (errorMessage(json) ?? JSON.stringify(json)) : text) || `${response.status} ${response.statusText}`;
+      if (response.status === 401 && usesGrokCLIAuth(this.spec) && attempt < MAX_RETRIES) {
+        await refreshGrokCLIToken({ force: true });
+        lastErr = new Error(`responses API call failed (${response.status}): ${message}`);
+        continue;
+      }
       if (isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
         lastErr = new Error(`responses API call failed (${response.status}): ${message}`);
         await sleepBackoff(attempt, options.abortSignal);
@@ -160,9 +166,11 @@ class ResponsesLanguageModel {
     if (options.presencePenalty !== undefined) body.presence_penalty = options.presencePenalty;
     if (options.frequencyPenalty !== undefined) body.frequency_penalty = options.frequencyPenalty;
     if (options.stopSequences?.length) body.stop = options.stopSequences;
-    if (options.tools?.length) body.tools = options.tools.map(toResponsesTool);
-    const toolChoice = toResponsesToolChoice(options.toolChoice);
-    if (toolChoice) body.tool_choice = toolChoice;
+    if (options.tools?.length) {
+      body.tools = options.tools.map(toResponsesTool);
+      const toolChoice = toResponsesToolChoice(options.toolChoice);
+      if (toolChoice) body.tool_choice = toolChoice;
+    }
     const reasoningEffort = this.spec.reasoningEffort ?? stringOption(providerOptions.reasoningEffort);
     if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
     return body;
@@ -170,21 +178,30 @@ class ResponsesLanguageModel {
 
   private async fetchResponses(bodyText: string, options: ModelCallOptions): Promise<Response> {
     const url = new URL(`${this.spec.baseURL.replace(/\/+$/, '')}/responses`);
+    const grok = usesGrokCLIAuth(this.spec);
     const headers: Record<string, string> = {
       'content-type': 'application/json',
-      host: url.host,
       ...definedHeaders(options.headers),
+      ...(grok ? grokCLIHeaders(this.spec.model) : {}),
     };
-    const apiKey = resolveApiKey(this.spec);
+    const apiKey = grok ? await grokCLIToken() : resolveApiKey(this.spec);
     const auth = this.spec.auth ?? 'auto';
-    if ((auth === 'auto' || auth === 'bearer') && apiKey) {
+    if (grok || ((auth === 'auto' || auth === 'bearer') && apiKey)) {
+      if (!apiKey) {
+        throw new Error(`models.${this.provider}: Grok Code CLI session is required (run \`grok login\`)`);
+      }
       headers.authorization = `Bearer ${apiKey}`;
       return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal });
     }
-    if (auth === 'bearer') {
-      throw new Error(`models.${this.provider}: ${this.spec.apiKeyEnv ?? 'apiKeyEnv'} is required for bearer auth`);
+    if (auth === 'bearer' || auth === 'grok') {
+      throw new Error(
+        auth === 'grok'
+          ? `models.${this.provider}: Grok Code CLI session is required (run \`grok login\`)`
+          : `models.${this.provider}: ${this.spec.apiKeyEnv ?? 'apiKeyEnv'} is required for bearer auth`,
+      );
     }
     if (auth === 'aws' || (auth === 'auto' && isBedrockMantle(url))) {
+      headers.host = url.host;
       return fetch(url, {
         method: 'POST',
         headers: await signHeaders(url, headers, bodyText, this.awsRegion(url)),
