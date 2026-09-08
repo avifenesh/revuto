@@ -22,18 +22,22 @@ export interface ModelSpec {
   readonly baseURL: string;
   /** Model id as the endpoint expects it (e.g. "anthropic.claude-opus-4-7", "qwen3-8b"). */
   readonly model: string;
-  /** API surface. "chat"=OpenAI chat completions, "responses"=OpenAI Responses (mantle), "converse"=Bedrock Converse (native Claude). Defaults to chat. */
-  readonly api?: 'chat' | 'responses' | 'converse';
+  /** API surface. "chat"=OpenAI chat completions, "responses"=OpenAI Responses (mantle), "converse"=Bedrock Converse (native Claude), "agy"=the native Antigravity CLI review runner. Defaults to chat. */
+  readonly api?: 'chat' | 'responses' | 'converse' | 'agy';
   /** Reasoning effort for Responses/reasoning models. "max" is the adaptive-thinking ceiling for Converse Claude (opus-4-8+). */
   readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. */
-  readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'none';
+  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. "agy-oauth" uses the AGY CLI's cached Google OAuth session. */
+  readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'agy-oauth' | 'none';
   /** AWS region for SigV4-signed bedrock-mantle requests. */
   readonly awsRegion?: string;
   /** Env var holding the API key. Omit for keyless local endpoints. */
   readonly apiKeyEnv?: string;
   /** Optional provider label for diagnostics. */
   readonly name?: string;
+  /** Executable used when api is "agy". Defaults to $REVUTO_AGY_COMMAND or "agy". */
+  readonly command?: string;
+  /** AGY CLI permission policy. "bypass" adds --dangerously-skip-permissions. */
+  readonly permissionMode?: 'bypass' | 'settings';
   /** Ordered fallback models to try if this model call throws. */
   readonly fallbacks?: readonly ModelSpec[];
 }
@@ -102,9 +106,10 @@ export interface ReviewerConfig {
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
 const DEFAULT_REVIEW = { maxSteps: 150, allowWrite: false, workspaceDir: '' };
 const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
-const MODEL_APIS = ['chat', 'responses', 'converse'] as const;
+const MODEL_APIS = ['chat', 'responses', 'converse', 'agy'] as const;
 const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'none'] as const;
+const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'agy-oauth', 'none'] as const;
+const AGY_PERMISSION_MODES = ['bypass', 'settings'] as const;
 
 /**
  * Auto-load environment variables from ~/.config/revuto/env or <vault>/env if present.
@@ -164,9 +169,14 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (m.awsRegion !== undefined && typeof m.awsRegion !== 'string') throw new Error(`config: models.${role}.awsRegion must be a string`);
   if (m.apiKeyEnv !== undefined && typeof m.apiKeyEnv !== 'string') throw new Error(`config: models.${role}.apiKeyEnv must be a string`);
   if (m.name !== undefined && typeof m.name !== 'string') throw new Error(`config: models.${role}.name must be a string`);
+  if (m.command !== undefined && (typeof m.command !== 'string' || !m.command.trim())) throw new Error(`config: models.${role}.command must be a non-empty string`);
+  const permissionMode = optionalEnum(m.permissionMode, `models.${role}.permissionMode`, AGY_PERMISSION_MODES);
+  if (api === 'agy' && auth !== 'agy-oauth') {
+    throw new Error(`config: models.${role}.auth must be agy-oauth when models.${role}.api is agy`);
+  }
   if (m.fallbacks !== undefined && !Array.isArray(m.fallbacks)) throw new Error(`config: models.${role}.fallbacks must be an array`);
   const fallbacks = m.fallbacks?.map((fallback, i) => checkModel(fallback, `${role}.fallbacks[${i}]`));
-  return { ...m, api, reasoningEffort, auth, ...(fallbacks?.length ? { fallbacks } : {}) };
+  return { ...m, api, reasoningEffort, auth, permissionMode, ...(fallbacks?.length ? { fallbacks } : {}) };
 }
 
 /** The default vault: $REVUTO_VAULT, else ~/revuto. The config + skills + reviewer notes live here. */

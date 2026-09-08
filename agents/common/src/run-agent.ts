@@ -20,6 +20,7 @@ import { assembleCommonTools } from './tools/index.js';
 import { refusedEmptyReview } from './tools/gh.js';
 import { startReviewTrace, isToolErrorOutput } from './trace.js';
 import { selectSkills } from './skills/select.js';
+import { runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
 
@@ -199,6 +200,9 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   let skillMd = opts.skillMarkdown?.trim() ?? '';
   if (!skillMd && opts.store) {
     skillMd = (await selectSkills(opts.store, opts.embedder ?? null, ctx.fileList)).trim();
+  }
+  if (config.models.review.api === 'agy') {
+    return runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt });
   }
   let system = skillMd
     ? `${REVIEWER_SYSTEM_PROMPT}\n\n---\n\n## Repository knowledge\n\n${skillMd}`

@@ -7,6 +7,7 @@
 import { generateText, embedMany } from 'ai';
 import type { ReviewerConfig, ModelSpec } from '../../agents/common/src/config.js';
 import { buildChatModel, buildEmbeddingModel } from '../../agents/common/src/model.js';
+import { probeAgy } from '../../agents/common/src/agy-review.js';
 import { getOctokit } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 
@@ -66,6 +67,20 @@ export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe
     const t = Date.now();
     try {
       if (g.kind === 'chat') {
+        if (g.spec.api === 'agy') {
+          const result = await probeAgy(g.spec, process.cwd());
+          return {
+            roles: g.roles,
+            baseURL: g.spec.baseURL,
+            model: g.spec.model,
+            api: g.spec.api,
+            kind: g.kind,
+            ok: true,
+            ms: Date.now() - t,
+            responseModel: g.spec.model,
+            responseId: result.result.conversation_id,
+          };
+        }
         const result = await generateText({ model: buildChatModel(g.spec), prompt: 'ping', maxOutputTokens: 16 });
         return {
           roles: g.roles,

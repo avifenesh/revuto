@@ -11,9 +11,9 @@ curated "textbook" of that repo's institutional knowledge, then reviews new PRs
 and keeps learning from how maintainers respond — graduating repeated feedback
 into reusable topic skills.
 
-- **Supplier-agnostic.** Every model call is OpenAI-compatible. Bedrock (via a
-  gateway), xAI/Grok, GLM, a local vLLM/Ollama — interchangeable per role
-  (`review`, `curator`, `distill`, `embedder`) by editing config.
+- **Supplier-agnostic.** Model roles can use OpenAI-compatible endpoints such as
+  Bedrock (via a gateway), xAI/Grok, GLM, or a local vLLM/Ollama. Review can also
+  run through the native Antigravity (`agy`) CLI with its cached Google OAuth.
 - **Runs locally.** An optional GitHub App webhook triggers reviews immediately;
   the scheduler keeps polling as a recovery path and runs the learn/decay jobs.
 - **Embedder optional.** Configure a local or cloud embedding model for similarity
@@ -105,7 +105,8 @@ drop the config in the current dir instead (it still points `vaultPath` at the v
 Config keys: `vaultPath`, `github.tokenEnv`, optional `github.app`, per-role
 `models`, `schedules`, `limits`, and `store`. Model specs require `baseURL` and
 `model`; optional keys are `name`, `apiKeyEnv`, `api`, `auth`,
-`reasoningEffort`, `awsRegion`, and `fallbacks` (`embedder` may be `null`). See
+`reasoningEffort`, `awsRegion`, `command`, `permissionMode`, and `fallbacks`
+(`embedder` may be `null`). See
 `revuto.config.example.json`. No secrets are stored - API keys and the webhook
 secret are env-referenced. `revuto doctor` checks model endpoints, configured
 fallbacks, the store backend, and the token before you run anything.
@@ -219,6 +220,18 @@ with `revuto doctor` before running.
 
 // a self-hosted agent exposing /v1 (e.g. Hermes)
 { "baseURL": "http://127.0.0.1:PORT/v1", "model": "<served-name>", "apiKeyEnv": "HERMES_API_KEY" }
+
+// native AGY review runner — uses AGY's cached Google OAuth, not an API key
+// (`agy://local` is a marker and is not contacted)
+{
+  "name": "agy-oauth",
+  "baseURL": "agy://local",
+  "model": "gemini-3.8-flash-high",
+  "api": "agy",
+  "auth": "agy-oauth",
+  "command": "/home/avifenesh/.local/bin/agy",
+  "permissionMode": "bypass"
+}
 ```
 
 `api` defaults to `chat` (`/v1/chat/completions`). Set `api: "responses"` for
@@ -228,6 +241,13 @@ The current Responses adapter covers Revuto's text + function-tool loop, bearer
 auth, and Bedrock SigV4 signing. It intentionally leaves streaming, stored
 conversation state, multimodal/file inputs, structured-output helpers, and built-in
 Responses tools unsupported for now.
+
+`api: "agy"` is a review-runner mode rather than an OpenAI-compatible model. AGY
+inspects the prepared worktree in headless `stream-json` mode and returns a strict
+review object; Revuto performs the one GitHub `post_review` or `skip_review` action.
+Set `auth: "agy-oauth"` to make the OAuth dependency explicit. Set
+`permissionMode: "bypass"` only for a fully trusted review environment; it passes
+AGY's `--dangerously-skip-permissions` flag for unattended tool execution.
 
 At run time, override a role with a primary/fallback chain instead of editing the
 config file:
