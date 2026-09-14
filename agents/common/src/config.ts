@@ -177,6 +177,9 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (api === 'claude' && role !== 'review') {
     throw new Error(`config: native Claude CLI is supported only for models.review`);
   }
+  if (api === 'claude' && (reasoningEffort === 'none' || reasoningEffort === 'minimal')) {
+    throw new Error('config: native Claude CLI reasoningEffort must be low, medium, high, xhigh, or max');
+  }
   if (m.fallbacks !== undefined && !Array.isArray(m.fallbacks)) throw new Error(`config: models.${role}.fallbacks must be an array`);
   const fallbacks = m.fallbacks?.map((fallback, i) => checkModel(fallback, `${role}.fallbacks[${i}]`));
   return { ...m, api, reasoningEffort, auth, permissionMode, ...(fallbacks?.length ? { fallbacks } : {}) };

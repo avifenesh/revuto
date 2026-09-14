@@ -75,6 +75,7 @@
     "@ai-sdk/openai-compatible": "^3.0.28",
     "@ai-sdk/provider": "4.0.9",
     "@aws-sdk/credential-provider-node": "^3.972.50",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@octokit/auth-app": "^8.3.0",
     "@octokit/rest": "^22.0.1",
     "@smithy/hash-node": "^4.3.6",

@@ -264,11 +264,19 @@ For Claude Code print mode, set the reviewer to:
 ```
 
 The model ID above uses a configured Bedrock route; use the exact ID appropriate
-to the CLI's provider. Authentication belongs to Claude Code, not Revuto's HTTP
-client. This mode applies only to `models.review` and runs `claude -p` with
-streamed JSON, schema validation, plan permissions and read/search/git inspection
-tools. Bare mode disables automatically loaded hooks/plugins and project memory;
-Revuto supplies the PR and repository knowledge. MCP configuration is isolated.
+to the CLI's provider. This mode requires Claude Code 2.1.248 or newer and
+API-key or third-party provider authentication (Bedrock, Vertex, or Foundry).
+Subscription OAuth and keychain authentication are unavailable in bare mode.
+Revuto forwards only allowlisted provider environment values from the daemon
+environment or the operator's `~/.claude/settings.json`; it does not forward
+GitHub credentials, arbitrary user settings, or project/local settings.
+This mode applies only to `models.review` and runs `claude -p` with streamed
+JSON, schema validation, restricted mode, and all built-in tools disabled.
+An isolated MCP server exposes workspace-guarded read/grep/glob tools and the
+fixed PR diff, excluding sensitive paths. It exposes no shell, arbitrary Git,
+LSP, write, or network tools. Bare mode disables automatically loaded hooks,
+plugins and project memory; Revuto supplies the PR and repository knowledge.
+Valid effort values are `low`, `medium`, `high`, `xhigh`, and `max`.
 The CLI returns a verdict; Revuto retains GitHub posting authority. Structured
 output alone does not count as inspection, and a run with no evidence reads fails
 before posting. A failing CLI/model does not silently switch to another provider.

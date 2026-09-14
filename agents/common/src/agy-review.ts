@@ -7,6 +7,8 @@
  * Authentication is intentionally delegated to AGY's own OAuth/keyring flow.
  */
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { claudeEnvironment } from './claude-env.js';
 import { z } from 'zod';
 import type { Octokit } from '@octokit/rest';
 
@@ -119,6 +121,7 @@ export interface RunAgyCliOptions {
   readonly cwd: string;
   readonly schema?: string;
   readonly timeoutMs?: number;
+  readonly diffRange?: string;
   readonly onStep?: (step: AgyStepUpdate) => void;
 }
 
@@ -136,10 +139,13 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     'stream-json',
   ];
   if (claude) {
-    args.push('--verbose', '--bare', '--no-session-persistence',
-      '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-      '--permission-mode', 'plan', '--tools', 'Read,Grep,Glob,Bash',
-      '--allowedTools', 'Read,Grep,Glob,Bash(git diff *),Bash(git show *),Bash(git log *),Bash(git grep *),Bash(git ls-files *),Bash(git status *)');
+    args.push('--verbose', '--bare', '--restricted', '--setting-sources', '', '--no-session-persistence',
+      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { revuto: {
+        command: process.execPath,
+        args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), opts.cwd, opts.diffRange ?? ''],
+      } } }),
+      '--permission-mode', 'dontAsk', '--tools', '',
+      '--allowedTools', 'mcp__revuto__read,mcp__revuto__grep,mcp__revuto__glob,mcp__revuto__pr_diff');
     if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
   } else {
     args.push('--print-timeout', timeoutArg(timeoutMs));
@@ -152,7 +158,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     try {
       child = spawn(command, args, {
         cwd: opts.cwd,
-        env: { ...process.env, AGY_CLI_HIDE_LOGO: 'true' },
+        env: claude ? claudeEnvironment() : { ...process.env, AGY_CLI_HIDE_LOGO: 'true' },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
@@ -203,7 +209,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
         const info = step.tool_info;
         const name = step.tool_name || info?.name || 'agy_tool';
         // Producing the verdict is not an inspection of repository evidence.
-        if (claude && name === 'StructuredOutput') return;
+        if (claude && !['mcp__revuto__read', 'mcp__revuto__grep', 'mcp__revuto__glob', 'mcp__revuto__pr_diff'].includes(name)) return;
         const error = info?.error;
         toolSteps.push({ name, output: info?.output, error });
         if (error === undefined || error === null) inspections++;
@@ -314,8 +320,10 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
       spec,
       cwd: opts.ctx.workspacePath,
       schema: AGY_REVIEW_SCHEMA,
+      diffRange: opts.ctx.diffRefSpec,
       prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown)
-        .replace('inside the Antigravity CLI', spec.api === 'claude' ? 'inside Claude Code CLI' : 'inside the Antigravity CLI'),
+        .replace('inside the Antigravity CLI', spec.api === 'claude' ? 'inside Claude Code CLI' : 'inside the Antigravity CLI')
+        + (spec.api === 'claude' ? '\nUse mcp__revuto__pr_diff first, then the guarded read/grep/glob tools to trace repository evidence. No shell, network, or arbitrary Git execution is available.' : ''),
       onStep: (step) => traceAgyStep(trace, step, spec.api === 'claude' ? 'claude' : 'agy'),
     });
   } catch (err) {

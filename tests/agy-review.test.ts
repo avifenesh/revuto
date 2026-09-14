@@ -138,12 +138,16 @@ import assert from 'node:assert/strict';
 const args = process.argv.slice(2);
 assert.equal(args[0], '-p');
 assert.equal(args[args.indexOf('--model') + 1], 'global.anthropic.claude-opus-5[1m]');
-assert.equal(args[args.indexOf('--permission-mode') + 1], 'plan');
+assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
+assert.equal(args[args.indexOf('--tools') + 1], '');
+assert.equal(args[args.indexOf('--setting-sources') + 1], '');
+assert.ok(args.includes('--restricted'));
+assert.deepEqual(Object.keys(JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers), ['revuto']);
 assert.ok(args.includes('--bare') && args.includes('--verbose') && args.includes('--strict-mcp-config'));
 assert.ok(!args.includes('--print-timeout') && !args.includes('--dangerously-skip-permissions'));
 console.log(JSON.stringify({type:'system', subtype:'init', model:'global.anthropic.claude-opus-5[1m]'}));
 if (!args[1].includes('terminal-only')) {
-  console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'read-1',name:'Read'}]}}));
+  console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'read-1',name:'mcp__revuto__read'}]}}));
   console.log(JSON.stringify({type:'user', message:{content:[{type:'tool_result',tool_use_id:'read-1',content:'actual file contents'}]}}));
 }
 console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'schema-1',name:'StructuredOutput'}]}}));
@@ -158,7 +162,7 @@ console.log(JSON.stringify({type:'result',subtype:args[1]==='fail'?'error_during
     assert.equal(result.result.status, 'SUCCESS');
     assert.equal(result.result.usage?.total_tokens, 32);
     assert.equal(result.inspections, 1);
-    assert.equal(result.toolSteps[0]?.name, 'Read');
+    assert.equal(result.toolSteps[0]?.name, 'mcp__revuto__read');
     assert.deepEqual(result.result.structured_output, {decision:'skip_review',reason:'no concerns',body:'',comments:[]});
     await assert.rejects(runAgyCli({spec:model,cwd:dir,prompt:'fail'}), /run failed/);
     const noInspection = await runAgyCli({spec:model,cwd:dir,prompt:'terminal-only'});
