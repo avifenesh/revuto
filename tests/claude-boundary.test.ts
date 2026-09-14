@@ -102,7 +102,8 @@ test('Search pages are bounded, explicitly complete, and sorted across nested gl
     const grep=tools.find(t=>t.name==='grep')!;
     const first=JSON.parse(String(await grep.callback({pattern:'MATCH',output_mode:'content',limit:10000})));
     assert.equal(first.text.length,10000);assert.equal(first.next_offset,10000);
-    assert.ok(first.total_characters>512000);
+    assert.ok(first.total_characters>512000, JSON.stringify({ total: first.total_characters,
+      sample: first.text.slice(0,200), rg: execFileSync('rg',['--version'],{encoding:'utf8'}).trim() }));
     const last=JSON.parse(String(await grep.callback({pattern:'MATCH',output_mode:'content',offset:first.total_characters-1000})));
     assert.equal(last.next_offset,null);assert.match(last.text,/TAIL_SENTINEL/);
     const empty=JSON.parse(String(await grep.callback({pattern:'NO_MATCH_VALUE'})));
