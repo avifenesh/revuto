@@ -1,7 +1,7 @@
 /** The only tool surface exposed to Claude: guarded reads and a fixed PR diff. */
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolve, relative, isAbsolute } from 'node:path';
+import { resolve, relative, isAbsolute, delimiter } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -30,8 +30,11 @@ async function guardedPath(root: string, path = '.'): Promise<string> {
 /** Drain a fixed inspection command with bounded retained memory. */
 function commandPage(command: 'git' | 'rg', root: string, args: string[], offset: number, limit: number): Promise<string> {
   return new Promise((resolvePage, reject) => {
+    // npm prepends node_modules/.bin, where ripgrep's WASI shim can exit before
+    // flushing large pipe output. Inspection requires the native system tools.
+    const path = process.env.PATH?.split(delimiter).filter(p => !/(^|[/\\])node_modules([/\\]|$)/.test(p)).join(delimiter);
     const child = spawn(command, args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+      env: { PATH: path, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
     let total = 0, page = '', stderr = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${command} inspection timed out`)); }, 60_000);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');

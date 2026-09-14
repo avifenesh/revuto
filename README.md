@@ -264,7 +264,8 @@ For Claude Code print mode, set the reviewer to:
 ```
 
 The model ID above uses a configured Bedrock route; use the exact ID appropriate
-to the CLI's provider. This mode requires Claude Code 2.1.248 or newer and
+to the CLI's provider. This mode requires native Git and ripgrep on PATH,
+Claude Code 2.1.248 or newer, and
 API-key or third-party provider authentication (Bedrock, Vertex, or Foundry).
 Subscription OAuth and keychain authentication are unavailable in bare mode.
 Revuto forwards only allowlisted provider environment values from the daemon
