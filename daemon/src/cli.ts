@@ -29,6 +29,7 @@ import { reviewOnePr, reviewRepo, learnRepo, decayRepo } from './jobs.js';
 import { startDaemon } from './scheduler.js';
 import { startWebhookServer } from './github-webhook.js';
 import { runQueuedForRepo } from './repo-queue.js';
+import { reapReviewWorktrees } from '../../agents/common/src/review-worktree.js';
 import { runInit } from './init.js';
 import { runDoctor, doctorOk } from './doctor.js';
 import { isJob } from './types.js';
@@ -99,6 +100,7 @@ async function main(): Promise<void> {
     }
     case 'daemon': {
       const cfg = config();
+      await reapReviewWorktrees(cfg);
       if (cfg.github.app) {
         const app = cfg.github.app;
         const reconciled = await reconcileStaleReviewChecks(cfg);
@@ -152,7 +154,7 @@ async function main(): Promise<void> {
       const repo = args[0]; const pr = parseInt(args[1] ?? '', 10);
       if (!repo?.includes('/') || !Number.isFinite(pr)) throw new Error('usage: revuto review <owner/repo> <pr>');
       const cfg = config();
-      const outcome = await runQueuedForRepo(cfg, repo, () => reviewOnePr(cfg, repo, pr, { force: args.includes('--force') }));
+      const outcome = await reviewOnePr(cfg, repo, pr, { force: args.includes('--force') });
       console.log(JSON.stringify(outcome, null, 2));
       if (!isReviewOutcomeSuccessful(outcome)) {
         const reason = !outcome.ranModel
@@ -225,8 +227,7 @@ async function main(): Promise<void> {
       if (!repo?.includes('/') || !isJob(job)) throw new Error('usage: revuto trigger <owner/repo> <review|learn|decay>');
       const cfg = config();
       const settings = readReviewer(cfg, repo) ?? { repo };
-      const res = await runQueuedForRepo(cfg, repo, async () => {
-        if (job === 'review') return reviewRepo(cfg, settings, { force: true });
+      const res = job === 'review' ? await reviewRepo(cfg, settings, { force: true }) : await runQueuedForRepo(cfg, repo, async () => {
         if (job === 'learn') return learnRepo(cfg, settings);
         return decayRepo(cfg, repo);
       });

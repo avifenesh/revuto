@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
+import { killReviewChild } from './review-worktree.js';
 import { claudeEnvironment } from './claude-env.js';
 import { z } from 'zod';
 import type { Octokit } from '@octokit/rest';
@@ -129,11 +130,13 @@ export interface RunAgyCliOptions {
   readonly maxSteps?: number;
   readonly maxOutputTokens?: number;
   readonly probe?: boolean;
+  readonly signal?: AbortSignal;
   readonly onStep?: (step: AgyStepUpdate) => void;
 }
 
 /** Run one AGY headless turn using its own cached OAuth session. */
 export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
+  opts.signal?.throwIfAborted();
   const claude = opts.spec.api === 'claude';
   const command = opts.spec.command?.trim() || (claude ? 'claude' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
   const timeoutMs = opts.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
@@ -171,6 +174,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, args, {
+        detached: process.platform !== 'win32',
         cwd: opts.cwd,
         env: claude ? { ...claudeEnvironment(), CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) } : { ...process.env, AGY_CLI_HIDE_LOGO: 'true' },
         stdio: [claude ? 'pipe' : 'ignore', 'pipe', 'pipe'],
@@ -181,6 +185,15 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     }
 
     let settled = false;
+    let aborted = false;
+    let pendingError: Error | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const terminate = () => {
+      killReviewChild(child);
+      killTimer ??= setTimeout(() => killReviewChild(child, 'SIGKILL'), 2000);
+    };
+    const abort = () => { aborted = true; terminate(); };
+    opts.signal?.addEventListener('abort', abort, { once: true });
     let lineBuffer = '';
     const decoder = new StringDecoder('utf8');
     let stdoutChars = 0;
@@ -192,23 +205,27 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     const toolSteps: AgyToolStep[] = [];
 
     const timer = setTimeout(() => {
-      finishError(new Error(`AGY timed out after ${timeoutArg(timeoutMs)}`));
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 2000);
+      stopWithError(new Error(`AGY timed out after ${timeoutArg(timeoutMs)}`));
     }, timeoutMs);
+
+    const stopWithError = (error: Error): void => {
+      pendingError ??= error;
+      clearTimeout(timer);
+      terminate();
+    };
 
     const finishError = (err: Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', abort);
       reject(err);
     };
 
     const stdout = child.stdout;
     const stderrStream = child.stderr;
     if (!stdout || !stderrStream) {
-      finishError(new Error('AGY was not started with piped stdout/stderr'));
-      child.kill('SIGTERM');
+      stopWithError(new Error('AGY was not started with piped stdout/stderr'));
       return;
     }
 
@@ -237,13 +254,12 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     };
 
     const handleLine = (line: string): void => {
-      if (!line.trim() || settled) return;
+      if (!line.trim() || settled || pendingError) return;
       let event: unknown;
       try {
         event = JSON.parse(line);
       } catch {
-        finishError(new Error('Native CLI emitted a non-JSON line in stream-json mode'));
-        child.kill('SIGTERM');
+        stopWithError(new Error('Native CLI emitted a non-JSON line in stream-json mode'));
         return;
       }
       if (!event || typeof event !== 'object') return;
@@ -254,11 +270,10 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     };
 
     stdout.on('data', (chunk: Buffer) => {
-      if (settled) return;
+      if (settled || pendingError) return;
       stdoutChars += chunk.length;
       if (stdoutChars > AGY_MAX_STDOUT_CHARS) {
-        finishError(new Error(`AGY output exceeded ${AGY_MAX_STDOUT_CHARS} bytes`));
-        child.kill('SIGTERM');
+        stopWithError(new Error(`AGY output exceeded ${AGY_MAX_STDOUT_CHARS} bytes`));
         return;
       }
       lineBuffer += decoder.write(chunk);
@@ -275,7 +290,11 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     });
     child.on('error', (err) => finishError(err));
     child.on('close', (code) => {
+      if (killTimer) clearTimeout(killTimer);
+      opts.signal?.removeEventListener('abort', abort);
       if (settled) return;
+      if (aborted) { finishError(opts.signal?.reason ?? new Error('Review cancelled')); return; }
+      if (pendingError) { finishError(pendingError); return; }
       lineBuffer += decoder.end();
       if (lineBuffer.trim()) handleLine(lineBuffer);
       if (settled) return;
@@ -297,9 +316,10 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       resolve({ result, stepCount, inspections, toolErrors, toolSteps });
     });
     if (claude) {
-      child.stdin!.on('error', (error) => { finishError(error); child.kill('SIGTERM'); });
+      child.stdin!.on('error', stopWithError);
       child.stdin!.end(opts.prompt);
     }
+    if (opts.signal?.aborted) abort();
   });
 }
 
@@ -319,6 +339,7 @@ export async function probeAgy(spec: ModelSpec, cwd: string): Promise<AgyCliRun>
 }
 
 export interface RunAgyReviewOptions {
+  readonly signal?: AbortSignal;
   readonly config: ReviewerConfig;
   readonly ctx: PrContext;
   readonly octokit: Octokit;
@@ -348,6 +369,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
       diffRange: opts.ctx.diffRefSpec,
       maxSteps: opts.config.review.maxSteps,
       maxOutputTokens: opts.config.limits.maxOutputTokens.review,
+      signal: opts.signal,
       prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown)
         .replace('inside the Antigravity CLI', spec.api === 'claude' ? 'inside Claude Code CLI' : 'inside the Antigravity CLI')
         + (spec.api === 'claude' ? '\nUse mcp__revuto__pr_diff first, then the guarded read/grep/glob tools to trace repository evidence. No shell, network, or arbitrary Git execution is available.' : ''),
@@ -360,6 +382,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
 
   let output: AgyReviewResult;
   try {
+    opts.signal?.throwIfAborted();
     if (run.inspections === 0) throw new Error('Native review returned without inspecting repository evidence');
     output = AgyReviewResult.parse(run.result.structured_output);
     if (output.decision === 'post_review' && output.comments.length === 0) {

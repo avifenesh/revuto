@@ -23,6 +23,8 @@ import { selectSkills } from './skills/select.js';
 import { runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
+import { withReviewWorktree } from './review-worktree.js';
+import { runQueuedForRepo } from '../../../daemon/src/repo-queue.js';
 
 export interface AssembleBaseOpts {
   readonly ctx: PrContext;
@@ -180,29 +182,34 @@ export function reviewTranscript(
 }
 
 export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> {
+  return withReviewWorktree(opts.config, opts.repo, opts.prNumber,
+    (workspace, cache, signal) => runReviewInWorkspace(opts, workspace, cache, signal));
+}
+
+async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: string, cacheRoot: string, signal: AbortSignal): Promise<ReviewOutcome> {
   const { config } = opts;
   const startedAt = new Date();
   const { octokit, token } = opts.githubAuth ?? getOctokit(config.github);
 
   const [owner, name] = opts.repo.split('/');
   if (!owner || !name) throw new Error(`bad repo: ${opts.repo}`);
-  const workspaceRoot = `${config.review.workspaceDir}/${owner}__${name}`;
-
-  const ctx = await prepareWorkspace(
+  const resolvedToken = await token();
+  const ctx = await runQueuedForRepo(config, `_review-cache/${opts.repo}`, () => prepareWorkspace(
     { repo: opts.repo, pr_number: opts.prNumber, headSha: opts.headSha },
     octokit,
     // Clone/fetch run here at the top of the review, so one resolve is enough;
     // the tools below get the getter, since they run for the next half hour.
-    await token(),
+    resolvedToken,
     workspaceRoot,
-  );
+    { cacheRoot, signal },
+  ));
 
   let skillMd = opts.skillMarkdown?.trim() ?? '';
   if (!skillMd && opts.store) {
     skillMd = (await selectSkills(opts.store, opts.embedder ?? null, ctx.fileList)).trim();
   }
   if (config.models.review.api === 'agy' || config.models.review.api === 'claude') {
-    return runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt });
+    return runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal });
   }
   let system = skillMd
     ? `${REVIEWER_SYSTEM_PROMPT}\n\n---\n\n## Repository knowledge\n\n${skillMd}`
@@ -235,6 +242,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
     startedAt,
   });
   const main = await generateText({
+    abortSignal: signal,
     model,
     system,
     prompt: userMessage,
@@ -268,6 +276,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   for (let attempt = 1; terminal === 'none' && attempt <= CONTINUATION_ATTEMPTS; attempt++) {
     const phase = attempt === 1 ? 'continuation' : `continuation-${attempt}`;
     const continued = await generateText({
+      abortSignal: signal,
       model,
       system,
       messages: [...transcript, { role: 'user', content: continuationPrompt(stalledOnOutputCap(lastSteps)) }],
@@ -292,6 +301,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
 
   if (terminal === 'none') {
     const forced = await generateText({
+      abortSignal: signal,
       model,
       system,
       messages: [

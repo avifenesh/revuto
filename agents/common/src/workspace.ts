@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { Octokit } from '@octokit/rest';
+import { reviewGit } from './review-worktree.js';
 
 export interface InvocationPayload {
   readonly repo: string; // "owner/name"
@@ -107,23 +108,41 @@ export async function prepareWorkspace(
   octokit: Octokit,
   token: string,
   workspaceRoot: string,
+  options: { cacheRoot?: string; signal?: AbortSignal } = {},
 ): Promise<PrContext> {
   const [owner, repoName] = payload.repo.split('/');
   if (!owner || !repoName) throw new Error(`bad repo: ${payload.repo}`);
 
   const { data: pr } = await octokit.pulls.get({ owner, repo: repoName, pull_number: payload.pr_number });
 
-  await ensureClone(owner, repoName, workspaceRoot, token);
   const targetHeadSha = payload.headSha ?? pr.head.sha;
-  const headSha = await checkoutPr(workspaceRoot, targetHeadSha);
-
-  // Base SHA comes from the PR object, not the ref name — the ref may have
-  // advanced since the PR was opened. Fetch the base ref + sha explicitly.
-  await run('git', ['fetch', '--filter=tree:0', 'origin', `${pr.base.ref}:refs/remotes/origin/${pr.base.ref}`], { cwd: workspaceRoot }).catch(() => {});
   const baseSha = pr.base.sha;
-  await run('git', ['fetch', '--filter=tree:0', 'origin', baseSha], { cwd: workspaceRoot }).catch(() => {});
-
-  const mergeBaseSha = (await run('git', ['merge-base', headSha, baseSha], { cwd: workspaceRoot })).trim();
+  let headSha: string, mergeBaseSha: string;
+  if (options.cacheRoot) {
+    const cache = options.cacheRoot;
+    const env = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+      GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` };
+    const git = (args: string[], cwd = cache, discard = false) => reviewGit(args, { cwd, env, signal: options.signal, discard });
+    if (!existsSync(`${cache}/HEAD`)) {
+      await mkdir(dirname(cache), { recursive: true });
+      // A killed first clone may leave a non-repository directory in this owned cache slot.
+      await rm(cache, { recursive: true, force: true });
+      await reviewGit(['clone', '--bare', '--filter=tree:0', `https://github.com/${owner}/${repoName}.git`, cache], { env, signal: options.signal });
+    }
+    await git(['fetch', '--filter=tree:0', 'origin', targetHeadSha, baseSha]);
+    headSha = targetHeadSha;
+    mergeBaseSha = (await git(['merge-base', headSha, baseSha])).trim();
+    await git(['worktree', 'add', '--detach', workspaceRoot, headSha]);
+    // Materialize the old-side blobs too, before the guarded reviewer runs without GitHub credentials.
+    await git(['diff', '--no-ext-diff', '--no-textconv', `${mergeBaseSha}..${headSha}`], cache, true);
+  } else {
+    await ensureClone(owner, repoName, workspaceRoot, token);
+    headSha = await checkoutPr(workspaceRoot, targetHeadSha);
+    await run('git', ['fetch', '--filter=tree:0', 'origin', `${pr.base.ref}:refs/remotes/origin/${pr.base.ref}`], { cwd: workspaceRoot }).catch(() => {});
+    await run('git', ['fetch', '--filter=tree:0', 'origin', baseSha], { cwd: workspaceRoot }).catch(() => {});
+    mergeBaseSha = (await run('git', ['merge-base', headSha, baseSha], { cwd: workspaceRoot })).trim();
+  }
+  options.signal?.throwIfAborted();
 
   const [reviewsResp, reviewCommentsResp, issueCommentsResp, filesResp] = await Promise.all([
     octokit.pulls.listReviews({ owner, repo: repoName, pull_number: payload.pr_number, per_page: 100 }),

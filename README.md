@@ -259,7 +259,7 @@ For Claude Code print mode, set the reviewer to:
   "auth": "none",
   "command": "/home/avifenesh/.local/bin/claude",
   "model": "global.anthropic.claude-opus-5[1m]",
-  "reasoningEffort": "high"
+  "reasoningEffort": "medium"
 }
 ```
 
@@ -292,6 +292,15 @@ A reserved attempt counts even if the run errors; a new push, daemon restart, or
 `--force` does not reset or bypass it. At the cap, automatic review/fix cycles stop
 and the check stays failed with a manual-review explanation. Reaching the cap
 never approves or merges a PR. The separate `maxSteps` limit bounds a single run.
+
+Reviews use up to `review.maxConcurrent` slots globally (default 4) and
+`review.maxConcurrentPerRepo` per repository (default 2), with one active run per
+PR. These limits cover the daemon, webhooks and manual CLI processes. Waiting
+reviews are admitted in order when their repository has capacity.
+Each run gets a detached worktree from a shared bare Git cache. The checkout and
+its Git registration are removed after success, failure or cancellation; daemon
+startup reaps worktrees left by crashed processes. The bare cache is retained to
+avoid fetching the repository again. Round and daily-review limits remain enforced.
 The CLI returns a verdict; Revuto retains GitHub posting authority. Structured
 output alone does not count as inspection, and a run with no evidence reads fails
 before posting. A failing CLI/model does not silently switch to another provider.

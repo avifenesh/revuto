@@ -155,6 +155,7 @@ const prompt = readFileSync(0, 'utf8');
 assert.equal(args[0], '-p');
 assert.equal(args[1], '--model');
 assert.equal(args[args.indexOf('--model') + 1], 'global.anthropic.claude-opus-5[1m]');
+assert.equal(args[args.indexOf('--effort') + 1], 'medium');
 assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
 assert.equal(args[args.indexOf('--tools') + 1], '');
 assert.equal(args[args.indexOf('--setting-sources') + 1], '');
@@ -175,7 +176,7 @@ console.log(JSON.stringify({type:'result',subtype:prompt==='fail'?'error_during_
 `);
   chmodSync(command, 0o755);
   const model = { baseURL: 'claude-cli://local', api: 'claude' as const, auth: 'none' as const,
-    command, model: 'global.anthropic.claude-opus-5[1m]', permissionMode: 'bypass' as const };
+    command, model: 'global.anthropic.claude-opus-5[1m]', reasoningEffort: 'medium' as const, permissionMode: 'bypass' as const };
   try {
     const result = await runAgyCli({spec:model,cwd:dir,prompt:'review'});
     assert.equal(result.result.status, 'SUCCESS');

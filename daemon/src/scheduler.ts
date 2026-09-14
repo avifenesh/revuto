@@ -23,7 +23,8 @@ async function guard(config: ReviewerConfig, job: string, repo: string, fn: () =
     }
   };
 
-  await runQueuedForRepo(config, repo, run);
+  if (job === 'review') await run();
+  else await runQueuedForRepo(config, repo, run);
 }
 
 export interface ScheduledRepo {
