@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -90,6 +90,34 @@ test('Claude environment forwards provider auth without GitHub or executable set
     assert.equal(env.CLAUDE_CODE_USE_BEDROCK,'1');
     assert.equal(env.GH_TOKEN,undefined); assert.equal(env.NODE_OPTIONS,undefined);
   } finally { rmSync(root,{recursive:true,force:true}); }
+});
+
+test('Search pages are bounded, explicitly complete, and sorted across nested glob matches', async () => {
+  const root=mkdtempSync(join(tmpdir(),'revuto-search-pages-'));
+  try {
+    mkdirSync(join(root,'nested'));
+    writeFileSync(join(root,'a.ts'),'MATCH '+ 'x'.repeat(100)+'\n');
+    writeFileSync(join(root,'nested','z.ts'),('MATCH '+ 'x'.repeat(100)+'\n').repeat(6000)+'MATCH TAIL_SENTINEL\n');
+    const tools=await claudeInspectionTools(root);
+    const grep=tools.find(t=>t.name==='grep')!;
+    const first=JSON.parse(String(await grep.callback({pattern:'MATCH',output_mode:'content',limit:10000})));
+    assert.equal(first.text.length,10000);assert.equal(first.next_offset,10000);
+    assert.ok(first.total_characters>512000);
+    const last=JSON.parse(String(await grep.callback({pattern:'MATCH',output_mode:'content',offset:first.total_characters-1000})));
+    assert.equal(last.next_offset,null);assert.match(last.text,/TAIL_SENTINEL/);
+    const empty=JSON.parse(String(await grep.callback({pattern:'NO_MATCH_VALUE'})));
+    assert.equal(empty.total_characters,0);assert.equal(empty.next_offset,null);
+    const glob=tools.find(t=>t.name==='glob')!;
+    let offset=0, all='';
+    do {
+      const page=JSON.parse(String(await glob.callback({pattern:'*.ts',offset,limit:17})));
+      all+=page.text;
+      if(page.next_offset===null)break;
+      assert.ok(page.next_offset>offset);offset=page.next_offset;
+    } while(true);
+    assert.deepEqual(all.trim().split('\n'),[join(root,'a.ts'),join(root,'nested','z.ts')]);
+    assert.throws(()=>glob.inputSchema.parse({pattern:'*.ts',head_limit:1}));
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
 
 test('Claude rejects unsupported effort at config load', () => {

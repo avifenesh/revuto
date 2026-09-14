@@ -277,6 +277,10 @@ fixed PR diff, excluding sensitive paths. It exposes no shell, arbitrary Git,
 LSP, write, or network tools. Bare mode disables automatically loaded hooks,
 plugins and project memory; Revuto supplies the PR and repository knowledge.
 Valid effort values are `low`, `medium`, `high`, `xhigh`, and `max`.
+Claude receives `review.maxSteps` as `--max-turns` and the configured review
+output cap as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. A turn-limit exit fails the review.
+AGY retains its native CLI limits and the 20-minute runner timeout; Revuto's
+step/output knobs apply to HTTP and Claude review execution, not AGY.
 The CLI returns a verdict; Revuto retains GitHub posting authority. Structured
 output alone does not count as inspection, and a run with no evidence reads fails
 before posting. A failing CLI/model does not silently switch to another provider.

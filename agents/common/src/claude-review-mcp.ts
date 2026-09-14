@@ -1,6 +1,5 @@
 /** The only tool surface exposed to Claude: guarded reads and a fixed PR diff. */
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { realpath } from 'node:fs/promises';
@@ -28,13 +27,13 @@ async function guardedPath(root: string, path = '.'): Promise<string> {
   return actual;
 }
 
-/** Drain Git with bounded retained memory, returning one small character page. */
-function diffPage(root: string, args: string[], offset: number, limit: number): Promise<string> {
+/** Drain a fixed inspection command with bounded retained memory. */
+function commandPage(command: 'git' | 'rg', root: string, args: string[], offset: number, limit: number): Promise<string> {
   return new Promise((resolvePage, reject) => {
-    const child = spawn('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawn(command, args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
     let total = 0, page = '', stderr = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('PR diff timed out')); }, 60_000);
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${command} inspection timed out`)); }, 60_000);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       const start = Math.max(0, offset - total);
@@ -46,7 +45,7 @@ function diffPage(root: string, args: string[], offset: number, limit: number): 
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', code => {
       clearTimeout(timer);
-      if (code !== 0) { reject(new Error(`PR diff exited ${code}: ${stderr}`)); return; }
+      if (code !== 0 && !(command === 'rg' && code === 1 && !stderr.trim())) { reject(new Error(`${command} inspection exited ${code}: ${stderr}`)); return; }
       const next = offset + page.length < total ? offset + page.length : null;
       resolvePage(JSON.stringify({ offset, next_offset: next, total_characters: total, text: page }));
     });
@@ -58,6 +57,16 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
   const bundle = await buildHarnessTools({ workspaceRoot, allowWrite: false });
   const tools = bundle.tools.filter(t => ['read', 'grep', 'glob'].includes(t.name)).map(tool => ({
     ...tool,
+    ...(tool.name === 'read' ? {} : {
+      description: `${tool.name === 'grep' ? 'Search contents with ripgrep regex (or fixed_strings). Files over 5 MB are skipped; matching lines over 2000 columns are omitted by rg.' : 'Find paths with ripgrep glob syntax: slash-free globs match basenames at any depth.'} Results are sorted by path, respect ignore files and exclude sensitive paths. Returns {offset,next_offset,total_characters,text}. Offsets and limits are CHARACTER counts, not lines or matches. Keep paging with next_offset until null before claiming a complete result.`,
+      inputSchema: z.object({ pattern: z.string(), path: z.string().optional(),
+        offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(12000).optional(),
+        ...(tool.name === 'grep' ? { glob: z.string().optional(), type: z.string().optional(),
+          fixed_strings: z.boolean().optional(), case_insensitive: z.boolean().optional(), multiline: z.boolean().optional(),
+          output_mode: z.enum(['files_with_matches', 'content', 'count']).optional(),
+          context: z.number().int().min(0).max(100).optional() } : {}),
+      }).strict(),
+    }),
     callback: async (input: any) => {
       try {
         const path = await guardedPath(workspaceRoot, input.path);
@@ -65,6 +74,7 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
         // The harness directory search checks its root, but not every matched
         // child's sensitive path. Enforce exclusions in the search itself.
         const args: string[] = tool.name === 'glob' ? ['--files', '--glob', input.pattern] : ['--line-number', '--max-columns', '2000', '--max-filesize', '5M'];
+        args.push('--sort', 'path');
         if (tool.name === 'grep') {
           if (input.glob) args.push('--glob', input.glob);
           if (input.type) args.push('--type', input.type);
@@ -73,22 +83,12 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
           if (input.multiline) args.push('--multiline');
           if (input.output_mode === 'files_with_matches' || !input.output_mode) args.push('--files-with-matches');
           if (input.output_mode === 'count') args.push('--count');
-          for (const [key, flag] of [['context', '--context'], ['context_before', '--before-context'], ['context_after', '--after-context']]) {
-            if (input[key] !== undefined) args.push(flag!, String(Math.min(100, Math.max(0, input[key]))));
-          }
+          if (input.context !== undefined) args.push('--context', String(input.context));
         }
         // Last globs win in rg: keep the mandatory exclusions after user filters.
         for (const excluded of EXCLUDED) args.push('--glob', `!**/${excluded}`);
         args.push('--', ...(tool.name === 'grep' ? [input.pattern] : []), path);
-        try {
-          const result = await promisify(execFile)('rg', args, { cwd: workspaceRoot, timeout: 60_000, maxBuffer: 512_000,
-            env: { PATH: process.env.PATH } });
-          const offset = Math.max(0, input.offset ?? 0);
-          return result.stdout.split('\n').slice(offset, offset + Math.min(2000, Math.max(1, input.head_limit ?? 250))).join('\n');
-        } catch (error) {
-          if ((error as { code?: number }).code === 1) return '(no matches)';
-          throw error;
-        }
+        return await commandPage('rg', workspaceRoot, args, input.offset ?? 0, input.limit ?? 10000);
       } catch (error) { return `ERROR: ${error instanceof Error ? error.message : String(error)}`; }
     },
   }));
@@ -104,7 +104,7 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
           path = relative(workspaceRoot, resolve(workspaceRoot, input.path));
           if (isAbsolute(input.path) || path === '..' || path.startsWith('../') || sensitive(path)) throw new Error('Invalid PR diff path');
         }
-        return diffPage(workspaceRoot, [
+        return commandPage('git', workspaceRoot, [
           '--no-pager', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--stat'] : []), diffRange, '--', `:(literal)${path || '.'}`,
           ...EXCLUDED.map(p => `:(exclude,glob)**/${p}`),
         ], input.offset ?? 0, input.limit ?? 10000);

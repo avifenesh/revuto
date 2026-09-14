@@ -122,6 +122,8 @@ export interface RunAgyCliOptions {
   readonly schema?: string;
   readonly timeoutMs?: number;
   readonly diffRange?: string;
+  readonly maxSteps?: number;
+  readonly maxOutputTokens?: number;
   readonly onStep?: (step: AgyStepUpdate) => void;
 }
 
@@ -130,6 +132,11 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   const claude = opts.spec.api === 'claude';
   const command = opts.spec.command?.trim() || (claude ? 'claude' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
   const timeoutMs = opts.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
+  const maxSteps = opts.maxSteps ?? 150;
+  const maxOutputTokens = opts.maxOutputTokens ?? 32768;
+  if (claude && (![maxSteps, maxOutputTokens].every(n => Number.isSafeInteger(n) && n > 0))) {
+    return Promise.reject(new Error('Claude review step and output limits must be positive integers'));
+  }
   const args = [
     '-p',
     opts.prompt,
@@ -145,6 +152,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
         args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), opts.cwd, opts.diffRange ?? ''],
       } } }),
       '--permission-mode', 'dontAsk', '--tools', '',
+      '--max-turns', String(maxSteps),
       '--allowedTools', 'mcp__revuto__read,mcp__revuto__grep,mcp__revuto__glob,mcp__revuto__pr_diff');
     if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
   } else {
@@ -158,7 +166,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     try {
       child = spawn(command, args, {
         cwd: opts.cwd,
-        env: claude ? claudeEnvironment() : { ...process.env, AGY_CLI_HIDE_LOGO: 'true' },
+        env: claude ? { ...claudeEnvironment(), CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) } : { ...process.env, AGY_CLI_HIDE_LOGO: 'true' },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
@@ -321,6 +329,8 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
       cwd: opts.ctx.workspacePath,
       schema: AGY_REVIEW_SCHEMA,
       diffRange: opts.ctx.diffRefSpec,
+      maxSteps: opts.config.review.maxSteps,
+      maxOutputTokens: opts.config.limits.maxOutputTokens.review,
       prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown)
         .replace('inside the Antigravity CLI', spec.api === 'claude' ? 'inside Claude Code CLI' : 'inside the Antigravity CLI')
         + (spec.api === 'claude' ? '\nUse mcp__revuto__pr_diff first, then the guarded read/grep/glob tools to trace repository evidence. No shell, network, or arbitrary Git execution is available.' : ''),

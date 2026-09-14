@@ -142,6 +142,8 @@ assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
 assert.equal(args[args.indexOf('--tools') + 1], '');
 assert.equal(args[args.indexOf('--setting-sources') + 1], '');
 assert.ok(args.includes('--restricted'));
+assert.equal(args[args.indexOf('--max-turns') + 1], args[1] === 'budget' ? '7' : '150');
+assert.equal(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, args[1] === 'budget' ? '2048' : '32768');
 assert.deepEqual(Object.keys(JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers), ['revuto']);
 assert.ok(args.includes('--bare') && args.includes('--verbose') && args.includes('--strict-mcp-config'));
 assert.ok(!args.includes('--print-timeout') && !args.includes('--dangerously-skip-permissions'));
@@ -160,6 +162,8 @@ console.log(JSON.stringify({type:'result',subtype:args[1]==='fail'?'error_during
   try {
     const result = await runAgyCli({spec:model,cwd:dir,prompt:'review'});
     assert.equal(result.result.status, 'SUCCESS');
+    await runAgyCli({spec:model,cwd:dir,prompt:'budget',maxSteps:7,maxOutputTokens:2048});
+    await assert.rejects(runAgyCli({spec:model,cwd:dir,prompt:'bad budget',maxSteps:0}), /positive integers/);
     assert.equal(result.result.usage?.total_tokens, 32);
     assert.equal(result.inspections, 1);
     assert.equal(result.toolSteps[0]?.name, 'mcp__revuto__read');
@@ -168,7 +172,7 @@ console.log(JSON.stringify({type:'result',subtype:args[1]==='fail'?'error_during
     const noInspection = await runAgyCli({spec:model,cwd:dir,prompt:'terminal-only'});
     assert.equal(noInspection.inspections, 0);
     await assert.rejects(runAgyReview({
-      config: {vaultPath:dir,models:{review:model}} as ReviewerConfig,
+      config: {vaultPath:dir,models:{review:model},review:{maxSteps:150},limits:{maxOutputTokens:{review:32768}}} as ReviewerConfig,
       ctx: {...context(dir),body:'terminal-only'}, octokit:{} as never,
       token:async ()=>'unused',skillMarkdown:'',startedAt:new Date(),
     }), /without inspecting repository evidence/);
