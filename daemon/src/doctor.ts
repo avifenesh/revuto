@@ -40,7 +40,7 @@ function modelEntries(role: string, spec: ModelSpec, kind: 'chat' | 'embedding')
   ];
 }
 
-export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe[]> {
+export async function runModelProbes(config: ReviewerConfig, opts: { includeNative?: boolean } = {}): Promise<ModelProbe[]> {
   // Dedupe roles that share an endpoint+model.
   const entries: Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> = [
     ...modelEntries('review', config.models.review, 'chat'),
@@ -51,6 +51,9 @@ export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe
 
   const groups = new Map<string, { roles: string[]; spec: ModelSpec; kind: 'chat' | 'embedding' }>();
   for (const e of entries) {
+    // The dashboard polls this function. A native CLI model turn is explicit
+    // diagnostic work, not a background status read.
+    if (!opts.includeNative && (e.spec.api === 'agy' || e.spec.api === 'claude')) continue;
     const key = `${e.kind}:${e.spec.api ?? 'chat'}:${e.spec.baseURL}:${e.spec.model}`;
     const g = groups.get(key);
     if (g) g.roles.push(e.role);
@@ -142,7 +145,7 @@ export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
   const [github, store, models] = await Promise.all([
     githubProbe(),
     storeProbe(),
-    runModelProbes(config),
+    runModelProbes(config, { includeNative: true }),
   ]);
   return { github, store, models };
 }

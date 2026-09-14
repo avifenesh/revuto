@@ -282,6 +282,16 @@ Claude receives `review.maxSteps` as `--max-turns` and the configured review
 output cap as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. A turn-limit exit fails the review.
 AGY retains its native CLI limits and the 20-minute runner timeout; Revuto's
 step/output knobs apply to HTTP and Claude review execution, not AGY.
+Automatic dashboard probes skip native CLI models. Explicit `revuto doctor`
+opts in; its Claude probe has no tools/MCP servers, one turn, low effort and a
+32-token output cap, and checks the exact expected response.
+
+`review.maxRounds` defaults to **3 model-run attempts per PR across all commits**.
+Signed reviews already posted by the configured reviewer seed the lifetime count.
+A reserved attempt counts even if the run errors; a new push, daemon restart, or
+`--force` does not reset or bypass it. At the cap, automatic review/fix cycles stop
+and the check stays failed with a manual-review explanation. Reaching the cap
+never approves or merges a PR. The separate `maxSteps` limit bounds a single run.
 The CLI returns a verdict; Revuto retains GitHub posting authority. Structured
 output alone does not count as inspection, and a run with no evidence reads fails
 before posting. A failing CLI/model does not silently switch to another provider.

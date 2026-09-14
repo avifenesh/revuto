@@ -8,6 +8,7 @@
  */
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { StringDecoder } from 'node:string_decoder';
 import { claudeEnvironment } from './claude-env.js';
 import { z } from 'zod';
 import type { Octokit } from '@octokit/rest';
@@ -127,6 +128,7 @@ export interface RunAgyCliOptions {
   readonly diffRange?: string;
   readonly maxSteps?: number;
   readonly maxOutputTokens?: number;
+  readonly probe?: boolean;
   readonly onStep?: (step: AgyStepUpdate) => void;
 }
 
@@ -151,13 +153,13 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   if (claude) {
     args.push('--verbose', '--bare', '--restricted', '--setting-sources', '', '--no-session-persistence',
       '--input-format', 'text',
-      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { revuto: {
+      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: opts.probe ? {} : { revuto: {
         command: process.execPath,
         args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), opts.cwd, opts.diffRange ?? ''],
       } } }),
       '--permission-mode', 'dontAsk', '--tools', '',
       '--max-turns', String(maxSteps),
-      '--allowedTools', 'mcp__revuto__read,mcp__revuto__grep,mcp__revuto__glob,mcp__revuto__pr_diff');
+      '--allowedTools', opts.probe ? '' : 'mcp__revuto__read,mcp__revuto__grep,mcp__revuto__glob,mcp__revuto__pr_diff');
     if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
   } else {
     args.push('--print-timeout', timeoutArg(timeoutMs));
@@ -180,6 +182,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
 
     let settled = false;
     let lineBuffer = '';
+    const decoder = new StringDecoder('utf8');
     let stdoutChars = 0;
     let stderr = '';
     let result: AgyCliResult | undefined;
@@ -258,7 +261,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
         child.kill('SIGTERM');
         return;
       }
-      lineBuffer += chunk.toString('utf8');
+      lineBuffer += decoder.write(chunk);
       let newline: number;
       while ((newline = lineBuffer.indexOf('\n')) >= 0) {
         const line = lineBuffer.slice(0, newline).replace(/\r$/, '');
@@ -273,6 +276,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     child.on('error', (err) => finishError(err));
     child.on('close', (code) => {
       if (settled) return;
+      lineBuffer += decoder.end();
       if (lineBuffer.trim()) handleLine(lineBuffer);
       if (settled) return;
       if (code !== 0) {
@@ -301,12 +305,17 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
 
 /** Small live probe used by `revuto doctor` without creating a review trace. */
 export async function probeAgy(spec: ModelSpec, cwd: string): Promise<AgyCliRun> {
-  return runAgyCli({
-    spec,
+  const result = await runAgyCli({
+    spec: spec.api === 'claude' ? { ...spec, reasoningEffort: 'low' } : spec,
     cwd,
     prompt: 'Return exactly AGY_REVUTO_DOCTOR_OK and nothing else.',
     timeoutMs: AGY_DOCTOR_TIMEOUT_MS,
+    probe: true,
+    maxSteps: 1,
+    maxOutputTokens: 32,
   });
+  if (result.result.response?.trim() !== 'AGY_REVUTO_DOCTOR_OK') throw new Error('Native doctor probe returned an unexpected response');
+  return result;
 }
 
 export interface RunAgyReviewOptions {

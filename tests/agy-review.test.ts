@@ -5,7 +5,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
@@ -13,6 +13,8 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv
 import { AGY_REVIEW_SCHEMA, buildAgyReviewPrompt, normalizeClaudeEvents, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import type { PrContext } from '../agents/common/src/workspace.js';
+import { runModelProbes } from '../daemon/src/doctor.js';
+import { startFakeOpenAI } from '../scripts/smoke/fake-openai.js';
 
 function fakeAgy(): { dir: string; command: string } {
   const dir = mkdtempSync(join(tmpdir(), 'revuto-agy-'));
@@ -207,4 +209,48 @@ test('Claude stream keeps multiple tool results and permission failures distinct
   assert.deepEqual(events[1], {event:'step_update',step_update:{step_type:'tool',tool_name:'Bash',tool_info:{output:'permission denied',error:'permission denied'}}});
   assert.equal(names.size,0);
   assert.deepEqual(normalizeClaudeEvents({type:'rate_limit_event'},names),[]);
+});
+
+test('Native stream preserves Unicode split across stdout chunks', async () => {
+  const dir=mkdtempSync(join(tmpdir(),'revuto-utf8-'));const command=join(dir,'fake.mjs');
+  try {
+    writeFileSync(command,`#!/usr/bin/env node
+const output=Buffer.from(JSON.stringify({event:'result',result:{status:'SUCCESS',structured_output:{decision:'skip_review',reason:'שלום🙂',body:'',comments:[]}}})+'\\n');
+const split=output.indexOf(Buffer.from('ש'))+1;
+process.stdout.write(output.subarray(0,split));
+await new Promise(resolve=>setTimeout(resolve,30));
+process.stdout.write(output.subarray(split));
+`);chmodSync(command,0o755);
+    const result=await runAgyCli({spec:spec(command),cwd:dir,prompt:'probe'});
+    assert.equal((result.result.structured_output as {reason:string}).reason,'שלום🙂');
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('Automatic model probes never launch native agents; explicit Claude probes are limited', async () => {
+  const dir=mkdtempSync(join(tmpdir(),'revuto-probe-'));const command=join(dir,'fake.mjs');const marker=join(dir,'called');
+  const server=await startFakeOpenAI(()=>({text:'pong'}));
+  try {
+    writeFileSync(command,`#!/usr/bin/env node
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync} from 'node:fs';
+const args=process.argv.slice(2);
+assert.equal(args[args.indexOf('--max-turns')+1],'1');
+assert.equal(args[args.indexOf('--effort')+1],'low');
+assert.equal(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS,'32');
+assert.equal(args[args.indexOf('--tools')+1],'');
+assert.deepEqual(JSON.parse(args[args.indexOf('--mcp-config')+1]),{mcpServers:{}});
+assert.match(readFileSync(0,'utf8'),/AGY_REVUTO_DOCTOR_OK/);
+writeFileSync(${JSON.stringify(marker)},'called');
+console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:args[args.indexOf('--model')+1]==='wrong'?'wrong':'AGY_REVUTO_DOCTOR_OK'}));
+`);chmodSync(command,0o755);
+    const native={api:'claude' as const,baseURL:'claude-cli://local',model:'probe',command};
+    const http={baseURL:server.url,model:'fake'};
+    const config={models:{review:native,curator:http,distill:http,embedder:null}} as ReviewerConfig;
+    const automatic=await runModelProbes(config);
+    assert.equal(existsSync(marker),false);assert.equal(automatic.length,1);assert.ok(automatic[0]?.ok);
+    const explicit=await runModelProbes(config,{includeNative:true});
+    assert.ok(existsSync(marker));assert.equal(explicit.length,2);assert.ok(explicit.every(p=>p.ok));
+    const bad=await runModelProbes({...config,models:{...config.models,review:{...native,model:'wrong'}}},{includeNative:true});
+    assert.match(bad.find(p=>p.api==='claude')?.error??'',/unexpected response/);
+  } finally {await server.close();rmSync(dir,{recursive:true,force:true});}
 });

@@ -79,6 +79,8 @@ export interface ReviewerConfig {
   readonly schedules: { readonly review: string; readonly learn: string; readonly decay: string };
   readonly review: {
     readonly maxSteps: number;
+    /** Lifetime model-run attempts per PR, across heads; defaults to three. */
+    readonly maxRounds?: number;
     readonly allowWrite: boolean;
     /** Parent dir for per-repo working checkouts. */
     readonly workspaceDir: string;
@@ -104,7 +106,7 @@ export interface ReviewerConfig {
 }
 
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
-const DEFAULT_REVIEW = { maxSteps: 150, allowWrite: false, workspaceDir: '' };
+const DEFAULT_REVIEW = { maxSteps: 150, maxRounds: 3, allowWrite: false, workspaceDir: '' };
 const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
 const MODEL_APIS = ['chat', 'responses', 'converse', 'agy', 'claude'] as const;
 const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -281,9 +283,11 @@ export function loadConfig(path?: string): ReviewerConfig {
   const review = {
     ...DEFAULT_REVIEW,
     maxSteps: raw.review?.maxSteps ?? DEFAULT_REVIEW.maxSteps,
+    maxRounds: raw.review?.maxRounds ?? DEFAULT_REVIEW.maxRounds,
     allowWrite: raw.review?.allowWrite ?? DEFAULT_REVIEW.allowWrite,
     workspaceDir: resolveHome(raw.review?.workspaceDir ?? `${vaultPath}/.workspaces`),
   };
+  if (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 1) throw new Error('config: review.maxRounds must be a positive integer');
   const mot = raw.limits?.maxOutputTokens ?? {};
   const limits = {
     maxOutputTokens: {

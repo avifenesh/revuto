@@ -13,6 +13,7 @@ import { runCurator } from '../../agents/curator/src/run-curator.js';
 import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollOpenPRs, pollFeedback } from './poller.js';
 import { readReviewer, writeReviewer, type ReviewerSettings } from './reviewers.js';
+import { historicalReviewRounds, reserveReviewRound } from './review-rounds.js';
 import {
   assertReviewedHead,
   checkResultForError,
@@ -83,7 +84,9 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
           reviewAuth = appAuth;
           checkRunId = await createReviewCheck(reviewAuth, githubApp, target);
         }
-        outcome = await runReview({
+        const round = await reserveReviewRound(store, pr.number, config.review.maxRounds ?? 3,
+          () => historicalReviewRounds(reviewAuth, settings.repo, pr.number, settings.botLogin));
+        outcome = round.allowed ? await runReview({
           repo: settings.repo,
           prNumber: pr.number,
           headSha: pr.headSha,
@@ -91,7 +94,7 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
           store,
           embedder,
           githubAuth: reviewAuth,
-        });
+        }) : unreviewedOutcome(round.reason, pr.headSha);
         assertReviewedHead(target, outcome);
         if (outcome.terminal === 'none') throw new Error(`review of ${key} ended without a terminal decision`);
       } catch (err) {
@@ -114,9 +117,11 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
           console.error(`[review] could not complete check ${checkRunId}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-      reviewed++;
-      if (dailyReviews) reviewsToday = await store.incrCounter(counterKey('reviews', day));
-      if (dailyTokens) tokensToday = await store.incrCounter(counterKey('tokens', day), outcome.tokens);   // shared daily token budget
+      if (outcome.ranModel) {
+        reviewed++;
+        if (dailyReviews) reviewsToday = await store.incrCounter(counterKey('reviews', day));
+        if (dailyTokens) tokensToday = await store.incrCounter(counterKey('tokens', day), outcome.tokens);
+      } else { skipped++; limited = 'pr-rounds'; }
     }
     await store.setCursor('review', nowIso());
     return { reviewed, skipped, ...(limited ? { limited } : {}) };
@@ -239,7 +244,11 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
     } else if (githubApp) {
       managedCheckRunId = await createReviewCheck(auth, githubApp, managedTarget);
     }
-    const outcome = await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth });
+    const round = await reserveReviewRound(store, prNumber, config.review.maxRounds ?? 3,
+      () => historicalReviewRounds(auth, repo, prNumber, readReviewer(config, repo)?.botLogin));
+    const outcome = round.allowed
+      ? await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth })
+      : unreviewedOutcome(round.reason, pr.head.sha);
     assertReviewedHead(managedTarget, outcome);
     if (outcome.terminal === 'none') {
       throw new Error(`review of ${repo}#${prNumber}@${pr.head.sha} ended without a terminal decision`);
