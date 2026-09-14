@@ -1,5 +1,5 @@
 /** The only tool surface exposed to Claude: guarded reads and a fixed PR diff. */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { resolve, relative, isAbsolute } from 'node:path';
@@ -26,6 +26,31 @@ async function guardedPath(root: string, path = '.'): Promise<string> {
     if (rel === '..' || rel.startsWith('../') || isAbsolute(rel) || sensitive(rel)) throw new Error('Path is outside the allowed inspection surface');
   }
   return actual;
+}
+
+/** Drain Git with bounded retained memory, returning one small character page. */
+function diffPage(root: string, args: string[], offset: number, limit: number): Promise<string> {
+  return new Promise((resolvePage, reject) => {
+    const child = spawn('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+    let total = 0, page = '', stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('PR diff timed out')); }, 60_000);
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      const start = Math.max(0, offset - total);
+      const end = Math.min(chunk.length, offset + limit - total);
+      if (end > start) page += chunk.slice(start, end);
+      total += chunk.length;
+    });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk.slice(0, Math.max(0, 4000 - stderr.length)); });
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) { reject(new Error(`PR diff exited ${code}: ${stderr}`)); return; }
+      const next = offset + page.length < total ? offset + page.length : null;
+      resolvePage(JSON.stringify({ offset, next_offset: next, total_characters: total, text: page }));
+    });
+  });
 }
 
 export async function claudeInspectionTools(workspaceRoot: string, diffRange?: string): Promise<readonly ToolDef[]> {
@@ -70,15 +95,19 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
   if (diffRange) {
     if (!/^[a-f0-9]{40}\.\.[a-f0-9]{40}$/.test(diffRange)) throw new Error('Invalid immutable diff range');
     tools.push({
-      name: 'pr_diff', description: 'Read the exact pull request diff. No arbitrary commands or revisions are accepted.',
-      inputSchema: z.object({}).strict(),
-      callback: async () => {
-        const result = await promisify(execFile)('git', [
-          '--no-pager', 'diff', '--no-ext-diff', '--no-textconv', diffRange, '--', '.',
+      name: 'pr_diff', description: 'Read the exact PR diff. Start with mode=stat, then select a repository-relative path and page using next_offset until null. Offsets and limits count characters. No arbitrary commands or revisions are accepted.',
+      inputSchema: z.object({ path: z.string().optional(), mode: z.enum(['patch', 'stat']).optional(),
+        offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(12000).optional() }).strict(),
+      callback: async (input: { path?: string; mode?: string; offset?: number; limit?: number }) => {
+        let path = '.';
+        if (input.path !== undefined) {
+          path = relative(workspaceRoot, resolve(workspaceRoot, input.path));
+          if (isAbsolute(input.path) || path === '..' || path.startsWith('../') || sensitive(path)) throw new Error('Invalid PR diff path');
+        }
+        return diffPage(workspaceRoot, [
+          '--no-pager', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--stat'] : []), diffRange, '--', `:(literal)${path || '.'}`,
           ...EXCLUDED.map(p => `:(exclude,glob)**/${p}`),
-        ], { cwd: workspaceRoot, timeout: 60_000, maxBuffer: 2 * 1024 * 1024,
-          env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
-        return result.stdout || '(empty diff after sensitive-path exclusions)';
+        ], input.offset ?? 0, input.limit ?? 10000);
       },
     });
   }

@@ -53,7 +53,31 @@ test('Fixed PR diff excludes sensitive files and cannot execute a configured dif
     assert.throws(()=>diff.inputSchema.parse({args:['--output=/tmp/escape']}));
     const output=String(await diff.callback({}));
     assert.match(output,/AFTER_SENTINEL/); assert.doesNotMatch(output,/PRIVATE_SENTINEL/);
+    await assert.rejects(async()=>diff.callback({path:'../outside'}),/Invalid PR diff path/);
+    await assert.rejects(async()=>diff.callback({path:'.env'}),/Invalid PR diff path/);
   } finally { rmSync(root,{recursive:true,force:true}); }
+});
+
+test('PR diff pages beyond 2 MiB without losing content or overflowing a tool result', async () => {
+  const root=mkdtempSync(join(tmpdir(),'revuto-diff-pages-'));
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  try {
+    git('init','-q');git('config','user.email','test@example.test');git('config','user.name','Test');
+    git('commit','--allow-empty','-qm','base');const base=git('rev-parse','HEAD');
+    writeFileSync(join(root,'large.txt'),'x'.repeat(2*1024*1024)+'\nTAIL_SENTINEL\n');
+    writeFileSync(join(root,'other.txt'),'OTHER_SENTINEL\n');
+    git('add','.');git('commit','-qm','head');
+    const tools=await claudeInspectionTools(root,`${base}..${git('rev-parse','HEAD')}`);
+    const diff=tools.find(t=>t.name==='pr_diff')!;
+    const first=JSON.parse(String(await diff.callback({path:'large.txt',limit:12000})));
+    assert.equal(first.text.length,12000);assert.equal(first.next_offset,12000);
+    assert.ok(first.total_characters>2*1024*1024);
+    const last=JSON.parse(String(await diff.callback({path:'large.txt',offset:first.total_characters-1000})));
+    assert.equal(last.next_offset,null);assert.match(last.text,/TAIL_SENTINEL/);
+    assert.doesNotMatch(last.text,/OTHER_SENTINEL/);
+    const stat=JSON.parse(String(await diff.callback({mode:'stat'})));
+    assert.match(stat.text,/large.txt/);assert.match(stat.text,/other.txt/);
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
 
 test('Claude environment forwards provider auth without GitHub or executable settings', () => {
