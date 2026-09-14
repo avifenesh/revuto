@@ -6,7 +6,6 @@ import type { GithubAppConfig, ReviewerConfig } from '../../agents/common/src/co
 import { getInstallationOctokit, type GithubAuth } from '../../agents/common/src/github-auth.js';
 import { describeOutcome } from '../../agents/common/src/run-agent.js';
 import { reviewOnePr } from './jobs.js';
-import { runQueuedForRepo } from './repo-queue.js';
 import { readReviewer } from './reviewers.js';
 import {
   checkResultForError,
@@ -100,10 +99,7 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
     detailsUrl: event.pull_request.html_url,
   };
   try {
-    const outcome = await runQueuedForRepo(
-      config,
-      event.repository.full_name,
-      () => runForRegisteredRepo(config, event.repository.full_name, async () => {
+    const outcome = await runForRegisteredRepo(config, event.repository.full_name, async () => {
         auth = await getInstallationOctokit(app, event.installation.id);
         return reviewOnePr(config, event.repository.full_name, event.number, {
           githubAuth: auth,
@@ -113,8 +109,7 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
             checkRunId = await createReviewCheck(auth!, app, target);
           },
         });
-      }),
-    );
+      });
 
     // No check means the repo was removed while queued, or the delivery was stale,
     // draft, or already claimed.

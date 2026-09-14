@@ -7,6 +7,7 @@
 import { generateText, embedMany } from 'ai';
 import type { ReviewerConfig, ModelSpec } from '../../agents/common/src/config.js';
 import { buildChatModel, buildEmbeddingModel } from '../../agents/common/src/model.js';
+import { probeAgy } from '../../agents/common/src/agy-review.js';
 import { getOctokit } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 
@@ -39,7 +40,7 @@ function modelEntries(role: string, spec: ModelSpec, kind: 'chat' | 'embedding')
   ];
 }
 
-export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe[]> {
+export async function runModelProbes(config: ReviewerConfig, opts: { includeNative?: boolean } = {}): Promise<ModelProbe[]> {
   // Dedupe roles that share an endpoint+model.
   const entries: Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> = [
     ...modelEntries('review', config.models.review, 'chat'),
@@ -50,6 +51,9 @@ export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe
 
   const groups = new Map<string, { roles: string[]; spec: ModelSpec; kind: 'chat' | 'embedding' }>();
   for (const e of entries) {
+    // The dashboard polls this function. A native CLI model turn is explicit
+    // diagnostic work, not a background status read.
+    if (!opts.includeNative && (e.spec.api === 'agy' || e.spec.api === 'claude')) continue;
     const key = `${e.kind}:${e.spec.api ?? 'chat'}:${e.spec.baseURL}:${e.spec.model}`;
     const g = groups.get(key);
     if (g) g.roles.push(e.role);
@@ -66,6 +70,20 @@ export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe
     const t = Date.now();
     try {
       if (g.kind === 'chat') {
+        if (g.spec.api === 'agy' || g.spec.api === 'claude') {
+          const result = await probeAgy(g.spec, process.cwd());
+          return {
+            roles: g.roles,
+            baseURL: g.spec.baseURL,
+            model: g.spec.model,
+            api: g.spec.api,
+            kind: g.kind,
+            ok: true,
+            ms: Date.now() - t,
+            responseModel: g.spec.model,
+            responseId: result.result.conversation_id,
+          };
+        }
         const result = await generateText({ model: buildChatModel(g.spec), prompt: 'ping', maxOutputTokens: 16 });
         return {
           roles: g.roles,
@@ -127,7 +145,7 @@ export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
   const [github, store, models] = await Promise.all([
     githubProbe(),
     storeProbe(),
-    runModelProbes(config),
+    runModelProbes(config, { includeNative: true }),
   ]);
   return { github, store, models };
 }

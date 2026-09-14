@@ -13,6 +13,9 @@ import { runCurator } from '../../agents/curator/src/run-curator.js';
 import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollOpenPRs, pollFeedback } from './poller.js';
 import { readReviewer, writeReviewer, type ReviewerSettings } from './reviewers.js';
+import { historicalReviewRounds, reserveReviewRound } from './review-rounds.js';
+import { runQueuedReview } from './review-queue.js';
+import { runQueuedForRepo } from './repo-queue.js';
 import {
   assertReviewedHead,
   checkResultForError,
@@ -40,89 +43,34 @@ function githubAppForRepo(config: ReviewerConfig, repo: string) {
 }
 
 export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean } = {}): Promise<ReviewJobResult> {
-  const pollingAuth = getOctokit(config.github);
-  const { octokit } = pollingAuth;
-  const githubApp = githubAppForRepo(config, settings.repo);
-  let appAuth: GithubAuth | undefined;
+  return runQueuedForRepo(config, `_review-poll/${settings.repo}`, () => reviewRepoSnapshot(config, settings, opts));
+}
+
+async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean }): Promise<ReviewJobResult> {
+  const { octokit } = getOctokit(config.github);
   const store = await openStore(config, settings.repo);
-  const embedder = maybeEmbedder(config);
   try {
     const cursor = await store.getCursor('review');
     if (!cursor && !opts.force) {
-      // First scheduled tick: don't review the whole open backlog — start from now.
-      // (A manual `trigger` passes force to review the current open PRs.)
       await store.setCursor('review', nowIso());
       return { reviewed: 0, skipped: 0, initialized: true };
     }
+    const pollStarted = nowIso();
     const prs = await pollOpenPRs(octokit, settings.repo, cursor ?? undefined);
-    const day = dayKey();
-    const { dailyReviews, dailyTokens } = config.limits;
-    let reviewsToday = dailyReviews ? await store.getCounter(counterKey('reviews', day)) : 0;
-    let tokensToday = dailyTokens ? await store.getCounter(counterKey('tokens', day)) : 0;
-    let reviewed = 0, skipped = 0;
-    let limited: string | undefined;
-    for (const pr of prs) {
-      if (pr.isDraft) { skipped++; continue; }                                                  // never touch drafts; reviewed once they're marked ready (updated_at bumps)
-      if (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author)) { skipped++; continue; }
-      const key = `${settings.repo}#${pr.number}@${pr.headSha}`;
-      if (dailyReviews && reviewsToday >= dailyReviews) { limited = 'daily-reviews'; break; }
-      if (dailyTokens && tokensToday >= dailyTokens) { limited = 'daily-tokens'; break; }
-      if (!(await store.claim(key))) { skipped++; continue; }                                   // already reviewing/reviewed this head — no duplicate posts
-      let outcome: ReviewOutcome;
-      let checkRunId: number | undefined;
-      let reviewAuth = pollingAuth;
-      const target: ReviewCheckTarget = {
-        repo: settings.repo,
-        prNumber: pr.number,
-        headSha: pr.headSha,
-        detailsUrl: `https://github.com/${settings.repo}/pull/${pr.number}`,
-      };
-      try {
-        if (githubApp) {
-          appAuth ??= await getRepositoryInstallationOctokit(githubApp, settings.repo);
-          reviewAuth = appAuth;
-          checkRunId = await createReviewCheck(reviewAuth, githubApp, target);
-        }
-        outcome = await runReview({
-          repo: settings.repo,
-          prNumber: pr.number,
-          headSha: pr.headSha,
-          config,
-          store,
-          embedder,
-          githubAuth: reviewAuth,
-        });
-        assertReviewedHead(target, outcome);
-        if (outcome.terminal === 'none') throw new Error(`review of ${key} ended without a terminal decision`);
-      } catch (err) {
-        if (githubApp && checkRunId !== undefined) {
-          try {
-            await completeReviewCheck(reviewAuth, githubApp, target, checkRunId, checkResultForError(err));
-          } catch (updateErr) {
-            console.error(`[review] could not complete check ${checkRunId}: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`);
-          }
-        }
-        await store.unclaim(key);                                                                // release the claim so a transient failure can be retried
-        throw err;
-      }
-      await store.mark(key);
-      console.log(`[review] ${key}: ${describeOutcome(outcome)}`);
-      if (githubApp && checkRunId !== undefined) {
-        try {
-          await completeReviewCheck(reviewAuth, githubApp, target, checkRunId, checkResultForOutcome(outcome));
-        } catch (err) {
-          console.error(`[review] could not complete check ${checkRunId}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      reviewed++;
-      if (dailyReviews) reviewsToday = await store.incrCounter(counterKey('reviews', day));
-      if (dailyTokens) tokensToday = await store.incrCounter(counterKey('tokens', day), outcome.tokens);   // shared daily token budget
-    }
-    await store.setCursor('review', nowIso());
-    return { reviewed, skipped, ...(limited ? { limited } : {}) };
-  } finally {
-    await store.close();
-  }
+    let skipped = 0;
+    const eligible = prs.filter(pr => {
+      if (pr.isDraft || (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author))) { skipped++; return false; }
+      return true;
+    });
+    const results = await Promise.allSettled(eligible.map(pr => reviewOnePr(config, settings.repo, pr.number, { expectedHeadSha: pr.headSha })));
+    const errors = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (errors.length) throw new AggregateError(errors.map(r => r.reason), `${errors.length} review(s) failed for ${settings.repo}`);
+    const outcomes = results.filter((r): r is PromiseFulfilledResult<ReviewOutcome> => r.status === 'fulfilled').map(r => r.value);
+    // Updates arriving while the batch runs must remain visible to the next poll.
+    if (!outcomes.some(r => r.result.startsWith('Daily '))) await store.setCursor('review', pollStarted);
+    return { reviewed: outcomes.filter(r => r.ranModel).length, skipped: skipped + outcomes.filter(r => !r.ranModel).length,
+      ...(outcomes.some(r => !r.ranModel && /limit/.test(r.result)) ? { limited: 'review-limit' } : {}) };
+  } finally { await store.close(); }
 }
 
 export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettings): Promise<LearnJobResult> {
@@ -183,6 +131,10 @@ export interface ReviewOnePrOptions {
 }
 
 export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber: number, opts: ReviewOnePrOptions = {}): Promise<ReviewOutcome> {
+  return runQueuedReview(config, repo, prNumber, () => reviewOnePrAdmitted(config, repo, prNumber, opts));
+}
+
+async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumber: number, opts: ReviewOnePrOptions): Promise<ReviewOutcome> {
   const githubApp = githubAppForRepo(config, repo);
   const auth = opts.githubAuth ?? (githubApp
     ? await getRepositoryInstallationOctokit(githubApp, repo)
@@ -192,6 +144,7 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
   const [owner, name] = parts;
   if (parts.length !== 2 || !owner || !name) throw new Error(`bad repo: ${repo} (expected owner/name)`);
   const { data: pr } = await octokit.pulls.get({ owner, repo: name, pull_number: prNumber });
+  if (pr.state !== 'open' && !opts.force) return unreviewedOutcome(`#${prNumber} is closed; ignoring the queued review`, pr.head.sha);
   if (opts.expectedHeadSha && pr.head.sha !== opts.expectedHeadSha) {
     return unreviewedOutcome(
       `#${prNumber} advanced from ${opts.expectedHeadSha} to ${pr.head.sha}; ignoring the stale delivery`,
@@ -239,12 +192,30 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
     } else if (githubApp) {
       managedCheckRunId = await createReviewCheck(auth, githubApp, managedTarget);
     }
-    const outcome = await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth });
+    const day = dayKey();
+    const round = await runQueuedForRepo(config, `_review-budget/${repo}`, async () => {
+      if (config.limits.dailyReviews && await store.getCounter(counterKey('reviews', day)) >= config.limits.dailyReviews) {
+        return { allowed: false, reason: 'Daily review limit reached' };
+      }
+      if (config.limits.dailyTokens && await store.getCounter(counterKey('tokens', day)) >= config.limits.dailyTokens) {
+        return { allowed: false, reason: 'Daily token limit reached' };
+      }
+      const reserved = await reserveReviewRound(store, prNumber, config.review.maxRounds ?? 3,
+        () => historicalReviewRounds(auth, repo, prNumber, readReviewer(config, repo)?.botLogin));
+      if (reserved.allowed && config.limits.dailyReviews) await store.incrCounter(counterKey('reviews', day));
+      return reserved;
+    });
+    const outcome = round.allowed
+      ? await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth })
+      : unreviewedOutcome(round.reason, pr.head.sha);
+    if (outcome.ranModel && config.limits.dailyTokens) await store.incrCounter(counterKey('tokens', day), outcome.tokens);
     assertReviewedHead(managedTarget, outcome);
+    console.log(`[review] ${key}: ${describeOutcome(outcome)}`);
     if (outcome.terminal === 'none') {
       throw new Error(`review of ${repo}#${prNumber}@${pr.head.sha} ended without a terminal decision`);
     }
-    await store.mark(key);
+    if (round.reason.startsWith('Daily ')) await store.unclaim(key);
+    else await store.mark(key);
     if (githubApp && managedCheckRunId !== undefined) {
       try {
         await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, checkResultForOutcome(outcome));

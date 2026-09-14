@@ -32,6 +32,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      - name: Install native inspection tools
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: npm test
       - name: Offline smokes
         run: |

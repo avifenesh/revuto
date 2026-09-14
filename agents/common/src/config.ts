@@ -22,18 +22,22 @@ export interface ModelSpec {
   readonly baseURL: string;
   /** Model id as the endpoint expects it (e.g. "anthropic.claude-opus-4-7", "qwen3-8b"). */
   readonly model: string;
-  /** API surface. "chat"=OpenAI chat completions, "responses"=OpenAI Responses (mantle), "converse"=Bedrock Converse (native Claude). Defaults to chat. */
-  readonly api?: 'chat' | 'responses' | 'converse';
+  /** API surface. chat/responses/converse use HTTP; agy/claude use native CLI review runners. Defaults to chat. */
+  readonly api?: 'chat' | 'responses' | 'converse' | 'agy' | 'claude';
   /** Reasoning effort for Responses/reasoning models. "max" is the adaptive-thinking ceiling for Converse Claude (opus-4-8+). */
   readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. */
-  readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'none';
+  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. "agy-oauth" uses the AGY CLI's cached Google OAuth session. */
+  readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'agy-oauth' | 'none';
   /** AWS region for SigV4-signed bedrock-mantle requests. */
   readonly awsRegion?: string;
   /** Env var holding the API key. Omit for keyless local endpoints. */
   readonly apiKeyEnv?: string;
   /** Optional provider label for diagnostics. */
   readonly name?: string;
+  /** Native CLI executable. AGY defaults to $REVUTO_AGY_COMMAND or agy; Claude defaults to claude. */
+  readonly command?: string;
+  /** AGY CLI permission policy. "bypass" adds --dangerously-skip-permissions. */
+  readonly permissionMode?: 'bypass' | 'settings';
   /** Ordered fallback models to try if this model call throws. */
   readonly fallbacks?: readonly ModelSpec[];
 }
@@ -75,6 +79,10 @@ export interface ReviewerConfig {
   readonly schedules: { readonly review: string; readonly learn: string; readonly decay: string };
   readonly review: {
     readonly maxSteps: number;
+    /** Lifetime model-run attempts per PR, across heads; defaults to three. */
+    readonly maxRounds?: number;
+    readonly maxConcurrent?: number;
+    readonly maxConcurrentPerRepo?: number;
     readonly allowWrite: boolean;
     /** Parent dir for per-repo working checkouts. */
     readonly workspaceDir: string;
@@ -100,11 +108,12 @@ export interface ReviewerConfig {
 }
 
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
-const DEFAULT_REVIEW = { maxSteps: 150, allowWrite: false, workspaceDir: '' };
+const DEFAULT_REVIEW = { maxSteps: 150, maxRounds: 3, maxConcurrent: 4, maxConcurrentPerRepo: 2, allowWrite: false, workspaceDir: '' };
 const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
-const MODEL_APIS = ['chat', 'responses', 'converse'] as const;
+const MODEL_APIS = ['chat', 'responses', 'converse', 'agy', 'claude'] as const;
 const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'none'] as const;
+const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'agy-oauth', 'none'] as const;
+const AGY_PERMISSION_MODES = ['bypass', 'settings'] as const;
 
 /**
  * Auto-load environment variables from ~/.config/revuto/env or <vault>/env if present.
@@ -164,9 +173,20 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (m.awsRegion !== undefined && typeof m.awsRegion !== 'string') throw new Error(`config: models.${role}.awsRegion must be a string`);
   if (m.apiKeyEnv !== undefined && typeof m.apiKeyEnv !== 'string') throw new Error(`config: models.${role}.apiKeyEnv must be a string`);
   if (m.name !== undefined && typeof m.name !== 'string') throw new Error(`config: models.${role}.name must be a string`);
+  if (m.command !== undefined && (typeof m.command !== 'string' || !m.command.trim())) throw new Error(`config: models.${role}.command must be a non-empty string`);
+  const permissionMode = optionalEnum(m.permissionMode, `models.${role}.permissionMode`, AGY_PERMISSION_MODES);
+  if (api === 'agy' && auth !== 'agy-oauth') {
+    throw new Error(`config: models.${role}.auth must be agy-oauth when models.${role}.api is agy`);
+  }
+  if (api === 'claude' && role !== 'review') {
+    throw new Error(`config: native Claude CLI is supported only for models.review`);
+  }
+  if (api === 'claude' && (reasoningEffort === 'none' || reasoningEffort === 'minimal')) {
+    throw new Error('config: native Claude CLI reasoningEffort must be low, medium, high, xhigh, or max');
+  }
   if (m.fallbacks !== undefined && !Array.isArray(m.fallbacks)) throw new Error(`config: models.${role}.fallbacks must be an array`);
   const fallbacks = m.fallbacks?.map((fallback, i) => checkModel(fallback, `${role}.fallbacks[${i}]`));
-  return { ...m, api, reasoningEffort, auth, ...(fallbacks?.length ? { fallbacks } : {}) };
+  return { ...m, api, reasoningEffort, auth, permissionMode, ...(fallbacks?.length ? { fallbacks } : {}) };
 }
 
 /** The default vault: $REVUTO_VAULT, else ~/revuto. The config + skills + reviewer notes live here. */
@@ -265,9 +285,16 @@ export function loadConfig(path?: string): ReviewerConfig {
   const review = {
     ...DEFAULT_REVIEW,
     maxSteps: raw.review?.maxSteps ?? DEFAULT_REVIEW.maxSteps,
+    maxRounds: raw.review?.maxRounds ?? DEFAULT_REVIEW.maxRounds,
+    maxConcurrent: raw.review?.maxConcurrent ?? DEFAULT_REVIEW.maxConcurrent,
+    maxConcurrentPerRepo: raw.review?.maxConcurrentPerRepo ?? DEFAULT_REVIEW.maxConcurrentPerRepo,
     allowWrite: raw.review?.allowWrite ?? DEFAULT_REVIEW.allowWrite,
     workspaceDir: resolveHome(raw.review?.workspaceDir ?? `${vaultPath}/.workspaces`),
   };
+  if (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 1) throw new Error('config: review.maxRounds must be a positive integer');
+  for (const key of ['maxConcurrent', 'maxConcurrentPerRepo'] as const) {
+    if (!Number.isSafeInteger(review[key]) || review[key] < 1) throw new Error(`config: review.${key} must be a positive integer`);
+  }
   const mot = raw.limits?.maxOutputTokens ?? {};
   const limits = {
     maxOutputTokens: {

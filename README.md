@@ -11,9 +11,9 @@ curated "textbook" of that repo's institutional knowledge, then reviews new PRs
 and keeps learning from how maintainers respond — graduating repeated feedback
 into reusable topic skills.
 
-- **Supplier-agnostic.** Every model call is OpenAI-compatible. Bedrock (via a
-  gateway), xAI/Grok, GLM, a local vLLM/Ollama — interchangeable per role
-  (`review`, `curator`, `distill`, `embedder`) by editing config.
+- **Supplier-agnostic.** Model roles can use OpenAI-compatible endpoints such as
+  Bedrock (via a gateway), xAI/Grok, GLM, or a local vLLM/Ollama. Review can also
+  run through the native Antigravity (`agy`) CLI with its cached Google OAuth.
 - **Runs locally.** An optional GitHub App webhook triggers reviews immediately;
   the scheduler keeps polling as a recovery path and runs the learn/decay jobs.
 - **Embedder optional.** Configure a local or cloud embedding model for similarity
@@ -105,7 +105,8 @@ drop the config in the current dir instead (it still points `vaultPath` at the v
 Config keys: `vaultPath`, `github.tokenEnv`, optional `github.app`, per-role
 `models`, `schedules`, `limits`, and `store`. Model specs require `baseURL` and
 `model`; optional keys are `name`, `apiKeyEnv`, `api`, `auth`,
-`reasoningEffort`, `awsRegion`, and `fallbacks` (`embedder` may be `null`). See
+`reasoningEffort`, `awsRegion`, `command`, `permissionMode`, and `fallbacks`
+(`embedder` may be `null`). See
 `revuto.config.example.json`. No secrets are stored - API keys and the webhook
 secret are env-referenced. `revuto doctor` checks model endpoints, configured
 fallbacks, the store backend, and the token before you run anything.
@@ -219,6 +220,18 @@ with `revuto doctor` before running.
 
 // a self-hosted agent exposing /v1 (e.g. Hermes)
 { "baseURL": "http://127.0.0.1:PORT/v1", "model": "<served-name>", "apiKeyEnv": "HERMES_API_KEY" }
+
+// native AGY review runner — uses AGY's cached Google OAuth, not an API key
+// (`agy://local` is a marker and is not contacted)
+{
+  "name": "agy-oauth",
+  "baseURL": "agy://local",
+  "model": "gemini-3.8-flash-high",
+  "api": "agy",
+  "auth": "agy-oauth",
+  "command": "/home/avifenesh/.local/bin/agy",
+  "permissionMode": "bypass"
+}
 ```
 
 `api` defaults to `chat` (`/v1/chat/completions`). Set `api: "responses"` for
@@ -228,6 +241,69 @@ The current Responses adapter covers Revuto's text + function-tool loop, bearer
 auth, and Bedrock SigV4 signing. It intentionally leaves streaming, stored
 conversation state, multimodal/file inputs, structured-output helpers, and built-in
 Responses tools unsupported for now.
+
+`api: "agy"` is a review-runner mode rather than an OpenAI-compatible model. AGY
+inspects the prepared worktree in headless `stream-json` mode and returns a strict
+review object; Revuto performs the one GitHub `post_review` or `skip_review` action.
+Set `auth: "agy-oauth"` to make the OAuth dependency explicit. Set
+`permissionMode: "bypass"` only for a fully trusted review environment; it passes
+AGY's `--dangerously-skip-permissions` flag for unattended tool execution.
+
+For Claude Code print mode, set the reviewer to:
+
+```json
+{
+  "name": "claude-cli-opus-5",
+  "api": "claude",
+  "baseURL": "claude-cli://local",
+  "auth": "none",
+  "command": "/home/avifenesh/.local/bin/claude",
+  "model": "global.anthropic.claude-opus-5[1m]",
+  "reasoningEffort": "medium"
+}
+```
+
+The model ID above uses a configured Bedrock route; use the exact ID appropriate
+to the CLI's provider. This mode requires native Git and ripgrep on PATH,
+Claude Code 2.1.248 or newer, and
+API-key or third-party provider authentication (Bedrock, Vertex, or Foundry).
+Subscription OAuth and keychain authentication are unavailable in bare mode.
+Revuto forwards only allowlisted provider environment values from the daemon
+environment or the operator's `~/.claude/settings.json`; it does not forward
+GitHub credentials, arbitrary user settings, or project/local settings.
+This mode applies only to `models.review` and runs `claude -p` with streamed
+JSON, schema validation, restricted mode, and all built-in tools disabled.
+An isolated MCP server exposes workspace-guarded read/grep/glob tools and the
+fixed PR diff, excluding sensitive paths. It exposes no shell, arbitrary Git,
+LSP, write, or network tools. Bare mode disables automatically loaded hooks,
+plugins and project memory; Revuto supplies the PR and repository knowledge.
+Valid effort values are `low`, `medium`, `high`, `xhigh`, and `max`.
+Claude receives `review.maxSteps` as `--max-turns` and the configured review
+output cap as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. A turn-limit exit fails the review.
+AGY retains its native CLI limits and the 20-minute runner timeout; Revuto's
+step/output knobs apply to HTTP and Claude review execution, not AGY.
+Automatic dashboard probes skip native CLI models. Explicit `revuto doctor`
+opts in; its Claude probe has no tools/MCP servers, one turn, low effort and a
+32-token output cap, and checks the exact expected response.
+
+`review.maxRounds` defaults to **3 model-run attempts per PR across all commits**.
+Signed reviews already posted by the configured reviewer seed the lifetime count.
+A reserved attempt counts even if the run errors; a new push, daemon restart, or
+`--force` does not reset or bypass it. At the cap, automatic review/fix cycles stop
+and the check stays failed with a manual-review explanation. Reaching the cap
+never approves or merges a PR. The separate `maxSteps` limit bounds a single run.
+
+Reviews use up to `review.maxConcurrent` slots globally (default 4) and
+`review.maxConcurrentPerRepo` per repository (default 2), with one active run per
+PR. These limits cover the daemon, webhooks and manual CLI processes. Waiting
+reviews are admitted in order when their repository has capacity.
+Each run gets a detached worktree from a shared bare Git cache. The checkout and
+its Git registration are removed after success, failure or cancellation; daemon
+startup reaps worktrees left by crashed processes. The bare cache is retained to
+avoid fetching the repository again. Round and daily-review limits remain enforced.
+The CLI returns a verdict; Revuto retains GitHub posting authority. Structured
+output alone does not count as inspection, and a run with no evidence reads fails
+before posting. A failing CLI/model does not silently switch to another provider.
 
 At run time, override a role with a primary/fallback chain instead of editing the
 config file:
