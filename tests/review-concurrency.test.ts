@@ -151,20 +151,26 @@ await withReviewWorktree(JSON.parse(process.env.TEST_CONFIG),'a/repo',7,async(pa
 test('Cancellation terminates the native reviewer process group', {skip:process.platform==='win32'}, async () => {
   const root=mkdtempSync(join(tmpdir(),'review-cancel-cli-')),command=join(root,'fake.mjs'),marker=join(root,'pids');
   const abort=new AbortController();
+  let pids:number[]=[];
   try {
     writeFileSync(command,`#!/usr/bin/env node
 import {spawn} from 'node:child_process';import {writeFileSync} from 'node:fs';
-const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});
-writeFileSync(${JSON.stringify(marker)},JSON.stringify([process.pid,child.pid]));setInterval(()=>{},1000);`,{mode:0o755});
+const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});process.send('ready');setInterval(()=>{},1000)"],{stdio:['ignore','inherit','inherit','ipc']});
+child.on('message',()=>writeFileSync(${JSON.stringify(marker)},JSON.stringify([process.pid,child.pid])));setInterval(()=>{},1000);`,{mode:0o755});
     const pending=runAgyCli({spec:{api:'agy',baseURL:'agy://local',model:'fake',command},cwd:root,prompt:'review',signal:abort.signal});
     for(let i=0;!existsSync(marker)&&i<100;i++)await delay(20);
-    assert.ok(existsSync(marker));const pids:number[]=JSON.parse(readFileSync(marker,'utf8'));
-    abort.abort(new Error('cancelled review'));await assert.rejects(pending,/cancelled review/);
+    assert.ok(existsSync(marker));pids=JSON.parse(readFileSync(marker,'utf8'));
+    abort.abort(new Error('cancelled review'));
+    await assert.rejects(Promise.race([pending,delay(5000).then(()=>{throw new Error('Escalation did not settle the review');})]),/cancelled review/);
     for(const pid of pids) {
       const stat=`/proc/${pid}/stat`;
       if(existsSync(stat))assert.equal(readFileSync(stat,'utf8').split(') ')[1]?.[0],'Z','descendant is no longer running');
     }
-  } finally {abort.abort();rmSync(root,{recursive:true,force:true});}
+  } finally {
+    abort.abort();
+    if(pids[0])try{process.kill(-pids[0],'SIGKILL');}catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}
+    rmSync(root,{recursive:true,force:true});
+  }
 });
 
 test('A forced over-limit review creates no worktree and releases its concurrency ticket', async () => {

@@ -10,8 +10,14 @@ export function reviewCachePath(config: ReviewerConfig, repo: string): string {
 }
 const runsDir = (config: ReviewerConfig) => resolve(config.review.workspaceDir, '.review-runs');
 export function killReviewChild(child: ReturnType<typeof spawn>, signal: NodeJS.Signals = 'SIGTERM'): void {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
-  try { if (process.platform === 'win32') child.kill(signal); else process.kill(-child.pid, signal); }
+  if (!child.pid) return;
+  // A POSIX process group can outlive its leader. Escalation remains necessary
+  // until stdio closes; callers clear their escalation timers on the close event.
+  try {
+    if (process.platform === 'win32') {
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    } else process.kill(-child.pid, signal);
+  }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
 }
 
