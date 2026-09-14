@@ -148,25 +148,28 @@ test('Claude print mode pins Opus and preserves read-only inspection and structu
   writeFileSync(command, `#!/usr/bin/env node
 import assert from 'node:assert/strict';
 const args = process.argv.slice(2);
+const {readFileSync} = await import('node:fs');
+const prompt = readFileSync(0, 'utf8');
 assert.equal(args[0], '-p');
+assert.equal(args[1], '--model');
 assert.equal(args[args.indexOf('--model') + 1], 'global.anthropic.claude-opus-5[1m]');
 assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
 assert.equal(args[args.indexOf('--tools') + 1], '');
 assert.equal(args[args.indexOf('--setting-sources') + 1], '');
 assert.ok(args.includes('--restricted'));
-assert.equal(args[args.indexOf('--max-turns') + 1], args[1] === 'budget' ? '7' : '150');
-assert.equal(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, args[1] === 'budget' ? '2048' : '32768');
+assert.equal(args[args.indexOf('--max-turns') + 1], prompt === 'budget' ? '7' : '150');
+assert.equal(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, prompt === 'budget' ? '2048' : '32768');
 assert.deepEqual(Object.keys(JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers), ['revuto']);
 assert.ok(args.includes('--bare') && args.includes('--verbose') && args.includes('--strict-mcp-config'));
 assert.ok(!args.includes('--print-timeout') && !args.includes('--dangerously-skip-permissions'));
 console.log(JSON.stringify({type:'system', subtype:'init', model:'global.anthropic.claude-opus-5[1m]'}));
-if (!args[1].includes('terminal-only')) {
+if (!prompt.includes('terminal-only')) {
   console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'read-1',name:'mcp__revuto__read'}]}}));
   console.log(JSON.stringify({type:'user', message:{content:[{type:'tool_result',tool_use_id:'read-1',content:'actual file contents'}]}}));
 }
 console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'schema-1',name:'StructuredOutput'}]}}));
 console.log(JSON.stringify({type:'user', message:{content:[{type:'tool_result',tool_use_id:'schema-1',content:'verdict accepted'}]}}));
-console.log(JSON.stringify({type:'result',subtype:args[1]==='fail'?'error_during_execution':'success',is_error:args[1]==='fail',result:'ok',structured_output:{decision:'skip_review',reason:'no concerns',body:'',comments:[]},usage:{input_tokens:10,output_tokens:2,cache_read_input_tokens:20}}));
+console.log(JSON.stringify({type:'result',subtype:prompt==='fail'?'error_during_execution':'success',is_error:prompt==='fail',result:'ok',structured_output:{decision:'skip_review',reason:'no concerns',body:'',comments:[]},usage:{input_tokens:10,output_tokens:2,cache_read_input_tokens:20}}));
 `);
   chmodSync(command, 0o755);
   const model = { baseURL: 'claude-cli://local', api: 'claude' as const, auth: 'none' as const,
@@ -175,6 +178,7 @@ console.log(JSON.stringify({type:'result',subtype:args[1]==='fail'?'error_during
     const result = await runAgyCli({spec:model,cwd:dir,prompt:'review'});
     assert.equal(result.result.status, 'SUCCESS');
     await runAgyCli({spec:model,cwd:dir,prompt:'budget',maxSteps:7,maxOutputTokens:2048});
+    await runAgyCli({spec:model,cwd:dir,prompt:'x'.repeat(200_000)});
     await assert.rejects(runAgyCli({spec:model,cwd:dir,prompt:'bad budget',maxSteps:0}), /positive integers/);
     assert.equal(result.result.usage?.total_tokens, 32);
     assert.equal(result.inspections, 1);

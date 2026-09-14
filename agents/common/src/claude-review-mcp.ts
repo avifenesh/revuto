@@ -77,7 +77,7 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
         // The harness directory search checks its root, but not every matched
         // child's sensitive path. Enforce exclusions in the search itself.
         const args: string[] = tool.name === 'glob' ? ['--files', '--glob', input.pattern] : ['--line-number', '--max-columns', '2000', '--max-filesize', '5M'];
-        args.push('--sort', 'path');
+        args.push('--sort', 'path', '--hidden');
         if (tool.name === 'grep') {
           if (input.glob) args.push('--glob', input.glob);
           if (input.type) args.push('--type', input.type);

@@ -142,7 +142,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   }
   const args = [
     '-p',
-    opts.prompt,
+    ...(claude ? [] : [opts.prompt]),
     '--model',
     opts.spec.model,
     '--output-format',
@@ -150,6 +150,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   ];
   if (claude) {
     args.push('--verbose', '--bare', '--restricted', '--setting-sources', '', '--no-session-persistence',
+      '--input-format', 'text',
       '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { revuto: {
         command: process.execPath,
         args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), opts.cwd, opts.diffRange ?? ''],
@@ -170,7 +171,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       child = spawn(command, args, {
         cwd: opts.cwd,
         env: claude ? { ...claudeEnvironment(), CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) } : { ...process.env, AGY_CLI_HIDE_LOGO: 'true' },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [claude ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
       reject(err);
@@ -291,6 +292,10 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       clearTimeout(timer);
       resolve({ result, stepCount, inspections, toolErrors, toolSteps });
     });
+    if (claude) {
+      child.stdin!.on('error', (error) => { finishError(error); child.kill('SIGTERM'); });
+      child.stdin!.end(opts.prompt);
+    }
   });
 }
 

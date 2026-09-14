@@ -15,6 +15,7 @@ test('Claude inspection tools block outside paths, symlinks, secrets and command
     writeFileSync(join(root, 'source.ts'), 'SAFE_SOURCE_SENTINEL\n');
     writeFileSync(join(root, '.env'), 'PRIVATE_SENTINEL\n');
     writeFileSync(join(root, 'secret.pem'), 'PRIVATE_SENTINEL\n');
+    mkdirSync(join(root,'.github'));writeFileSync(join(root,'.github','config.yml'),'VISIBLE_DOTFILE_SENTINEL\n');
     writeFileSync(join(outside, 'private.txt'), 'OUTSIDE_SENTINEL\n');
     symlinkSync(join(outside, 'private.txt'), join(root, 'escape.txt'));
     const tools = await claudeInspectionTools(root);
@@ -29,6 +30,8 @@ test('Claude inspection tools block outside paths, symlinks, secrets and command
     const grep = tools.find(t => t.name === 'grep')!;
     assert.doesNotMatch(String(await grep.callback({pattern:'SENTINEL',path:outside,output_mode:'content'})), /OUTSIDE_SENTINEL/);
     assert.doesNotMatch(String(await grep.callback({pattern:'SENTINEL',output_mode:'content'})), /PRIVATE_SENTINEL|OUTSIDE_SENTINEL/);
+    assert.match(String(await grep.callback({pattern:'VISIBLE_DOTFILE_SENTINEL',output_mode:'content'})), /VISIBLE_DOTFILE_SENTINEL/);
+    assert.match(String(await tools.find(t=>t.name==='glob')!.callback({pattern:'*.yml'})), /config.yml/);
     await assert.rejects(claudeInspectionTools(root, '--output=/tmp/escape'), /Invalid immutable/);
   } finally {
     rmSync(root,{recursive:true,force:true}); rmSync(outside,{recursive:true,force:true});
