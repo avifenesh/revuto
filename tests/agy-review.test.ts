@@ -9,7 +9,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { buildAgyReviewPrompt, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
+import { buildAgyReviewPrompt, normalizeClaudeEvents, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import type { PrContext } from '../agents/common/src/workspace.js';
 
@@ -130,3 +130,57 @@ test('buildAgyReviewPrompt carries the exact PR workspace and read-only boundary
   }
 });
 
+test('Claude print mode pins Opus and preserves read-only inspection and structured output', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-claude-'));
+  const command = join(dir, 'claude-fake.mjs');
+  writeFileSync(command, `#!/usr/bin/env node
+import assert from 'node:assert/strict';
+const args = process.argv.slice(2);
+assert.equal(args[0], '-p');
+assert.equal(args[args.indexOf('--model') + 1], 'global.anthropic.claude-opus-5[1m]');
+assert.equal(args[args.indexOf('--permission-mode') + 1], 'plan');
+assert.ok(args.includes('--bare') && args.includes('--verbose') && args.includes('--strict-mcp-config'));
+assert.ok(!args.includes('--print-timeout') && !args.includes('--dangerously-skip-permissions'));
+console.log(JSON.stringify({type:'system', subtype:'init', model:'global.anthropic.claude-opus-5[1m]'}));
+if (!args[1].includes('terminal-only')) {
+  console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'read-1',name:'Read'}]}}));
+  console.log(JSON.stringify({type:'user', message:{content:[{type:'tool_result',tool_use_id:'read-1',content:'actual file contents'}]}}));
+}
+console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'schema-1',name:'StructuredOutput'}]}}));
+console.log(JSON.stringify({type:'user', message:{content:[{type:'tool_result',tool_use_id:'schema-1',content:'verdict accepted'}]}}));
+console.log(JSON.stringify({type:'result',subtype:args[1]==='fail'?'error_during_execution':'success',is_error:args[1]==='fail',result:'ok',structured_output:{decision:'skip_review',reason:'no concerns',body:'',comments:[]},usage:{input_tokens:10,output_tokens:2,cache_read_input_tokens:20}}));
+`);
+  chmodSync(command, 0o755);
+  const model = { baseURL: 'claude-cli://local', api: 'claude' as const, auth: 'none' as const,
+    command, model: 'global.anthropic.claude-opus-5[1m]', permissionMode: 'bypass' as const };
+  try {
+    const result = await runAgyCli({spec:model,cwd:dir,prompt:'review'});
+    assert.equal(result.result.status, 'SUCCESS');
+    assert.equal(result.result.usage?.total_tokens, 32);
+    assert.equal(result.inspections, 1);
+    assert.equal(result.toolSteps[0]?.name, 'Read');
+    assert.deepEqual(result.result.structured_output, {decision:'skip_review',reason:'no concerns',body:'',comments:[]});
+    await assert.rejects(runAgyCli({spec:model,cwd:dir,prompt:'fail'}), /run failed/);
+    const noInspection = await runAgyCli({spec:model,cwd:dir,prompt:'terminal-only'});
+    assert.equal(noInspection.inspections, 0);
+    await assert.rejects(runAgyReview({
+      config: {vaultPath:dir,models:{review:model}} as ReviewerConfig,
+      ctx: {...context(dir),body:'terminal-only'}, octokit:{} as never,
+      token:async ()=>'unused',skillMarkdown:'',startedAt:new Date(),
+    }), /without inspecting repository evidence/);
+  } finally {
+    rmSync(dir, {recursive:true,force:true});
+  }
+});
+
+test('Claude stream keeps multiple tool results and permission failures distinct', () => {
+  const names = new Map([['a','Read'],['b','Bash']]);
+  const events = normalizeClaudeEvents({type:'user',message:{content:[
+    {type:'tool_result',tool_use_id:'a',content:'source'},
+    {type:'tool_result',tool_use_id:'b',content:'permission denied',is_error:true},
+  ]}},names);
+  assert.equal(events.length,2);
+  assert.deepEqual(events[1], {event:'step_update',step_update:{step_type:'tool',tool_name:'Bash',tool_info:{output:'permission denied',error:'permission denied'}}});
+  assert.equal(names.size,0);
+  assert.deepEqual(normalizeClaudeEvents({type:'rate_limit_event'},names),[]);
+});

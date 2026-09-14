@@ -68,8 +68,8 @@ function withoutFallbacks(spec: ModelSpec): ModelSpec {
 
 function buildSingleChatModel(spec: ModelSpec): LanguageModelV4 {
   const single = withoutFallbacks(spec);
-  if (single.api === 'agy') {
-    throw new Error('AGY models are driven by the native review runner, not the OpenAI-compatible model factory');
+  if (single.api === 'agy' || single.api === 'claude') {
+    throw new Error('CLI models are driven by the native review runner, not the OpenAI-compatible model factory');
   }
   if (single.api === 'responses') return buildResponsesModel(single) as LanguageModelV4;
   if (single.api === 'converse') return buildConverseModel(single) as LanguageModelV4;

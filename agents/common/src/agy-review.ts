@@ -1,5 +1,5 @@
 /**
- * Native Antigravity CLI review runner.
+ * Native agent CLI review runner for Antigravity and Claude Code.
  *
  * AGY is an agent harness rather than an OpenAI-compatible model endpoint. The
  * review is therefore driven by AGY's supported headless interface, while the
@@ -124,7 +124,8 @@ export interface RunAgyCliOptions {
 
 /** Run one AGY headless turn using its own cached OAuth session. */
 export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
-  const command = opts.spec.command?.trim() || process.env.REVUTO_AGY_COMMAND?.trim() || 'agy';
+  const claude = opts.spec.api === 'claude';
+  const command = opts.spec.command?.trim() || (claude ? 'claude' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
   const timeoutMs = opts.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
   const args = [
     '-p',
@@ -133,11 +134,18 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     opts.spec.model,
     '--output-format',
     'stream-json',
-    '--print-timeout',
-    timeoutArg(timeoutMs),
   ];
+  if (claude) {
+    args.push('--verbose', '--bare', '--no-session-persistence',
+      '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+      '--permission-mode', 'plan', '--tools', 'Read,Grep,Glob,Bash',
+      '--allowedTools', 'Read,Grep,Glob,Bash(git diff *),Bash(git show *),Bash(git log *),Bash(git grep *),Bash(git ls-files *),Bash(git status *)');
+    if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
+  } else {
+    args.push('--print-timeout', timeoutArg(timeoutMs));
+  }
   if (opts.schema) args.push('--json-schema', opts.schema);
-  if (opts.spec.permissionMode === 'bypass') args.push('--dangerously-skip-permissions');
+  if (!claude && opts.spec.permissionMode === 'bypass') args.push('--dangerously-skip-permissions');
 
   return new Promise((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
@@ -183,18 +191,8 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       return;
     }
 
-    const handleLine = (line: string): void => {
-      if (!line.trim() || settled) return;
-      let event: unknown;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        finishError(new Error('AGY emitted a non-JSON line in stream-json mode'));
-        child.kill('SIGTERM');
-        return;
-      }
-      if (!event || typeof event !== 'object') return;
-      const record = event as Record<string, unknown>;
+    const toolNames = new Map<string, string>();
+    const handleRecord = (record: Record<string, unknown>): void => {
       if (record.event === 'step_update') {
         const update = record.step_update;
         if (!update || typeof update !== 'object') return;
@@ -204,6 +202,8 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
         if (step.step_type !== 'tool') return;
         const info = step.tool_info;
         const name = step.tool_name || info?.name || 'agy_tool';
+        // Producing the verdict is not an inspection of repository evidence.
+        if (claude && name === 'StructuredOutput') return;
         const error = info?.error;
         toolSteps.push({ name, output: info?.output, error });
         if (error === undefined || error === null) inspections++;
@@ -212,6 +212,23 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       }
       if (record.event === 'result' && record.result && typeof record.result === 'object') {
         result = record.result as AgyCliResult;
+      }
+    };
+
+    const handleLine = (line: string): void => {
+      if (!line.trim() || settled) return;
+      let event: unknown;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        finishError(new Error('Native CLI emitted a non-JSON line in stream-json mode'));
+        child.kill('SIGTERM');
+        return;
+      }
+      if (!event || typeof event !== 'object') return;
+      const record = event as Record<string, unknown>;
+      for (const normalized of claude ? normalizeClaudeEvents(record, toolNames) : [record]) {
+        handleRecord(normalized);
       }
     };
 
@@ -297,8 +314,9 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
       spec,
       cwd: opts.ctx.workspacePath,
       schema: AGY_REVIEW_SCHEMA,
-      prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown),
-      onStep: (step) => traceAgyStep(trace, step),
+      prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown)
+        .replace('inside the Antigravity CLI', spec.api === 'claude' ? 'inside Claude Code CLI' : 'inside the Antigravity CLI'),
+      onStep: (step) => traceAgyStep(trace, step, spec.api === 'claude' ? 'claude' : 'agy'),
     });
   } catch (err) {
     trace.finish({ terminal: 'none', result: '', inspections: 0, toolErrors: 1, error: errorText(err) });
@@ -307,6 +325,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
 
   let output: AgyReviewResult;
   try {
+    if (run.inspections === 0) throw new Error('Native review returned without inspecting repository evidence');
     output = AgyReviewResult.parse(run.result.structured_output);
     if (output.decision === 'post_review' && output.comments.length === 0) {
       throw new Error('post_review requires at least one inline comment');
@@ -413,7 +432,7 @@ function renderPrOverviewForAgy(ctx: PrContext): string {
   return lines.join('\n');
 }
 
-function traceAgyStep(trace: TraceWriter, step: AgyStepUpdate): void {
+function traceAgyStep(trace: TraceWriter, step: AgyStepUpdate, phase = 'agy'): void {
   const info = step.tool_info;
   const toolName = step.tool_name || info?.name;
   const toolResults = step.step_type === 'tool'
@@ -424,7 +443,7 @@ function traceAgyStep(trace: TraceWriter, step: AgyStepUpdate): void {
           : `ERROR: ${errorText(info.error)}`,
       }]
     : undefined;
-  trace.step('agy', {
+  trace.step(phase, {
     text: step.text_delta,
     usage: {
       inputTokens: step.usage?.input_tokens,
@@ -432,6 +451,44 @@ function traceAgyStep(trace: TraceWriter, step: AgyStepUpdate): void {
     },
     ...(toolResults ? { toolResults } : {}),
   });
+}
+
+/** Adapt Claude Code's documented stream-json events to the native runner contract. */
+export function normalizeClaudeEvents(record: Record<string, unknown>, tools: Map<string, string>): Record<string, unknown>[] {
+  if (record.type === 'result') {
+    const usage = record.usage as Record<string, number> | undefined;
+    return [{ event: 'result', result: {
+      status: record.subtype === 'success' && record.is_error !== true ? 'SUCCESS' : 'ERROR',
+      conversation_id: record.session_id,
+      response: record.result,
+      error: record.is_error === true || record.subtype !== 'success'
+        ? JSON.stringify(record.errors ?? record.result ?? record.subtype) : undefined,
+      structured_output: record.structured_output,
+      usage: { input_tokens: usage?.input_tokens ?? 0, output_tokens: usage?.output_tokens ?? 0,
+        total_tokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0)
+          + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0) },
+    } }];
+  }
+  if (record.type === 'system' && record.subtype === 'init') {
+    return [{ event: 'step_update', step_update: { step_type: 'text', text_delta: `Claude CLI model: ${String(record.model)}` } }];
+  }
+  const message = record.message as { content?: Array<Record<string, unknown>> } | undefined;
+  const content = message?.content;
+  if (!Array.isArray(content)) return [];
+  const events: Record<string, unknown>[] = [];
+  for (const block of content) {
+    if (record.type === 'assistant' && block.type === 'tool_use') {
+      tools.set(String(block.id), String(block.name));
+    } else if (record.type === 'assistant' && block.type === 'text') {
+      events.push({ event: 'step_update', step_update: { step_type: 'text', text_delta: block.text } });
+    } else if (record.type === 'user' && block.type === 'tool_result') {
+      const id = String(block.tool_use_id);
+      events.push({ event: 'step_update', step_update: { step_type: 'tool', tool_name: tools.get(id) ?? 'claude_tool',
+        tool_info: { output: block.content, ...(block.is_error ? { error: block.content } : {}) } } });
+      tools.delete(id);
+    }
+  }
+  return events;
 }
 
 function timeoutArg(timeoutMs: number): string {

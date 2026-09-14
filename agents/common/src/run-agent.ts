@@ -201,7 +201,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
   if (!skillMd && opts.store) {
     skillMd = (await selectSkills(opts.store, opts.embedder ?? null, ctx.fileList)).trim();
   }
-  if (config.models.review.api === 'agy') {
+  if (config.models.review.api === 'agy' || config.models.review.api === 'claude') {
     return runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt });
   }
   let system = skillMd

@@ -67,7 +67,7 @@ export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe
     const t = Date.now();
     try {
       if (g.kind === 'chat') {
-        if (g.spec.api === 'agy') {
+        if (g.spec.api === 'agy' || g.spec.api === 'claude') {
           const result = await probeAgy(g.spec, process.cwd());
           return {
             roles: g.roles,

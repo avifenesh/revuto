@@ -249,6 +249,30 @@ Set `auth: "agy-oauth"` to make the OAuth dependency explicit. Set
 `permissionMode: "bypass"` only for a fully trusted review environment; it passes
 AGY's `--dangerously-skip-permissions` flag for unattended tool execution.
 
+For Claude Code print mode, set the reviewer to:
+
+```json
+{
+  "name": "claude-cli-opus-5",
+  "api": "claude",
+  "baseURL": "claude-cli://local",
+  "auth": "none",
+  "command": "/home/avifenesh/.local/bin/claude",
+  "model": "global.anthropic.claude-opus-5[1m]",
+  "reasoningEffort": "high"
+}
+```
+
+The model ID above uses a configured Bedrock route; use the exact ID appropriate
+to the CLI's provider. Authentication belongs to Claude Code, not Revuto's HTTP
+client. This mode applies only to `models.review` and runs `claude -p` with
+streamed JSON, schema validation, plan permissions and read/search/git inspection
+tools. Bare mode disables automatically loaded hooks/plugins and project memory;
+Revuto supplies the PR and repository knowledge. MCP configuration is isolated.
+The CLI returns a verdict; Revuto retains GitHub posting authority. Structured
+output alone does not count as inspection, and a run with no evidence reads fails
+before posting. A failing CLI/model does not silently switch to another provider.
+
 At run time, override a role with a primary/fallback chain instead of editing the
 config file:
 
