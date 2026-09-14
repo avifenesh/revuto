@@ -29,7 +29,7 @@ export const AGY_REVIEW_SCHEMA = JSON.stringify({
   additionalProperties: false,
   properties: {
     decision: { type: 'string', enum: ['post_review', 'skip_review'] },
-    reason: { type: 'string' },
+    reason: { type: 'string', minLength: 1 },
     body: { type: 'string' },
     comments: {
       type: 'array',
@@ -49,6 +49,9 @@ export const AGY_REVIEW_SCHEMA = JSON.stringify({
     },
   },
   required: ['decision', 'reason', 'body', 'comments'],
+  if: { properties: { decision: { const: 'post_review' } } },
+  then: { properties: { comments: { minItems: 1 } } },
+  else: { properties: { comments: { maxItems: 0 } } },
 });
 
 const AgyComment = z.object({

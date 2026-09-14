@@ -8,8 +8,9 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 
-import { buildAgyReviewPrompt, normalizeClaudeEvents, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
+import { AGY_REVIEW_SCHEMA, buildAgyReviewPrompt, normalizeClaudeEvents, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import type { PrContext } from '../agents/common/src/workspace.js';
 
@@ -26,6 +27,17 @@ console.log(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', respo
   chmodSync(command, 0o755);
   return { dir, command };
 }
+
+test('Native verdict schema requires a reason and comments consistent with its decision', () => {
+  const validate = new AjvJsonSchemaValidator().getValidator(JSON.parse(AGY_REVIEW_SCHEMA));
+  const clean = {decision:'skip_review',reason:'No concerns after inspection',body:'',comments:[]};
+  const comment = {path:'source.ts',line:1,body:'Evidence-backed concern'};
+  assert.equal(validate(clean).valid,true);
+  assert.equal(validate({...clean,reason:''}).valid,false);
+  assert.equal(validate({...clean,decision:'post_review'}).valid,false);
+  assert.equal(validate({...clean,comments:[comment]}).valid,false);
+  assert.equal(validate({...clean,decision:'post_review',comments:[comment]}).valid,true);
+});
 
 function context(workspacePath: string): PrContext {
   return {

@@ -55,6 +55,7 @@ test('Fixed PR diff excludes sensitive files and cannot execute a configured dif
     assert.match(output,/AFTER_SENTINEL/); assert.doesNotMatch(output,/PRIVATE_SENTINEL/);
     await assert.rejects(async()=>diff.callback({path:'../outside'}),/Invalid PR diff path/);
     await assert.rejects(async()=>diff.callback({path:'.env'}),/Invalid PR diff path/);
+    await assert.rejects(async()=>diff.callback({path:'missing.ts'}),/has no changes/);
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
 
@@ -66,6 +67,7 @@ test('PR diff pages beyond 2 MiB without losing content or overflowing a tool re
     git('commit','--allow-empty','-qm','base');const base=git('rev-parse','HEAD');
     writeFileSync(join(root,'large.txt'),'x'.repeat(2*1024*1024)+'\nTAIL_SENTINEL\n');
     writeFileSync(join(root,'other.txt'),'OTHER_SENTINEL\n');
+    const longName='long-'.repeat(30)+'.txt';writeFileSync(join(root,longName),'LONG_NAME\n');
     git('add','.');git('commit','-qm','head');
     const tools=await claudeInspectionTools(root,`${base}..${git('rev-parse','HEAD')}`);
     const diff=tools.find(t=>t.name==='pr_diff')!;
@@ -77,6 +79,7 @@ test('PR diff pages beyond 2 MiB without losing content or overflowing a tool re
     assert.doesNotMatch(last.text,/OTHER_SENTINEL/);
     const stat=JSON.parse(String(await diff.callback({mode:'stat'})));
     assert.match(stat.text,/large.txt/);assert.match(stat.text,/other.txt/);
+    assert.ok(stat.text.includes(longName));
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 

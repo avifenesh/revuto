@@ -107,10 +107,12 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
           path = relative(workspaceRoot, resolve(workspaceRoot, input.path));
           if (isAbsolute(input.path) || path === '..' || path.startsWith('../') || sensitive(path)) throw new Error('Invalid PR diff path');
         }
-        return commandPage('git', workspaceRoot, [
-          '--no-pager', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--stat'] : []), diffRange, '--', `:(literal)${path || '.'}`,
+        const page = await commandPage('git', workspaceRoot, [
+          '--no-pager', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--numstat', '--no-renames'] : []), diffRange, '--', `:(literal)${path || '.'}`,
           ...EXCLUDED.map(p => `:(exclude,glob)**/${p}`),
         ], input.offset ?? 0, input.limit ?? 10000);
+        if (path && path !== '.' && JSON.parse(page).total_characters === 0) throw new Error('The selected path has no changes in this PR diff');
+        return page;
       },
     });
   }
