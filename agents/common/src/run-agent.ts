@@ -24,6 +24,7 @@ import { runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
 import { withReviewWorktree } from './review-worktree.js';
+import { chooseReviewModel, withReviewModel } from './review-routing.js';
 import { runQueuedForRepo } from '../../../daemon/src/repo-queue.js';
 
 export interface AssembleBaseOpts {
@@ -32,6 +33,8 @@ export interface AssembleBaseOpts {
   readonly token: () => Promise<string>;
   readonly allowWrite: boolean;
   readonly config: ReviewerConfig;
+  /** Label of the model running this review, for the signed footer. */
+  readonly reviewedBy?: string;
 }
 
 export type AssembleTools = (opts: AssembleBaseOpts) => Promise<readonly ToolDef[]>;
@@ -83,6 +86,8 @@ export interface ReviewOutcome {
   readonly forcedTerminal: boolean;
   /** False for PRs the engine declined to review at all (draft, stale delivery, ...). */
   readonly ranModel: boolean;
+  /** Label of the model that ran (models.review or models.reviewSmall), when one did. */
+  readonly model?: string;
   /** JSONL trace of the run, when one could be written. */
   readonly tracePath?: string;
 }
@@ -187,8 +192,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
 }
 
 async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: string, cacheRoot: string, signal: AbortSignal): Promise<ReviewOutcome> {
-  const { config } = opts;
   const startedAt = new Date();
+  let config = opts.config;
   const { octokit, token } = opts.githubAuth ?? getOctokit(config.github);
 
   const [owner, name] = opts.repo.split('/');
@@ -204,12 +209,18 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     { cacheRoot, signal },
   ));
 
+  // Small or docs-only PRs go to models.reviewSmall when configured. From here on
+  // `config.models.review` IS the routed model, for every code path below.
+  const route = chooseReviewModel(config, ctx);
+  config = withReviewModel(config, route.spec);
+  console.log(`[review] ${opts.repo}#${opts.prNumber}: model ${route.label}${route.small ? ' (small-PR reviewer)' : ''}: ${route.reason}`);
+
   let skillMd = opts.skillMarkdown?.trim() ?? '';
   if (!skillMd && opts.store) {
     skillMd = (await selectSkills(opts.store, opts.embedder ?? null, ctx.fileList)).trim();
   }
   if (config.models.review.api === 'agy' || config.models.review.api === 'claude') {
-    return runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal });
+    return runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy: route.label });
   }
   let system = skillMd
     ? `${REVIEWER_SYSTEM_PROMPT}\n\n---\n\n## Repository knowledge\n\n${skillMd}`
@@ -218,7 +229,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   if (needsToolUseEnforcement(config.models.review)) system += TOOL_USE_ENFORCEMENT;
 
   const assemble = opts.assembleTools ?? defaultAssembleTools;
-  const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config });
+  const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config, reviewedBy: route.label });
   const tools = toAiSdkTools(toolDefs);
 
   const userMessage = [
@@ -344,6 +355,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     postFailures,
     forcedTerminal,
     ranModel: true,
+    model: route.label,
   };
   const tracePath = trace.finish({ ...outcome, result: outcome.result.slice(0, 8000) });
 
@@ -408,4 +420,4 @@ export function summarizeReviewSteps(
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>
-  assembleCommonTools({ ctx: opts.ctx, octokit: opts.octokit, token: opts.token, allowWrite: opts.allowWrite });
+  assembleCommonTools({ ctx: opts.ctx, octokit: opts.octokit, token: opts.token, allowWrite: opts.allowWrite, reviewedBy: opts.reviewedBy });

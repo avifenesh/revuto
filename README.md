@@ -138,6 +138,7 @@ Add the App settings to `<vault>/revuto.config.json`:
       "port": 8787,
       "path": "/github/webhook",
       "allowedOwners": ["agent-sh", "avifenesh"],
+      "ignoredRepos": ["avifenesh/extensions", "someone/*"],
       "checkName": "revuto-review"
     }
   }
@@ -285,6 +286,33 @@ step/output knobs apply to HTTP and Claude review execution, not AGY.
 Automatic dashboard probes skip native CLI models. Explicit `revuto doctor`
 opts in; its Claude probe has no tools/MCP servers, one turn, low effort and a
 32-token output cap, and checks the exact expected response.
+
+`github.app.ignoredRepos` lists repositories revuto never reviews: full names
+(`owner/name`) or `owner/*`. A matching pull request is skipped before anything is
+enqueued: no claim, no round or daily counter, no check run (revuto only creates its
+check once it has claimed a head, so nothing stays pending). The skip is logged once
+per PR as `skipped: repo ignored`. `revuto review <repo> <pr> --force` still works.
+
+### Small and docs-only PRs on a cheaper model
+
+Add `models.reviewSmall` (same shape as `models.review`, native Claude CLI allowed)
+and revuto routes a pull request to it when every changed file is documentation, or
+when the diff is at most `review.small.maxChangedLines` changed lines (additions plus
+deletions). Everything else, and every PR when `reviewSmall` is absent, runs on
+`models.review`. The signed footer of what gets posted and the check summary say
+`reviewed by <name>`, so the routing is visible on the PR.
+
+```jsonc
+"models": {
+  "review":      { "name": "claude-cli-opus-5",   "api": "claude", "baseURL": "claude-cli://local", "auth": "none", "model": "global.anthropic.claude-opus-5[1m]",   "reasoningEffort": "medium" },
+  "reviewSmall": { "name": "claude-cli-sonnet-5", "api": "claude", "baseURL": "claude-cli://local", "auth": "none", "model": "global.anthropic.claude-sonnet-5[1m]", "reasoningEffort": "medium" }
+},
+"review": {
+  "small": { "maxChangedLines": 200, "docsOnly": true, "docsExtensions": [".md", ".mdx", ".txt", ".rst", ".adoc"], "docsPaths": ["docs/", "doc/", "notes/"] }
+}
+```
+
+`maxChangedLines: 0` turns the size rule off; `docsOnly: false` turns the docs rule off.
 
 `review.maxRounds` defaults to **3 model-run attempts per PR across all commits**.
 Signed reviews already posted by the configured reviewer seed the lifetime count.

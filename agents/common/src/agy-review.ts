@@ -346,6 +346,8 @@ export interface RunAgyReviewOptions {
   readonly token: () => Promise<string>;
   readonly skillMarkdown: string;
   readonly startedAt: Date;
+  /** Model label for the signed footer and the outcome; defaults to the spec's name or id. */
+  readonly reviewedBy?: string;
 }
 
 /** Run the full Revuto review through AGY, then post via Revuto's GitHub tool. */
@@ -397,7 +399,8 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
     throw new Error(message);
   }
 
-  const deps = { ctx: opts.ctx, octokit: opts.octokit, token: opts.token };
+  const reviewedBy = opts.reviewedBy?.trim() || spec.name?.trim() || spec.model;
+  const deps = { ctx: opts.ctx, octokit: opts.octokit, token: opts.token, reviewedBy };
   let terminal: ReviewOutcome['terminal'] = 'none';
   let hasFindings = false;
   let result = '';
@@ -434,6 +437,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
     postFailures,
     forcedTerminal: false,
     ranModel: true,
+    model: reviewedBy,
   };
   const tracePath = trace.finish({ ...outcome, result: outcome.result.slice(0, 8000), reason: output.reason });
   return { ...outcome, ...(tracePath ? { tracePath } : {}) };

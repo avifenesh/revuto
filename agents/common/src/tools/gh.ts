@@ -70,6 +70,8 @@ export interface GhToolsDeps {
   readonly token: () => Promise<string>;
   readonly ctx: PrContext;
   readonly octokit: Octokit;
+  /** Label of the model that produced this review; appended to the signed footer so routing is visible. */
+  readonly reviewedBy?: string;
 }
 
 /** The revuto engine repo — the attribution header links here. */
@@ -81,10 +83,14 @@ const SIGNATURE = `${SIGNATURE_MARK}\n*This is an auto review done by [revuto]($
 /**
  * Prefix the attribution header to anything revuto posts, so every comment is
  * marked as an automated review. Idempotent — detected via the hidden sentinel.
+ * `reviewedBy` names the model that wrote the review ("reviewed by <name>"), so a
+ * PR routed to the small-PR model says so on the PR itself.
  */
-export function signReviewBody(body: string): string {
+export function signReviewBody(body: string, reviewedBy?: string): string {
   if (body.includes(SIGNATURE_MARK)) return body;
-  return body.trim() ? `${SIGNATURE}\n\n---\n\n${body}` : SIGNATURE;
+  const label = reviewedBy?.trim();
+  const signature = label ? `${SIGNATURE_MARK}\n*This is an auto review done by [revuto](${REVUTO_URL}), reviewed by ${label}.*` : SIGNATURE;
+  return body.trim() ? `${signature}\n\n---\n\n${body}` : signature;
 }
 
 interface InlineComment {
@@ -193,8 +199,8 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
           pull_number: deps.ctx.prNumber,
           commit_id: deps.ctx.headSha,
           event: 'COMMENT',
-          body: signReviewBody(input.body),
-          comments: (input.comments as InlineComment[]).map((c) => ({ ...c, body: signReviewBody(c.body) })),
+          body: signReviewBody(input.body, deps.reviewedBy),
+          comments: (input.comments as InlineComment[]).map((c) => ({ ...c, body: signReviewBody(c.body, deps.reviewedBy) })),
         });
         return JSON.stringify({
           ok: true,
@@ -224,7 +230,7 @@ export function buildPostIssueCommentTool(deps: GhToolsDeps) {
           owner: deps.ctx.owner,
           repo: deps.ctx.repo,
           issue_number: deps.ctx.prNumber,
-          body: signReviewBody(input.body),
+          body: signReviewBody(input.body, deps.reviewedBy),
         });
         return JSON.stringify({ ok: true, comment_id: resp.data.id, url: resp.data.html_url });
       } catch (err: any) {
