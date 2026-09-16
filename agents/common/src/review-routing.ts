@@ -57,9 +57,12 @@ export function isDocsFile(path: string, small: SmallReviewConfig): boolean {
 }
 
 export interface RouteInput {
+  /** Changed file paths as listed by GitHub; one page, so possibly shorter than `changedFiles`. */
   readonly fileList: readonly string[];
   readonly additions: number;
   readonly deletions: number;
+  /** The PR's own changed-file count (`pr.changed_files`). Absent = trust `fileList` as complete. */
+  readonly changedFiles?: number;
 }
 
 export interface ReviewRoute {
@@ -90,6 +93,18 @@ export function chooseReviewModel(config: ReviewerConfig, input: RouteInput): Re
   const small = config.review.small ?? DEFAULT_SMALL_REVIEW;
   const changed = Math.max(0, input.additions) + Math.max(0, input.deletions);
   const files = input.fileList.filter((f) => f.trim());
+  // GitHub returns one page of files (100), so a long PR's list is a prefix of the
+  // truth: the docs-only rule needs the whole list, and a size of 0 with files in
+  // it means the size fields were missing, not that the diff is empty. Either way
+  // the answer is the full model.
+  const listComplete = input.changedFiles === undefined || files.length >= input.changedFiles;
+  const sizeKnown = changed > 0 || (input.changedFiles ?? files.length) === 0;
+  if (!listComplete) {
+    return { spec: full, small: false, label: modelLabel(full), reason: `file list truncated (${files.length} of ${input.changedFiles} files listed)` };
+  }
+  if (!sizeKnown) {
+    return { spec: full, small: false, label: modelLabel(full), reason: `diff size unknown for ${files.length} file(s)` };
+  }
   if (small.docsOnly && files.length > 0 && files.every((f) => isDocsFile(f, small))) {
     return { spec: smallSpec, small: true, label: modelLabel(smallSpec), reason: `docs only (${files.length} file(s))` };
   }

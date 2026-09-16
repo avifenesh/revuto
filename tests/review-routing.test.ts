@@ -88,6 +88,15 @@ test('docs-only and small diffs route to models.reviewSmall; large code diffs do
   // an empty file list is not "docs only"
   const empty = chooseReviewModel(cfg, { fileList: [], additions: 5000, deletions: 0 });
   assert.equal(empty.small, false);
+  // a truncated file list (GitHub pages at 100) never passes as docs only or small
+  const docsPage = Array.from({ length: 100 }, (_, i) => `docs/page-${i}.md`);
+  const truncated = chooseReviewModel(cfg, { fileList: docsPage, additions: 10, deletions: 0, changedFiles: 150 });
+  assert.equal(truncated.small, false); assert.match(truncated.reason, /file list truncated \(100 of 150/);
+  assert.equal(chooseReviewModel(cfg, { fileList: docsPage, additions: 10, deletions: 0, changedFiles: 100 }).small, true);
+  // a zero size with files in the PR means the size fields were missing, not a tiny diff
+  const sizeless = chooseReviewModel(cfg, { fileList: ['src/a.ts'], additions: 0, deletions: 0, changedFiles: 1 });
+  assert.equal(sizeless.small, false); assert.match(sizeless.reason, /diff size unknown/);
+  assert.equal(chooseReviewModel(cfg, { fileList: [], additions: 0, deletions: 0, changedFiles: 0 }).small, true, 'a genuinely empty diff is small');
   // the size rule can be disabled and docsOnly turned off
   const strict = config({ reviewSmall: http('small-model'), small: { maxChangedLines: 0, docsOnly: false } });
   assert.equal(chooseReviewModel(strict, { fileList: ['README.md'], additions: 1, deletions: 0 }).small, false);
