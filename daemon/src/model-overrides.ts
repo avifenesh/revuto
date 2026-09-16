@@ -1,6 +1,6 @@
 import type { ModelSpec, ReviewerConfig } from '../../agents/common/src/config.js';
 
-export type ModelRole = 'review' | 'curator' | 'distill';
+export type ModelRole = 'review' | 'reviewSmall' | 'curator' | 'distill';
 
 export interface ModelOverride {
   readonly role: ModelRole;
@@ -20,10 +20,11 @@ const OPUS_MODEL = 'us.anthropic.claude-opus-4-8';
 const SONNET_MODEL = 'global.anthropic.claude-sonnet-5';
 const ROLE_FLAGS: Record<string, ModelRole> = {
   '--review-model': 'review',
+  '--review-small-model': 'reviewSmall',
   '--curator-model': 'curator',
   '--distill-model': 'distill',
 };
-const ROLES = new Set<ModelRole>(['review', 'curator', 'distill']);
+const ROLES = new Set<ModelRole>(['review', 'reviewSmall', 'curator', 'distill']);
 
 export function extractModelOverrideArgs(argv: readonly string[]): ParsedModelOverrideArgs {
   const args: string[] = [];
@@ -64,10 +65,14 @@ export function extractModelOverrideArgs(argv: readonly string[]): ParsedModelOv
 export function applyModelOverrides(config: ReviewerConfig, parsed: Pick<ParsedModelOverrideArgs, 'overrides' | 'bedrockRegion'>): ReviewerConfig {
   if (parsed.overrides.length === 0) return config;
   const defaultRegion = parsed.bedrockRegion ?? process.env.REVUTO_BEDROCK_REGION ?? DEFAULT_BEDROCK_REGION;
-  const models = { ...config.models };
+  const models: { -readonly [K in keyof ReviewerConfig['models']]: ReviewerConfig['models'][K] } = { ...config.models };
   for (const override of parsed.overrides) {
     models[override.role] = modelChain(override.chain, defaultRegion);
   }
+  // A pinned review model reviews every PR: the vault's small-PR reviewer steps
+  // aside unless the operator pinned that role too (--review-small-model).
+  const roles = new Set(parsed.overrides.map((o) => o.role));
+  if (roles.has('review') && !roles.has('reviewSmall')) delete models.reviewSmall;
   return { ...config, models };
 }
 
@@ -115,8 +120,9 @@ export function modelPreset(alias: string, defaultRegion = DEFAULT_BEDROCK_REGIO
 
 export function modelOverrideUsage(): string {
   return `Model override flags:
-  --model <role=alias[,fallback...]>  role is review|curator|distill
-  --review-model <alias[,fallback...]>  override review model chain
+  --model <role=alias[,fallback...]>  role is review|reviewSmall|curator|distill
+  --review-model <alias[,fallback...]>  override review model chain (also disables the small-PR reviewer unless --review-small-model is given)
+  --review-small-model <alias[,fallback...]>  override the small / docs-only PR reviewer (models.reviewSmall)
   --curator-model <alias[,fallback...]> override curator model chain
   --distill-model <alias[,fallback...]> override distill model chain
   --bedrock-region <region>           default region for aliases (default: us-east-2)
@@ -129,7 +135,7 @@ Aliases: gpt55, gpt54, opus, sonnet, grok. Append @region for one entry, e.g.
 
 function parseModelOverride(value: string, source: string): ModelOverride {
   const match = value.match(/^([^=:]+)[=:](.+)$/);
-  if (!match) throw new Error(`${source} expects <review|curator|distill>=<alias[,fallback...]>`);
+  if (!match) throw new Error(`${source} expects <review|reviewSmall|curator|distill>=<alias[,fallback...]>`);
   const role = normalizeRole(match[1]);
   const chain = match[2].trim();
   if (!chain) throw new Error(`${source} ${role}=... requires at least one model alias`);
@@ -174,9 +180,10 @@ function isAnthropicModelId(value: string): boolean {
 }
 
 function normalizeRole(value: string): ModelRole {
-  const role = value.trim().toLowerCase();
+  const trimmed = value.trim();
+  const role = trimmed.toLowerCase() === 'reviewsmall' ? 'reviewSmall' : trimmed.toLowerCase();
   if (ROLES.has(role as ModelRole)) return role as ModelRole;
-  throw new Error(`unknown model role "${value}". Expected review, curator, or distill.`);
+  throw new Error(`unknown model role "${value}". Expected review, reviewSmall, curator, or distill.`);
 }
 
 function roleFlagFor(arg: string): { flag: string; role: ModelRole } | undefined {

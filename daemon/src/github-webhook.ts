@@ -6,6 +6,7 @@ import type { GithubAppConfig, ReviewerConfig } from '../../agents/common/src/co
 import { getInstallationOctokit, type GithubAuth } from '../../agents/common/src/github-auth.js';
 import { describeOutcome } from '../../agents/common/src/run-agent.js';
 import { reviewOnePr } from './jobs.js';
+import { logIgnoredOnce, repoIgnored } from '../../agents/common/src/review-routing.js';
 import { readReviewer } from './reviewers.js';
 import {
   checkResultForError,
@@ -87,6 +88,11 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
   }
   if (!ownerAllowed(app, event.repository.owner.login)) {
     console.warn(`[webhook] ignored ${event.repository.full_name}#${event.number}: owner is not allowed`);
+    return;
+  }
+  if (repoIgnored(app.ignoredRepos, event.repository.full_name)) {
+    // Nothing is enqueued and no check run is created (the check is only created once a head is claimed).
+    logIgnoredOnce(event.repository.full_name, event.number, 'webhook');
     return;
   }
 

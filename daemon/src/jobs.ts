@@ -14,6 +14,7 @@ import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollOpenPRs, pollFeedback } from './poller.js';
 import { readReviewer, writeReviewer, type ReviewerSettings } from './reviewers.js';
 import { historicalReviewRounds, reserveReviewRound } from './review-rounds.js';
+import { logIgnoredOnce, repoIgnored } from '../../agents/common/src/review-routing.js';
 import { runQueuedReview } from './review-queue.js';
 import { runQueuedForRepo } from './repo-queue.js';
 import {
@@ -43,6 +44,10 @@ function githubAppForRepo(config: ReviewerConfig, repo: string) {
 }
 
 export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean } = {}): Promise<ReviewJobResult> {
+  if (repoIgnored(config.github.app?.ignoredRepos, settings.repo)) {
+    logIgnoredOnce(settings.repo, undefined, 'review');
+    return { reviewed: 0, skipped: 0 };
+  }
   return runQueuedForRepo(config, `_review-poll/${settings.repo}`, () => reviewRepoSnapshot(config, settings, opts));
 }
 
@@ -144,6 +149,11 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
   const [owner, name] = parts;
   if (parts.length !== 2 || !owner || !name) throw new Error(`bad repo: ${repo} (expected owner/name)`);
   const { data: pr } = await octokit.pulls.get({ owner, repo: name, pull_number: prNumber });
+  if (!opts.force && repoIgnored(config.github.app?.ignoredRepos, repo)) {
+    // Never enqueued, never counted, no check run: the repo is on github.app.ignoredRepos.
+    logIgnoredOnce(repo, prNumber, 'review');
+    return unreviewedOutcome(`${repo}#${prNumber}: skipped: repo ignored (github.app.ignoredRepos)`, pr.head.sha);
+  }
   if (pr.state !== 'open' && !opts.force) return unreviewedOutcome(`#${prNumber} is closed; ignoring the queued review`, pr.head.sha);
   if (opts.expectedHeadSha && pr.head.sha !== opts.expectedHeadSha) {
     return unreviewedOutcome(

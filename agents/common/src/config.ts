@@ -55,7 +55,24 @@ export interface GithubAppConfig {
   readonly path: string;
   /** Optional account allowlist. Empty means every account where the App is installed. */
   readonly allowedOwners: readonly string[];
+  /**
+   * Repositories revuto never reviews: full names ("owner/name") or "owner/*".
+   * A matching PR is skipped before anything is enqueued, counted, or checked.
+   */
+  readonly ignoredRepos?: readonly string[];
   readonly checkName: string;
+}
+
+/** When `models.reviewSmall` is set, which PRs it handles instead of `models.review`. */
+export interface SmallReviewConfig {
+  /** Diffs with at most this many changed lines (additions + deletions) are small. 0 disables the size rule. */
+  readonly maxChangedLines: number;
+  /** Route a PR whose every changed file is documentation, whatever its size. */
+  readonly docsOnly: boolean;
+  /** File extensions that count as documentation (lower-case, with the dot). */
+  readonly docsExtensions: readonly string[];
+  /** Path prefixes (directories) that count as documentation. */
+  readonly docsPaths: readonly string[];
 }
 
 export interface GithubConfig {
@@ -70,6 +87,8 @@ export interface ReviewerConfig {
   readonly github: GithubConfig;
   readonly models: {
     readonly review: ModelSpec;
+    /** Optional cheaper reviewer for small or docs-only PRs (see `review.small`). Absent = every PR uses `review`. */
+    readonly reviewSmall?: ModelSpec;
     readonly curator: ModelSpec;
     readonly distill: ModelSpec;
     /** null = no embedder; dedup + skill selection fall back to LLM-judge / area-glob. */
@@ -86,6 +105,8 @@ export interface ReviewerConfig {
     readonly allowWrite: boolean;
     /** Parent dir for per-repo working checkouts. */
     readonly workspaceDir: string;
+    /** Routing rules for `models.reviewSmall`; `DEFAULT_SMALL_REVIEW` applies when absent. */
+    readonly small?: SmallReviewConfig;
   };
   /** Caps. 0 = unlimited. Run/comment/token counts are per repo per UTC day. */
   readonly limits: {
@@ -110,6 +131,12 @@ export interface ReviewerConfig {
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
 const DEFAULT_REVIEW = { maxSteps: 150, maxRounds: 3, maxConcurrent: 4, maxConcurrentPerRepo: 2, allowWrite: false, workspaceDir: '' };
 const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
+export const DEFAULT_SMALL_REVIEW: SmallReviewConfig = {
+  maxChangedLines: 200,
+  docsOnly: true,
+  docsExtensions: ['.md', '.mdx', '.txt', '.rst', '.adoc'],
+  docsPaths: ['docs/', 'doc/', 'notes/'],
+};
 const MODEL_APIS = ['chat', 'responses', 'converse', 'agy', 'claude'] as const;
 const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'agy-oauth', 'none'] as const;
@@ -178,8 +205,8 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (api === 'agy' && auth !== 'agy-oauth') {
     throw new Error(`config: models.${role}.auth must be agy-oauth when models.${role}.api is agy`);
   }
-  if (api === 'claude' && role !== 'review') {
-    throw new Error(`config: native Claude CLI is supported only for models.review`);
+  if (api === 'claude' && role !== 'review' && role !== 'reviewSmall') {
+    throw new Error(`config: native Claude CLI is supported only for models.review and models.reviewSmall`);
   }
   if (api === 'claude' && (reasoningEffort === 'none' || reasoningEffort === 'minimal')) {
     throw new Error('config: native Claude CLI reasoningEffort must be low, medium, high, xhigh, or max');
@@ -187,6 +214,24 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (m.fallbacks !== undefined && !Array.isArray(m.fallbacks)) throw new Error(`config: models.${role}.fallbacks must be an array`);
   const fallbacks = m.fallbacks?.map((fallback, i) => checkModel(fallback, `${role}.fallbacks[${i}]`));
   return { ...m, api, reasoningEffort, auth, permissionMode, ...(fallbacks?.length ? { fallbacks } : {}) };
+}
+
+function checkSmallReview(raw: unknown): SmallReviewConfig {
+  if (raw === undefined || raw === null) return DEFAULT_SMALL_REVIEW;
+  if (typeof raw !== 'object') throw new Error('config: review.small must be an object');
+  const r = raw as Record<string, unknown>;
+  const maxChangedLines = r.maxChangedLines ?? DEFAULT_SMALL_REVIEW.maxChangedLines;
+  if (!Number.isSafeInteger(maxChangedLines) || (maxChangedLines as number) < 0) throw new Error('config: review.small.maxChangedLines must be a non-negative integer');
+  const docsOnly = r.docsOnly ?? DEFAULT_SMALL_REVIEW.docsOnly;
+  if (typeof docsOnly !== 'boolean') throw new Error('config: review.small.docsOnly must be a boolean');
+  const strings = (name: 'docsExtensions' | 'docsPaths'): readonly string[] => {
+    const value = r[name] ?? DEFAULT_SMALL_REVIEW[name];
+    if (!Array.isArray(value) || value.some((v) => typeof v !== 'string' || !v.trim())) {
+      throw new Error(`config: review.small.${name} must be an array of non-empty strings`);
+    }
+    return value.map((v: string) => v.trim().toLowerCase());
+  };
+  return { maxChangedLines: maxChangedLines as number, docsOnly, docsExtensions: strings('docsExtensions'), docsPaths: strings('docsPaths') };
 }
 
 /** The default vault: $REVUTO_VAULT, else ~/revuto. The config + skills + reviewer notes live here. */
@@ -245,6 +290,7 @@ export function loadConfig(path?: string): ReviewerConfig {
     const port = app.port ?? 8787;
     const webhookPath = app.path ?? '/github/webhook';
     const allowedOwners = app.allowedOwners ?? [];
+    const ignoredRepos = app.ignoredRepos ?? [];
     const checkName = app.checkName ?? 'revuto-review';
     if (typeof webhookSecretEnv !== 'string' || !webhookSecretEnv.trim()) {
       throw new Error('config: github.app.webhookSecretEnv must be a non-empty string');
@@ -264,6 +310,9 @@ export function loadConfig(path?: string): ReviewerConfig {
     if (typeof checkName !== 'string' || !checkName.trim()) {
       throw new Error('config: github.app.checkName must be a non-empty string');
     }
+    if (!Array.isArray(ignoredRepos) || ignoredRepos.some((entry: unknown) => typeof entry !== 'string' || !/^[^\s/]+\/(\*|[^\s/]+)$/.test(entry.trim()))) {
+      throw new Error('config: github.app.ignoredRepos must be an array of "owner/name" or "owner/*" strings');
+    }
     githubApp = {
       appId,
       privateKeyPath,
@@ -272,11 +321,13 @@ export function loadConfig(path?: string): ReviewerConfig {
       port,
       path: webhookPath,
       allowedOwners,
+      ignoredRepos: ignoredRepos.map((entry: string) => entry.trim()),
       checkName,
     };
   }
   const models = {
     review: checkModel(raw.models?.review, 'review'),
+    ...(raw.models?.reviewSmall ? { reviewSmall: checkModel(raw.models.reviewSmall, 'reviewSmall') } : {}),
     curator: checkModel(raw.models?.curator, 'curator'),
     distill: checkModel(raw.models?.distill, 'distill'),
     embedder: raw.models?.embedder ? checkModel(raw.models.embedder, 'embedder') : null,
@@ -290,6 +341,7 @@ export function loadConfig(path?: string): ReviewerConfig {
     maxConcurrentPerRepo: raw.review?.maxConcurrentPerRepo ?? DEFAULT_REVIEW.maxConcurrentPerRepo,
     allowWrite: raw.review?.allowWrite ?? DEFAULT_REVIEW.allowWrite,
     workspaceDir: resolveHome(raw.review?.workspaceDir ?? `${vaultPath}/.workspaces`),
+    small: checkSmallReview(raw.review?.small),
   };
   if (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 1) throw new Error('config: review.maxRounds must be a positive integer');
   for (const key of ['maxConcurrent', 'maxConcurrentPerRepo'] as const) {
