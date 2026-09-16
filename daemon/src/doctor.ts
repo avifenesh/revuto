@@ -44,6 +44,7 @@ export async function runModelProbes(config: ReviewerConfig, opts: { includeNati
   // Dedupe roles that share an endpoint+model.
   const entries: Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> = [
     ...modelEntries('review', config.models.review, 'chat'),
+    ...(config.models.reviewSmall ? modelEntries('reviewSmall', config.models.reviewSmall, 'chat') : []),
     ...modelEntries('curator', config.models.curator, 'chat'),
     ...modelEntries('distill', config.models.distill, 'chat'),
   ];

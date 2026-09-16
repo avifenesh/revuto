@@ -8,6 +8,7 @@ import { chooseReviewModel, isDocsFile, logIgnoredOnce, repoIgnored, resetIgnore
 import { signReviewBody } from '../agents/common/src/tools/gh.js';
 import { checkResultForOutcome } from '../daemon/src/review-check.js';
 import type { ReviewOutcome } from '../agents/common/src/run-agent.js';
+import { applyModelOverrides, extractModelOverrideArgs } from '../daemon/src/model-overrides.js';
 
 const http = (model: string, name?: string): ModelSpec => ({ baseURL: 'http://localhost', model, ...(name ? { name } : {}) });
 
@@ -160,4 +161,18 @@ test('config: ignoredRepos, reviewSmall and review.small load with validation an
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a pinned --review-model reviews every PR; --review-small-model pins the small reviewer', () => {
+  const cfg = config({ reviewSmall: http('small-model', 'sonnet') });
+  const pinned = applyModelOverrides(cfg, extractModelOverrideArgs(['review', 'o/r', '1', '--review-model', 'grok']));
+  assert.equal(pinned.models.reviewSmall, undefined, 'the vault small reviewer steps aside');
+  assert.equal(pinned.models.review.name, 'grok-code');
+  assert.equal(chooseReviewModel(pinned, { fileList: ['README.md'], additions: 1, deletions: 0 }).label, 'grok-code');
+  const both = applyModelOverrides(cfg, extractModelOverrideArgs(['--review-model', 'grok', '--review-small-model=grok', 'daemon']));
+  assert.equal(both.models.reviewSmall?.name, 'grok-code');
+  const viaModel = applyModelOverrides(cfg, extractModelOverrideArgs(['--model', 'reviewsmall=grok']));
+  assert.equal(viaModel.models.reviewSmall?.name, 'grok-code');
+  assert.equal(viaModel.models.review, cfg.models.review, 'review untouched when only the small role is pinned');
+  assert.throws(() => extractModelOverrideArgs(['--model', 'tiny=grok']), /reviewSmall/);
 });

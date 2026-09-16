@@ -365,6 +365,7 @@ function modelFingerprint(spec: ModelSpec | null): unknown {
 function modelProbeKey(config: ReviewerConfig): string {
   const specs: Array<[ModelRole, ModelSpec | null]> = [
     ['review', config.models.review],
+    ['reviewSmall', config.models.reviewSmall ?? null],
     ['curator', config.models.curator],
     ['distill', config.models.distill],
     ['embedder', config.models.embedder]
@@ -396,6 +397,7 @@ function failedProbeStatuses(config: ReviewerConfig, checkedAt: string, error: s
   const out = new Map<ModelRole, ProbeStatus>();
   for (const role of [
     ...chatModelStatuses('review', config.models.review, new Map()).map((model) => model.role),
+    ...(config.models.reviewSmall ? chatModelStatuses('reviewSmall', config.models.reviewSmall, new Map()).map((model) => model.role) : []),
     ...chatModelStatuses('curator', config.models.curator, new Map()).map((model) => model.role),
     ...chatModelStatuses('distill', config.models.distill, new Map()).map((model) => model.role)
   ]) {
@@ -501,6 +503,7 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   const models = config
     ? [
         ...chatModelStatuses('review', config.models.review, modelProbes),
+        ...(config.models.reviewSmall ? chatModelStatuses('reviewSmall', config.models.reviewSmall, modelProbes) : []),
         ...chatModelStatuses('curator', config.models.curator, modelProbes),
         ...chatModelStatuses('distill', config.models.distill, modelProbes),
         modelStatus('embedder', config.models.embedder, modelProbes.get('embedder'))
