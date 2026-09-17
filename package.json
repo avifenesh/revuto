@@ -73,7 +73,7 @@
     "@agent-sh/harness-core": "^0.2.0",
     "@agent-sh/harness-tools": "^0.7.1",
     "@ai-sdk/openai-compatible": "^3.0.28",
-    "@ai-sdk/provider": "4.0.9",
+    "@ai-sdk/provider": "4.0.14",
     "@aws-sdk/credential-provider-node": "^3.972.50",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@octokit/auth-app": "^8.3.0",
