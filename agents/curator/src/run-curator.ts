@@ -84,6 +84,8 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
         { role: 'user', content: 'You ended without recording a decision. Call `curator_done` now with your decision and summary — respond only with that tool call.' },
       ],
       tools: { curator_done: tools.curator_done },
+      // Claude on Converse rejects forced tool use; the adapter sends auto,
+      // names curator_done, and retries once. Responses keeps 'required'.
       toolChoice: 'required',
       stopWhen: [stepCountIs(2), hasToolCall('curator_done')],
       maxOutputTokens,

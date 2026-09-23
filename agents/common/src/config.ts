@@ -20,11 +20,11 @@ function resolveHome(p: string): string {
 export interface ModelSpec {
   /** OpenAI-compatible base URL, e.g. http://localhost:8000/v1 or a gateway. */
   readonly baseURL: string;
-  /** Model id as the endpoint expects it (e.g. "anthropic.claude-opus-4-7", "qwen3-8b"). */
+  /** Model id as the endpoint expects it (e.g. "global.anthropic.claude-opus-5-5", "qwen3-8b"). */
   readonly model: string;
   /** API surface. chat/responses/converse use HTTP; agy/claude use native CLI review runners. Defaults to chat. */
   readonly api?: 'chat' | 'responses' | 'converse' | 'agy' | 'claude';
-  /** Reasoning effort for Responses/reasoning models. "max" is the adaptive-thinking ceiling for Converse Claude (opus-4-8+). */
+  /** Reasoning effort for Responses/reasoning models. Converse Claude defaults to "medium"; "max" is its ceiling. */
   readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. "agy-oauth" uses the AGY CLI's cached Google OAuth session. */
   readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'agy-oauth' | 'none';
@@ -110,8 +110,12 @@ export interface ReviewerConfig {
   };
   /** Caps. 0 = unlimited. Run/comment/token counts are per repo per UTC day. */
   readonly limits: {
-    /** Per-run output-token cap for each agent. */
-    readonly maxOutputTokens: { readonly review: number; readonly curator: number; readonly distill: number };
+    /**
+     * Per-run output-token cap for each agent. `review` is undefined when the
+     * config does not set it; `reviewOutputTokens` then picks a default for the
+     * routed review model (see there).
+     */
+    readonly maxOutputTokens: { readonly review?: number; readonly curator: number; readonly distill: number };
     /** Max review runs per repo per day. */
     readonly dailyReviews: number;
     /** Max comments processed per learn pass (per batch). */
@@ -130,7 +134,40 @@ export interface ReviewerConfig {
 
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
 const DEFAULT_REVIEW = { maxSteps: 150, maxRounds: 3, maxConcurrent: 4, maxConcurrentPerRepo: 2, allowWrite: false, workspaceDir: '' };
-const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
+const DEFAULT_MAX_OUTPUT_TOKENS = { curator: 16384, distill: 8192 };
+/**
+ * Default review cap when `limits.maxOutputTokens.review` is unset. On Claude,
+ * thinking counts toward the cap, and 128K is the Opus 5.5 / Sonnet 5 ceiling.
+ * Other endpoints (local vLLM, GLM, chat APIs) can 400 above their own limit,
+ * so a chain with any non-Claude model keeps the old 32K default.
+ */
+export const DEFAULT_REVIEW_OUTPUT_TOKENS = { claude: 128000, other: 32768 } as const;
+
+/** True for Anthropic (Claude) model ids and inference profiles on Bedrock. */
+export function isAnthropicModelId(model: string): boolean {
+  const m = model.toLowerCase();
+  return m.includes('anthropic.') || m.startsWith('claude');
+}
+
+function isClaudeSpec(spec: ModelSpec): boolean {
+  return spec.api === 'claude' || (spec.api === 'converse' && isAnthropicModelId(spec.model));
+}
+
+function modelChain(spec: ModelSpec): ModelSpec[] {
+  return [spec, ...(spec.fallbacks ?? []).flatMap(modelChain)];
+}
+
+/**
+ * Output cap for a review run on `spec` (the routed model, after small-PR
+ * routing or a refusal fallback). An explicit config value always wins; the
+ * same cap goes to every model in a fallback chain, so the Claude default
+ * applies only when the whole chain is Claude.
+ */
+export function reviewOutputTokens(config: ReviewerConfig, spec: ModelSpec = config.models.review): number {
+  const explicit = config.limits.maxOutputTokens.review;
+  if (explicit !== undefined) return explicit;
+  return modelChain(spec).every(isClaudeSpec) ? DEFAULT_REVIEW_OUTPUT_TOKENS.claude : DEFAULT_REVIEW_OUTPUT_TOKENS.other;
+}
 export const DEFAULT_SMALL_REVIEW: SmallReviewConfig = {
   maxChangedLines: 200,
   docsOnly: true,
@@ -351,7 +388,7 @@ export function loadConfig(path?: string): ReviewerConfig {
   const limits = {
     maxOutputTokens: {
       // legacy review.maxOutputTokens still honored for the review cap
-      review: mot.review ?? raw.review?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS.review,
+      review: mot.review ?? raw.review?.maxOutputTokens,
       curator: mot.curator ?? DEFAULT_MAX_OUTPUT_TOKENS.curator,
       distill: mot.distill ?? DEFAULT_MAX_OUTPUT_TOKENS.distill,
     },

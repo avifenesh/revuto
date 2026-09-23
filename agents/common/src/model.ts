@@ -19,6 +19,7 @@ import type { ModelSpec } from './config.js';
 import { buildResponsesModel } from './responses-model.js';
 import { buildConverseModel } from './converse-model.js';
 import { grokCLIHeaders, grokCLIToken, usesGrokCLIAuth } from './grok-cli-auth.js';
+import { isModelRefusal, refusalAllowsFallback } from './refusal.js';
 
 export function resolveApiKey(spec: ModelSpec): string {
   if (spec.apiKeyEnv) return process.env[spec.apiKeyEnv] ?? '';
@@ -122,6 +123,15 @@ export class FallbackLanguageModel implements LanguageModelV4 {
         if (isAbortError(err)) throw err;
         const message = err instanceof Error ? err.message : String(err);
         failures.push(`${model.provider}/${model.modelId}: ${message}`);
+        // A refusal is the model declining this request, not the model being
+        // down: log the category, try the next model, and do not count it
+        // toward demotion. reasoning_extraction is not retried elsewhere.
+        if (isModelRefusal(err)) {
+          const next = this.models[i + 1];
+          if (!refusalAllowsFallback(err) || !next) throw err;
+          console.warn(`[model-fallback] ${model.provider}/${model.modelId} refused (category=${err.category}); trying ${next.provider}/${next.modelId}`);
+          continue;
+        }
         this.consecutiveFailures[i]++;
 
         if (i < this.models.length - 1) {
