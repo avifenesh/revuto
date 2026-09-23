@@ -191,7 +191,7 @@ console.log(JSON.stringify({type:'result',subtype:prompt==='fail'?'error_during_
     const noInspection = await runAgyCli({spec:model,cwd:dir,prompt:'terminal-only'});
     assert.equal(noInspection.inspections, 0);
     await assert.rejects(runAgyReview({
-      config: {vaultPath:dir,models:{review:model},review:{maxSteps:150},limits:{maxOutputTokens:{review:128000}}} as ReviewerConfig,
+      config: {vaultPath:dir,models:{review:model},review:{maxSteps:150},limits:{maxOutputTokens:{}}} as ReviewerConfig,
       ctx: {...context(dir),body:'terminal-only'}, octokit:{} as never,
       token:async ()=>'unused',skillMarkdown:'',startedAt:new Date(),
     }), /without inspecting repository evidence/);

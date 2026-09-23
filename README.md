@@ -394,7 +394,7 @@ bypasses the claim entirely.
 
 Optional caps under `limits` (0 = unlimited; run/comment/token counts are per repo per UTC day, enforced via store counters):
 
-- `maxOutputTokens` — per-run output-token cap for each agent: `{ review, curator, distill }`. Defaults `{ 128000, 16384, 8192 }`. On Claude, thinking counts toward the cap, so keep the review cap at the model ceiling (128K on Opus 5.5 and Sonnet 5). For the Claude CLI reviewer it becomes `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
+- `maxOutputTokens` — per-run output-token cap for each agent: `{ review, curator, distill }`. Curator and distill default to 16384 and 8192. When `review` is unset, the routed review model decides: 128000 when its whole fallback chain is Claude (thinking counts toward the cap; 128K is the Opus 5.5 and Sonnet 5 ceiling), 32768 otherwise, since a chat endpoint can 400 above its own limit. For the Claude CLI reviewer the cap becomes `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
 - `dailyReviews` — max review runs per repo per day.
 - `learnBatch` — max comments processed per learn pass (per batch, not per comment).
 - `dailyLearn` — max comments processed per repo per day.

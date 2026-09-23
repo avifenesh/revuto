@@ -36,7 +36,9 @@ import { HttpRequest } from '@smithy/protocol-http';
 import { SignatureV4 } from '@smithy/signature-v4';
 import type { LanguageModel } from 'ai';
 
-import type { ModelSpec } from './config.js';
+import { isAnthropicModelId, type ModelSpec } from './config.js';
+
+export { isAnthropicModelId };
 import { ModelRefusalError } from './refusal.js';
 
 type JsonObject = Record<string, unknown>;
@@ -101,11 +103,6 @@ const RETRYABLE_STREAM_EXCEPTIONS = new Set([
 // Stop reasons that mean a safety classifier declined the request.
 const REFUSAL_STOP_REASONS = new Set(['refusal', 'content_filtered']);
 
-/** True for Anthropic (Claude) model ids and inference profiles on Bedrock. */
-export function isAnthropicModelId(model: string): boolean {
-  const m = model.toLowerCase();
-  return m.includes('anthropic.') || m.startsWith('claude');
-}
 
 function isRetryableStatus(status: number): boolean {
   return RETRYABLE_STATUS.has(status);

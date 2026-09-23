@@ -14,7 +14,7 @@ import { claudeEnvironment } from './claude-env.js';
 import { z } from 'zod';
 import type { Octokit } from '@octokit/rest';
 
-import type { ModelSpec, ReviewerConfig } from './config.js';
+import { reviewOutputTokens, type ModelSpec, type ReviewerConfig } from './config.js';
 import type { ReviewOutcome } from './run-agent.js';
 import type { PrContext } from './workspace.js';
 import { buildPostReviewTool, buildSkipTool } from './tools/gh.js';
@@ -389,7 +389,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
       schema: AGY_REVIEW_SCHEMA,
       diffRange: opts.ctx.diffRefSpec,
       maxSteps: opts.config.review.maxSteps,
-      maxOutputTokens: opts.config.limits.maxOutputTokens.review,
+      maxOutputTokens: reviewOutputTokens(opts.config),
       signal: opts.signal,
       prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown, spec.api === 'claude' ? 'claude' : 'agy'),
       onStep: (step) => traceAgyStep(trace, step, spec.api === 'claude' ? 'claude' : 'agy'),

@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadConfig, defaultVaultPath } from '../../agents/common/src/config.js';
+import { loadConfig, defaultVaultPath, reviewOutputTokens } from '../../agents/common/src/config.js';
 import { applyModelOverrides, extractModelOverrideArgs, modelPreset } from '../../daemon/src/model-overrides.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'revuto-cfg-'));
@@ -39,7 +39,10 @@ assert.equal(c.models.review.reasoningEffort, 'xhigh', 'reasoning effort config 
 assert.equal(c.models.review.awsRegion, 'us-east-2', 'AWS region config survives load');
 assert.equal(c.models.review.fallbacks?.[0]?.model, 'm', 'fallback model config survives load');
 assert.equal(c.store.backend, 'surreal', 'store backend defaults to surreal');
-assert.ok(c.limits.maxOutputTokens.review > 0, 'review token cap default applied');
+assert.equal(c.limits.maxOutputTokens.review, undefined, 'unset review token cap stays unset');
+assert.equal(reviewOutputTokens(c), 32768, 'a chain with a non-Claude model gets the conservative review cap');
+assert.equal(reviewOutputTokens(c, { baseURL: 'claude-cli://local', model: 'global.anthropic.claude-opus-5-5', api: 'claude' }), 128000, 'a Claude-only chain gets the 128K review cap');
+assert.equal(reviewOutputTokens(c, { baseURL: 'x', model: 'global.anthropic.claude-opus-5-5', api: 'converse', fallbacks: [m] }), 32768, 'a Claude primary with a chat fallback keeps the conservative cap');
 assert.equal(c.limits.dailyTokens, 0, 'unset limits default to 0 (unlimited)');
 assert.equal(c.github.tokenEnv, 'GH_TOKEN', 'github token env read');
 assert.equal(c.github.app?.appId, 1234, 'GitHub App id read');

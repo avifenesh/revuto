@@ -10,7 +10,7 @@
 import { generateText, stepCountIs, hasToolCall, type ModelMessage } from 'ai';
 import type { Octokit } from '@octokit/rest';
 
-import type { ModelSpec, ReviewerConfig } from './config.js';
+import { reviewOutputTokens, type ModelSpec, type ReviewerConfig } from './config.js';
 import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEMENT } from './model.js';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
 import { getOctokit, type GithubAuth } from './github-auth.js';
@@ -267,7 +267,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   ].join('\n');
 
   const model = buildChatModel(config.models.review);
-  const maxOutputTokens = config.limits.maxOutputTokens.review;
+  const maxOutputTokens = reviewOutputTokens(config);
   // Opened before the first call so a run that is killed mid-review still leaves
   // every step it completed on disk.
   const trace = startReviewTrace({
