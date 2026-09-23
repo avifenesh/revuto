@@ -10,7 +10,7 @@
 import { generateText, stepCountIs, hasToolCall, type ModelMessage } from 'ai';
 import type { Octokit } from '@octokit/rest';
 
-import type { ReviewerConfig } from './config.js';
+import type { ModelSpec, ReviewerConfig } from './config.js';
 import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEMENT } from './model.js';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
 import { getOctokit, type GithubAuth } from './github-auth.js';
@@ -24,7 +24,8 @@ import { runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
 import { withReviewWorktree } from './review-worktree.js';
-import { chooseReviewModel, withReviewModel } from './review-routing.js';
+import { chooseReviewModel, modelLabel, withReviewModel } from './review-routing.js';
+import { isModelRefusal, refusalAllowsFallback, type ModelRefusalError } from './refusal.js';
 import { runQueuedForRepo } from '../../../daemon/src/repo-queue.js';
 
 export interface AssembleBaseOpts {
@@ -186,6 +187,20 @@ export function reviewTranscript(
   return [{ role: 'user', content: userMessage }, ...passes.flatMap((pass) => [...pass.responseMessages])];
 }
 
+/**
+ * The spec to retry a refused review on: the first configured fallback, which
+ * inherits the rest of the chain. Undefined when the error is not a refusal,
+ * the refusal must not be retried (reasoning_extraction), or no fallback exists.
+ */
+export function refusalFallback(spec: ModelSpec, err: unknown): ModelSpec | undefined {
+  if (!isModelRefusal(err) || !refusalAllowsFallback(err)) return undefined;
+  const [next, ...rest] = spec.fallbacks ?? [];
+  if (!next) return undefined;
+  const chain = [...(next.fallbacks ?? []), ...rest];
+  const { fallbacks: _drop, ...single } = next;
+  return chain.length ? { ...single, fallbacks: chain } : single;
+}
+
 export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> {
   return withReviewWorktree(opts.config, opts.repo, opts.prNumber,
     (workspace, cache, signal) => runReviewInWorkspace(opts, workspace, cache, signal));
@@ -219,8 +234,19 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   if (!skillMd && opts.store) {
     skillMd = (await selectSkills(opts.store, opts.embedder ?? null, ctx.fileList)).trim();
   }
-  if (config.models.review.api === 'agy' || config.models.review.api === 'claude') {
-    return runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy: route.label });
+  let reviewedBy = route.label;
+  // Native CLI reviewers. A refusal moves the run to the next configured
+  // fallback (CLI or HTTP) instead of failing it; any other error still fails.
+  while (config.models.review.api === 'agy' || config.models.review.api === 'claude') {
+    try {
+      return await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy });
+    } catch (err) {
+      const next = refusalFallback(config.models.review, err);
+      if (!next) throw err;
+      console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} refused (category=${(err as ModelRefusalError).category}); falling back to ${modelLabel(next)}`);
+      config = withReviewModel(config, next);
+      reviewedBy = modelLabel(next);
+    }
   }
   let system = skillMd
     ? `${REVIEWER_SYSTEM_PROMPT}\n\n---\n\n## Repository knowledge\n\n${skillMd}`
@@ -229,7 +255,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   if (needsToolUseEnforcement(config.models.review)) system += TOOL_USE_ENFORCEMENT;
 
   const assemble = opts.assembleTools ?? defaultAssembleTools;
-  const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config, reviewedBy: route.label });
+  const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config, reviewedBy });
   const tools = toAiSdkTools(toolDefs);
 
   const userMessage = [
@@ -237,7 +263,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     '',
     '---',
     '',
-    'The workspace is checked out at the PR head. Follow the method in the system prompt. When done, call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.',
+    'The workspace is checked out at the PR head. When done, call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.',
   ].join('\n');
 
   const model = buildChatModel(config.models.review);
@@ -327,6 +353,8 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
         },
       ],
       tools: { post_review: tools.post_review, skip_review: tools.skip_review },
+      // Claude on Converse rejects forced tool use; the adapter sends auto,
+      // names these two tools, and retries once. Responses keeps 'required'.
       toolChoice: 'required',
       stopWhen: [stepCountIs(2), hasToolCall('post_review'), hasToolCall('skip_review')],
       maxOutputTokens,
@@ -355,7 +383,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     postFailures,
     forcedTerminal,
     ranModel: true,
-    model: route.label,
+    model: reviewedBy,
   };
   const tracePath = trace.finish({ ...outcome, result: outcome.result.slice(0, 8000) });
 

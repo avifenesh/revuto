@@ -210,9 +210,9 @@ with `revuto doctor` before running.
   "fallbacks": [{
     "name": "bedrock-converse",
     "baseURL": "https://bedrock-runtime.us-east-2.amazonaws.com",
-    "model": "us.anthropic.claude-opus-4-8",
+    "model": "global.anthropic.claude-opus-5-5",
     "api": "converse",
-    "reasoningEffort": "max",
+    "reasoningEffort": "medium",
     "auth": "auto",
     "apiKeyEnv": "AWS_BEARER_TOKEN_BEDROCK",
     "awsRegion": "us-east-2"
@@ -348,6 +348,13 @@ Anthropic ids use Bedrock Runtime Converse
 (`https://bedrock-runtime.<region>.amazonaws.com`). Use `--bedrock-region` or
 append `@region` to one alias to change the generated endpoint.
 
+On Claude ids the Converse adapter follows the Opus 5.5 / Fable 5.1 request rules:
+it calls ConverseStream (a 128K-token turn outlasts a plain HTTP response), never
+sends temperature, topP or a forced tool choice (a `required` choice goes out as
+`auto` with the tools named, retried once if no call comes back), defaults effort
+to `medium`, replays signed reasoning blocks unmodified, and hands a refusal to the
+next fallback in the chain. The Claude CLI reviewer does the same for refusals.
+
 Tool calling is required (the reviewer/curator drive tools), so a local **chat** server
 must run with a tool-capable chat template — `scripts/llama-server.sh` passes `--jinja`
 for that. For an **embedder**, `EMBED=1 LLAMA_MODEL=... scripts/llama-server.sh` serves it
@@ -387,7 +394,7 @@ bypasses the claim entirely.
 
 Optional caps under `limits` (0 = unlimited; run/comment/token counts are per repo per UTC day, enforced via store counters):
 
-- `maxOutputTokens` — per-run output-token cap for each agent: `{ review, curator, distill }`.
+- `maxOutputTokens` — per-run output-token cap for each agent: `{ review, curator, distill }`. Defaults `{ 128000, 16384, 8192 }`. On Claude, thinking counts toward the cap, so keep the review cap at the model ceiling (128K on Opus 5.5 and Sonnet 5). For the Claude CLI reviewer it becomes `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
 - `dailyReviews` — max review runs per repo per day.
 - `learnBatch` — max comments processed per learn pass (per batch, not per comment).
 - `dailyLearn` — max comments processed per repo per day.
@@ -395,7 +402,7 @@ Optional caps under `limits` (0 = unlimited; run/comment/token counts are per re
 
 ```jsonc
 "limits": {
-  "maxOutputTokens": { "review": 32768, "curator": 16384, "distill": 8192 },
+  "maxOutputTokens": { "review": 128000, "curator": 16384, "distill": 8192 },
   "dailyReviews": 20, "learnBatch": 30, "dailyLearn": 100, "dailyTokens": 2000000
 }
 ```

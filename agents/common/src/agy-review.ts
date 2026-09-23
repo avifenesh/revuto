@@ -19,11 +19,16 @@ import type { ReviewOutcome } from './run-agent.js';
 import type { PrContext } from './workspace.js';
 import { buildPostReviewTool, buildSkipTool } from './tools/gh.js';
 import { isToolErrorOutput, startReviewTrace, type TraceWriter } from './trace.js';
+import { ModelRefusalError } from './refusal.js';
 
 const AGY_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const AGY_DOCTOR_TIMEOUT_MS = 90 * 1000;
 const AGY_MAX_STDOUT_CHARS = 16 * 1024 * 1024;
 const AGY_MAX_STDERR_CHARS = 16 * 1024;
+/** Default Claude CLI output cap (CLAUDE_CODE_MAX_OUTPUT_TOKENS): the Opus 5.5 / Sonnet 5 ceiling. */
+export const CLAUDE_DEFAULT_MAX_OUTPUT_TOKENS = 128000;
+/** Claude Code's text when the API declines a request on usage-policy grounds. */
+const CLAUDE_REFUSAL_TEXT = /unable to respond to this request, which appears to violate our Usage Policy/i;
 
 /** Schema enforced on AGY's terminal result. Keep this in sync with the Zod validator below. */
 export const AGY_REVIEW_SCHEMA = JSON.stringify({
@@ -88,6 +93,8 @@ export interface AgyCliResult {
   readonly error?: string;
   readonly structured_output?: unknown;
   readonly usage?: AgyUsage;
+  /** Set when the model declined the request (Claude `stop_reason: "refusal"`). */
+  readonly refusal?: { readonly category: string };
 }
 
 interface AgyToolInfo {
@@ -141,7 +148,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   const command = opts.spec.command?.trim() || (claude ? 'claude' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
   const timeoutMs = opts.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
   const maxSteps = opts.maxSteps ?? 150;
-  const maxOutputTokens = opts.maxOutputTokens ?? 32768;
+  const maxOutputTokens = opts.maxOutputTokens ?? CLAUDE_DEFAULT_MAX_OUTPUT_TOKENS;
   if (claude && (![maxSteps, maxOutputTokens].every(n => Number.isSafeInteger(n) && n > 0))) {
     return Promise.reject(new Error('Claude review step and output limits must be positive integers'));
   }
@@ -199,6 +206,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     let stdoutChars = 0;
     let stderr = '';
     let result: AgyCliResult | undefined;
+    let refusal: { category: string } | undefined;
     let stepCount = 0;
     let inspections = 0;
     let toolErrors = 0;
@@ -248,8 +256,13 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
         else toolErrors++;
         return;
       }
+      if (record.event === 'refusal') {
+        refusal ??= { category: String(record.category ?? 'unknown') };
+        return;
+      }
       if (record.event === 'result' && record.result && typeof record.result === 'object') {
         result = record.result as AgyCliResult;
+        if (result.refusal) refusal ??= { category: result.refusal.category };
       }
     };
 
@@ -298,6 +311,12 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       lineBuffer += decoder.end();
       if (lineBuffer.trim()) handleLine(lineBuffer);
       if (settled) return;
+      // A refusal comes back as a normal (or error) result; branch on it first so
+      // the caller can try the next configured model.
+      if (refusal) {
+        finishError(new ModelRefusalError(opts.spec.model, refusal.category));
+        return;
+      }
       if (code !== 0) {
         const detail = result?.error || stderr.trim().slice(-1000);
         finishError(new Error(`AGY exited with status ${code}${detail ? `: ${detail}` : ''}`));
@@ -372,9 +391,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
       maxSteps: opts.config.review.maxSteps,
       maxOutputTokens: opts.config.limits.maxOutputTokens.review,
       signal: opts.signal,
-      prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown)
-        .replace('inside the Antigravity CLI', spec.api === 'claude' ? 'inside Claude Code CLI' : 'inside the Antigravity CLI')
-        + (spec.api === 'claude' ? '\nUse mcp__revuto__pr_diff first, then the guarded read/grep/glob tools to trace repository evidence. No shell, network, or arbitrary Git execution is available.' : ''),
+      prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown, spec.api === 'claude' ? 'claude' : 'agy'),
       onStep: (step) => traceAgyStep(trace, step, spec.api === 'claude' ? 'claude' : 'agy'),
     });
   } catch (err) {
@@ -443,12 +460,27 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
   return { ...outcome, ...(tracePath ? { tracePath } : {}) };
 }
 
-export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string): string {
+/**
+ * Review prompt for a native CLI runner. The two runners have different tools:
+ * AGY gets the workspace's native read/search/git/command tools, Claude Code
+ * gets only the guarded revuto MCP tools. Each prompt names only its own.
+ */
+export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runner: 'agy' | 'claude' = 'agy'): string {
+  const setup = runner === 'claude'
+    ? [
+        `You are Revuto's autonomous pull-request reviewer running inside Claude Code CLI.`,
+        `Review exactly the single PR described below. Your tools are mcp__revuto__pr_diff, which returns the PR diff, and mcp__revuto__read, mcp__revuto__grep and mcp__revuto__glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
+        `Do not ask questions and do not stop at a plan. Read the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
+        `This is a read-only review. Do not print credentials or remote URLs.`,
+      ]
+    : [
+        `You are Revuto's autonomous pull-request reviewer running inside the Antigravity CLI.`,
+        `Review exactly the single PR described below using the native read/search/git/command tools available in this workspace.`,
+        `Do not ask questions and do not stop at a plan. Inspect the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
+        `This is a read-only review: do not create, edit, delete, reset, checkout, commit, push, or otherwise mutate files; do not print credentials or remote URLs.`,
+      ];
   return [
-    `You are Revuto's autonomous pull-request reviewer running inside the Antigravity CLI.`,
-    `Review exactly the single PR described below using the native read/search/git/command tools available in this workspace.`,
-    `Do not ask questions and do not stop at a plan. Inspect the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
-    `This is a read-only review: do not create, edit, delete, reset, checkout, commit, push, or otherwise mutate files; do not print credentials or remote URLs.`,
+    ...setup,
     `Post only evidence-backed correctness, safety, or design findings. Do not post style or speculative concerns.`,
     `Inline comments must use a changed file and a line present in the PR diff on the RIGHT side.`,
     `If nothing clears the bar, set decision to skip_review, provide a one-sentence reason, set body to an empty string, and return no comments.`,
@@ -519,7 +551,9 @@ function traceAgyStep(trace: TraceWriter, step: AgyStepUpdate, phase = 'agy'): v
 export function normalizeClaudeEvents(record: Record<string, unknown>, tools: Map<string, string>): Record<string, unknown>[] {
   if (record.type === 'result') {
     const usage = record.usage as Record<string, number> | undefined;
+    const refusal = claudeRefusal(record);
     return [{ event: 'result', result: {
+      ...(refusal ? { refusal } : {}),
       status: record.subtype === 'success' && record.is_error !== true ? 'SUCCESS' : 'ERROR',
       conversation_id: record.session_id,
       response: record.result,
@@ -534,10 +568,13 @@ export function normalizeClaudeEvents(record: Record<string, unknown>, tools: Ma
   if (record.type === 'system' && record.subtype === 'init') {
     return [{ event: 'step_update', step_update: { step_type: 'text', text_delta: `Claude CLI model: ${String(record.model)}` } }];
   }
-  const message = record.message as { content?: Array<Record<string, unknown>> } | undefined;
-  const content = message?.content;
-  if (!Array.isArray(content)) return [];
+  const message = record.message as { content?: Array<Record<string, unknown>>; stop_reason?: unknown; stop_details?: unknown } | undefined;
   const events: Record<string, unknown>[] = [];
+  if (record.type === 'assistant' && message?.stop_reason === 'refusal') {
+    events.push({ event: 'refusal', category: refusalCategory(message.stop_details) });
+  }
+  const content = message?.content;
+  if (!Array.isArray(content)) return events;
   for (const block of content) {
     if (record.type === 'assistant' && block.type === 'tool_use') {
       tools.set(String(block.id), String(block.name));
@@ -551,6 +588,19 @@ export function normalizeClaudeEvents(record: Record<string, unknown>, tools: Ma
     }
   }
   return events;
+}
+
+/** A refusal on Claude Code's result event: `stop_reason: "refusal"`, or its usage-policy error text. */
+function claudeRefusal(record: Record<string, unknown>): { category: string } | undefined {
+  if (record.stop_reason === 'refusal') return { category: refusalCategory(record.stop_details) };
+  const text = typeof record.result === 'string' ? record.result : '';
+  if (record.is_error === true && CLAUDE_REFUSAL_TEXT.test(text)) return { category: refusalCategory(record.stop_details) };
+  return undefined;
+}
+
+function refusalCategory(details: unknown): string {
+  const category = (details as { category?: unknown } | undefined)?.category;
+  return typeof category === 'string' && category.trim() ? category : 'unknown';
 }
 
 function timeoutArg(timeoutMs: number): string {

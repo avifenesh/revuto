@@ -10,7 +10,7 @@
   "schedules": { "review": "*/12 * * * *", "learn": "0 */4 * * *", "decay": "0 3 * * *" },
   "review": { "maxSteps": 150, "maxRounds": 3, "maxConcurrent": 4, "maxConcurrentPerRepo": 2, "allowWrite": false },
   "limits": {
-    "maxOutputTokens": { "review": 32768, "curator": 16384, "distill": 8192 },
+    "maxOutputTokens": { "review": 128000, "curator": 16384, "distill": 8192 },
     "dailyReviews": 0,
     "learnBatch": 0,
     "dailyLearn": 0,

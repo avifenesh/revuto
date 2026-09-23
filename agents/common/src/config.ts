@@ -20,11 +20,11 @@ function resolveHome(p: string): string {
 export interface ModelSpec {
   /** OpenAI-compatible base URL, e.g. http://localhost:8000/v1 or a gateway. */
   readonly baseURL: string;
-  /** Model id as the endpoint expects it (e.g. "anthropic.claude-opus-4-7", "qwen3-8b"). */
+  /** Model id as the endpoint expects it (e.g. "global.anthropic.claude-opus-5-5", "qwen3-8b"). */
   readonly model: string;
   /** API surface. chat/responses/converse use HTTP; agy/claude use native CLI review runners. Defaults to chat. */
   readonly api?: 'chat' | 'responses' | 'converse' | 'agy' | 'claude';
-  /** Reasoning effort for Responses/reasoning models. "max" is the adaptive-thinking ceiling for Converse Claude (opus-4-8+). */
+  /** Reasoning effort for Responses/reasoning models. Converse Claude defaults to "medium"; "max" is its ceiling. */
   readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. "agy-oauth" uses the AGY CLI's cached Google OAuth session. */
   readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'agy-oauth' | 'none';
@@ -130,7 +130,10 @@ export interface ReviewerConfig {
 
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
 const DEFAULT_REVIEW = { maxSteps: 150, maxRounds: 3, maxConcurrent: 4, maxConcurrentPerRepo: 2, allowWrite: false, workspaceDir: '' };
-const DEFAULT_MAX_OUTPUT_TOKENS = { review: 32768, curator: 16384, distill: 8192 };
+// Review runs on Claude (CLI or Converse) by default, where thinking counts
+// toward the cap: 128K is the Opus 5.5 / Sonnet 5 ceiling. Curator and distill
+// often run on chat endpoints with smaller caps, so they keep lower defaults.
+const DEFAULT_MAX_OUTPUT_TOKENS = { review: 128000, curator: 16384, distill: 8192 };
 export const DEFAULT_SMALL_REVIEW: SmallReviewConfig = {
   maxChangedLines: 200,
   docsOnly: true,

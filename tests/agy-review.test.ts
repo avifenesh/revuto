@@ -161,7 +161,7 @@ assert.equal(args[args.indexOf('--tools') + 1], '');
 assert.equal(args[args.indexOf('--setting-sources') + 1], '');
 assert.ok(args.includes('--restricted'));
 assert.equal(args[args.indexOf('--max-turns') + 1], prompt === 'budget' ? '7' : '150');
-assert.equal(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, prompt === 'budget' ? '2048' : '32768');
+assert.equal(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, prompt === 'budget' ? '2048' : '128000');
 assert.deepEqual(Object.keys(JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers), ['revuto']);
 assert.ok(args.includes('--bare') && args.includes('--verbose') && args.includes('--strict-mcp-config'));
 assert.ok(!args.includes('--print-timeout') && !args.includes('--dangerously-skip-permissions'));
@@ -191,7 +191,7 @@ console.log(JSON.stringify({type:'result',subtype:prompt==='fail'?'error_during_
     const noInspection = await runAgyCli({spec:model,cwd:dir,prompt:'terminal-only'});
     assert.equal(noInspection.inspections, 0);
     await assert.rejects(runAgyReview({
-      config: {vaultPath:dir,models:{review:model},review:{maxSteps:150},limits:{maxOutputTokens:{review:32768}}} as ReviewerConfig,
+      config: {vaultPath:dir,models:{review:model},review:{maxSteps:150},limits:{maxOutputTokens:{review:128000}}} as ReviewerConfig,
       ctx: {...context(dir),body:'terminal-only'}, octokit:{} as never,
       token:async ()=>'unused',skillMarkdown:'',startedAt:new Date(),
     }), /without inspecting repository evidence/);
@@ -254,4 +254,31 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
     const bad=await runModelProbes({...config,models:{...config.models,review:{...native,model:'wrong'}}},{includeNative:true});
     assert.match(bad.find(p=>p.api==='claude')?.error??'',/unexpected response/);
   } finally {await server.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('Claude refusals surface on the result and on assistant stop_reason', () => {
+  const names = new Map<string, string>();
+  const [result] = normalizeClaudeEvents({type:'result',subtype:'success',stop_reason:'refusal',stop_details:{category:'cyber'},result:'',usage:{}},names);
+  assert.deepEqual((result.result as { refusal?: unknown }).refusal, {category:'cyber'});
+  const policy = normalizeClaudeEvents({type:'result',subtype:'success',is_error:true,result:'API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy',usage:{}},names);
+  assert.deepEqual((policy[0].result as { refusal?: unknown }).refusal, {category:'unknown'});
+  const assistant = normalizeClaudeEvents({type:'assistant',message:{stop_reason:'refusal',stop_details:{category:'bio'},content:[]}},names);
+  assert.deepEqual(assistant, [{event:'refusal',category:'bio'}]);
+  const clean = normalizeClaudeEvents({type:'result',subtype:'success',result:'ok',usage:{}},names);
+  assert.equal((clean[0].result as { refusal?: unknown }).refusal, undefined);
+});
+
+test('Claude prompt names only the MCP tools and no Antigravity native tools', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-claude-prompt-'));
+  try {
+    const claude = buildAgyReviewPrompt(context(dir), '', 'claude');
+    assert.match(claude, /Claude Code CLI/);
+    assert.match(claude, /mcp__revuto__pr_diff/);
+    assert.doesNotMatch(claude, /native read\/search\/git\/command/);
+    assert.doesNotMatch(claude, /Antigravity/);
+    const agy = buildAgyReviewPrompt(context(dir), '');
+    assert.match(agy, /Antigravity/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
