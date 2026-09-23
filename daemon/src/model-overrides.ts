@@ -16,7 +16,8 @@ export interface ParsedModelOverrideArgs {
 
 const DEFAULT_BEDROCK_REGION = 'us-east-2';
 const BEDROCK_API_KEY_ENV = 'AWS_BEARER_TOKEN_BEDROCK';
-const OPUS_MODEL = 'us.anthropic.claude-opus-4-8';
+const OPUS_MODEL = 'global.anthropic.claude-opus-5-5';
+const FABLE_MODEL = 'global.anthropic.claude-fable-5-1';
 const SONNET_MODEL = 'global.anthropic.claude-sonnet-5';
 const ROLE_FLAGS: Record<string, ModelRole> = {
   '--review-model': 'review',
@@ -82,17 +83,23 @@ export function modelPreset(alias: string, defaultRegion = DEFAULT_BEDROCK_REGIO
   const lower = raw.toLowerCase();
   const compact = lower.replace(/[\s._-]/g, '');
 
+  if (compact === 'sol' || compact === 'gpt6sol' || compact === 'openaigpt6sol') {
+    return bedrockMantle('openai.gpt-6-sol', region);
+  }
+  if (compact === 'astra' || compact === 'gpt6astra' || compact === 'openaigpt6astra') {
+    return bedrockMantle('openai.gpt-6-astra', region);
+  }
   if (compact === 'gpt55' || compact === 'gpt5dot5' || compact === 'openaigpt55' || compact === 'usopenaigpt55') {
     return bedrockMantle('openai.gpt-5.5', region);
-  }
-  if (compact === 'gpt54' || compact === 'gpt5dot4' || compact === 'openaigpt54' || compact === 'usopenaigpt54') {
-    return bedrockMantle('openai.gpt-5.4', region);
   }
   if (lower.startsWith('openai.')) {
     return bedrockMantle(raw, region);
   }
-  if (compact === 'opus' || compact === 'opus48' || compact === 'claudeopus48' || compact === 'anthropicclaudeopus48' || compact === 'usanthropicclaudeopus48') {
+  if (compact === 'opus' || compact === 'opus55' || compact === 'claudeopus55' || compact === 'globalanthropicclaudeopus55') {
     return bedrockConverse(OPUS_MODEL, region);
+  }
+  if (compact === 'fable' || compact === 'fable51' || compact === 'claudefable51' || compact === 'globalanthropicclaudefable51') {
+    return bedrockConverse(FABLE_MODEL, region);
   }
   if (compact === 'sonnet' || compact === 'sonnet5' || compact === 'claudesonnet5' || compact === 'anthropicclaudesonnet5' || compact === 'globalanthropicclaudesonnet5') {
     return bedrockConverse(SONNET_MODEL, region);
@@ -104,18 +111,18 @@ export function modelPreset(alias: string, defaultRegion = DEFAULT_BEDROCK_REGIO
     return bedrockMantle('openai.gpt-5.5', region);
   }
 
-  if (compact === 'grok' || compact === 'grok46' || compact === 'grokcode' || compact === 'grok4dot6') {
+  if (compact === 'grok' || compact === 'grok47' || compact === 'grok46' || compact === 'grokcode' || compact === 'grok4dot7') {
     return {
       name: 'grok-code',
       baseURL: 'https://cli-chat-proxy.grok.com/v1',
-      model: 'grok-4.6',
+      model: 'grok-4.7',
       api: 'responses',
       reasoningEffort: 'xhigh',
       auth: 'grok',
     };
   }
 
-  throw new Error(`unknown model alias "${alias}". Use gpt55, gpt54, opus, sonnet, grok, an openai.* model id, or an anthropic Bedrock model id; append @region to change region.`);
+  throw new Error(`unknown model alias "${alias}". Use sol, astra, gpt55, opus, fable, sonnet, grok, an openai.* model id, or an anthropic Bedrock model id; append @region to change region.`);
 }
 
 export function modelOverrideUsage(): string {
@@ -127,9 +134,9 @@ export function modelOverrideUsage(): string {
   --distill-model <alias[,fallback...]> override distill model chain
   --bedrock-region <region>           default region for aliases (default: us-east-2)
 
-Aliases: gpt55, gpt54, opus, sonnet, grok. Append @region for one entry, e.g.
-  revuto review owner/repo 123 --review-model gpt55,opus
-  revuto daemon --model review=gpt55@us-east-2,opus --model curator=opus,sonnet
+Aliases: sol, astra, gpt55, opus, fable, sonnet, grok. Append @region for one entry, e.g.
+  revuto review owner/repo 123 --review-model sol,opus
+  revuto daemon --model review=sol@us-east-2,opus --model curator=opus,sonnet
 `;
 }
 
@@ -155,7 +162,7 @@ function bedrockMantle(model: string, region: string): ModelSpec {
     baseURL: `https://bedrock-mantle.${region}.api.aws/openai/v1`,
     model,
     api: 'responses',
-    reasoningEffort: 'xhigh',
+    reasoningEffort: 'medium',
     auth: 'auto',
     apiKeyEnv: BEDROCK_API_KEY_ENV,
     awsRegion: region,
@@ -168,7 +175,7 @@ function bedrockConverse(model: string, region: string): ModelSpec {
     baseURL: `https://bedrock-runtime.${region}.amazonaws.com`,
     model,
     api: 'converse',
-    reasoningEffort: 'max',
+    reasoningEffort: 'medium',
     auth: 'auto',
     apiKeyEnv: BEDROCK_API_KEY_ENV,
     awsRegion: region,
