@@ -108,7 +108,7 @@ export function modelPreset(alias: string, defaultRegion = DEFAULT_BEDROCK_REGIO
     return {
       name: 'grok-code',
       baseURL: 'https://cli-chat-proxy.grok.com/v1',
-      model: 'grok-4.6',
+      model: 'grok-4.7',
       api: 'responses',
       reasoningEffort: 'xhigh',
       auth: 'grok',
