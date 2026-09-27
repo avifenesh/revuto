@@ -27,6 +27,9 @@ When a question or task matches a trigger phrase below, load the corresponding g
 | "AgentCore skills registry" | skill-writing-best-practices.md |
 | "SearchRegistryRecords" | skill-writing-best-practices.md |
 | "descriptorType AGENT_SKILLS" | skill-writing-best-practices.md |
+| "skill vault" | skill-writing-best-practices.md |
+| "skill selection by touched files" | skill-writing-best-practices.md |
+| "skill frontmatter / area globs" | skill-writing-best-practices.md |
 | "skip unless" | skill-writing-best-practices.md |
 | "confidence ladder" | skill-writing-best-practices.md |
 | "skill fires too often" | skill-writing-best-practices.md |
