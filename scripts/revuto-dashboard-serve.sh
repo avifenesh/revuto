@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 # Newest nvm node, so a Node upgrade never leaves a dead pinned path behind.
-node_bin="${NODE_BIN:-$(ls -1d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1)}"
+node_bin="${NODE_BIN:-$(ls -1d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1 || true)}"
 if [[ ! -x "$node_bin" ]]; then
   node_bin="$(command -v node)"
 fi
