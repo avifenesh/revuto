@@ -4,7 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-node_bin="${NODE_BIN:-/home/avifenesh/.nvm/versions/node/v25.9.0/bin/node}"
+# Newest nvm node, so a Node upgrade never leaves a dead pinned path behind.
+node_bin="${NODE_BIN:-$(ls -1d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1)}"
 if [[ ! -x "$node_bin" ]]; then
   node_bin="$(command -v node)"
 fi

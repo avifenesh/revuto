@@ -209,7 +209,7 @@
 
   function commandLabel(process: ProcessStatus): string {
     return process.command
-      .replace('/home/avifenesh/.nvm/versions/node/v25.9.0/bin/', '')
+      .replace(/^\S*\/\.nvm\/versions\/node\/v[^/]+\/bin\//, '')
       .replace('/home/avifenesh/projects/revuto/', '')
       .slice(0, 140);
   }
