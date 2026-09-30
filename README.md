@@ -330,8 +330,10 @@ its Git registration are removed after success, failure or cancellation; daemon
 startup reaps worktrees left by crashed processes. The bare cache is retained to
 avoid fetching the repository again. Round and daily-review limits remain enforced.
 The CLI returns a verdict; Revuto retains GitHub posting authority. Structured
-output alone does not count as inspection, and a run with no evidence reads fails
-before posting. A failing CLI/model does not silently switch to another provider.
+output alone does not count as inspection: a verdict returned without a single
+evidence read is discarded and the turn runs once more with the requirement
+spelled out, and a second uninspected verdict fails the review before posting.
+A failing CLI/model does not silently switch to another provider.
 
 At run time, override a role with a primary/fallback chain instead of editing the
 config file:

@@ -381,19 +381,35 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
     startedAt: opts.startedAt,
   });
 
+  const runner = spec.api === 'claude' ? 'claude' : 'agy';
+  const basePrompt = buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown, runner);
   let run: AgyCliRun;
+  let attempts = 0;
+  let priorSteps = 0;
+  let priorTokens = 0;
   try {
-    run = await runAgyCli({
-      spec,
-      cwd: opts.ctx.workspacePath,
-      schema: AGY_REVIEW_SCHEMA,
-      diffRange: opts.ctx.diffRefSpec,
-      maxSteps: opts.config.review.maxSteps,
-      maxOutputTokens: reviewOutputTokens(opts.config),
-      signal: opts.signal,
-      prompt: buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown, spec.api === 'claude' ? 'claude' : 'agy'),
-      onStep: (step) => traceAgyStep(trace, step, spec.api === 'claude' ? 'claude' : 'agy'),
-    });
+    // A verdict produced without a single inspection is discarded and the turn
+    // is run once more with the evidence requirement spelled out. Small diffs
+    // (a config file deleted, a one-line rename) are where models answer from
+    // the overview instead of the tools.
+    for (;;) {
+      attempts++;
+      run = await runAgyCli({
+        spec,
+        cwd: opts.ctx.workspacePath,
+        schema: AGY_REVIEW_SCHEMA,
+        diffRange: opts.ctx.diffRefSpec,
+        maxSteps: opts.config.review.maxSteps,
+        maxOutputTokens: reviewOutputTokens(opts.config),
+        signal: opts.signal,
+        prompt: attempts === 1 ? basePrompt : `${basePrompt}\n\n${UNINSPECTED_RETRY_NOTE}`,
+        onStep: (step) => traceAgyStep(trace, step, runner),
+      });
+      if (run.inspections > 0 || attempts >= UNINSPECTED_MAX_ATTEMPTS) break;
+      priorSteps += run.stepCount;
+      priorTokens += run.result.usage?.total_tokens ?? 0;
+      console.warn(`[review] ${opts.ctx.owner}/${opts.ctx.repo}#${opts.ctx.prNumber}: native review answered without inspecting anything; retrying with the evidence requirement`);
+    }
   } catch (err) {
     trace.finish({ terminal: 'none', result: '', inspections: 0, toolErrors: 1, error: errorText(err) });
     throw err;
@@ -402,7 +418,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
   let output: AgyReviewResult;
   try {
     opts.signal?.throwIfAborted();
-    if (run.inspections === 0) throw new Error('Native review returned without inspecting repository evidence');
+    if (run.inspections === 0) throw new Error(`Native review returned without inspecting repository evidence (${attempts} attempts)`);
     output = AgyReviewResult.parse(run.result.structured_output);
     if (output.decision === 'post_review' && output.comments.length === 0) {
       throw new Error('post_review requires at least one inline comment');
@@ -447,8 +463,8 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
     hasFindings,
     result,
     headSha: opts.ctx.headSha,
-    steps: run.stepCount,
-    tokens: run.result.usage?.total_tokens ?? 0,
+    steps: priorSteps + run.stepCount,
+    tokens: priorTokens + (run.result.usage?.total_tokens ?? 0),
     inspections: run.inspections,
     toolErrors,
     postFailures,
@@ -465,6 +481,13 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
  * AGY gets the workspace's native read/search/git/command tools, Claude Code
  * gets only the guarded revuto MCP tools. Each prompt names only its own.
  */
+const UNINSPECTED_MAX_ATTEMPTS = 2;
+export const UNINSPECTED_RETRY_NOTE = [
+  '## Retry: evidence required',
+  'Your previous attempt returned a verdict without calling any inspection tool and it was discarded.',
+  'Before deciding, fetch the diff (for the Claude runner: mcp__revuto__pr_diff with mode=stat, then the patch), read the changed files, and for deleted or renamed files search the repository for references to their paths. Then return the structured result.',
+].join('\n');
+
 export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runner: 'agy' | 'claude' = 'agy'): string {
   const setup = runner === 'claude'
     ? [
@@ -481,6 +504,7 @@ export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runn
       ];
   return [
     ...setup,
+    `Every decision needs evidence gathered with the tools in this run: fetch the diff first, and when a change only deletes or renames files, search the repository for references to the removed paths before deciding. A verdict returned without a single tool call is discarded.`,
     `Post only evidence-backed correctness, safety, or design findings. Do not post style or speculative concerns.`,
     `Inline comments must use a changed file and a line present in the PR diff on the RIGHT side.`,
     `If nothing clears the bar, set decision to skip_review, provide a one-sentence reason, set body to an empty string, and return no comments.`,

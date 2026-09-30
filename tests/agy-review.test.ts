@@ -5,7 +5,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
@@ -152,6 +152,8 @@ import assert from 'node:assert/strict';
 const args = process.argv.slice(2);
 const {readFileSync} = await import('node:fs');
 const prompt = readFileSync(0, 'utf8');
+const {appendFileSync} = await import('node:fs');
+appendFileSync(process.argv[1] + '.calls', 'x');
 assert.equal(args[0], '-p');
 assert.equal(args[1], '--model');
 assert.equal(args[args.indexOf('--model') + 1], 'global.anthropic.claude-opus-5[1m]');
@@ -166,7 +168,9 @@ assert.deepEqual(Object.keys(JSON.parse(args[args.indexOf('--mcp-config') + 1]).
 assert.ok(args.includes('--bare') && args.includes('--verbose') && args.includes('--strict-mcp-config'));
 assert.ok(!args.includes('--print-timeout') && !args.includes('--dangerously-skip-permissions'));
 console.log(JSON.stringify({type:'system', subtype:'init', model:'global.anthropic.claude-opus-5[1m]'}));
-if (!prompt.includes('terminal-only')) {
+const retry = prompt.includes('## Retry: evidence required');
+if (retry) assert.ok(prompt.includes('was discarded'));
+if (!prompt.includes('terminal-only') || (retry && !prompt.includes('always'))) {
   console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'read-1',name:'mcp__revuto__read'}]}}));
   console.log(JSON.stringify({type:'user', message:{content:[{type:'tool_result',tool_use_id:'read-1',content:'actual file contents'}]}}));
 }
@@ -190,11 +194,26 @@ console.log(JSON.stringify({type:'result',subtype:prompt==='fail'?'error_during_
     await assert.rejects(runAgyCli({spec:model,cwd:dir,prompt:'fail'}), /run failed/);
     const noInspection = await runAgyCli({spec:model,cwd:dir,prompt:'terminal-only'});
     assert.equal(noInspection.inspections, 0);
-    await assert.rejects(runAgyReview({
-      config: {vaultPath:dir,models:{review:model},review:{maxSteps:150},limits:{maxOutputTokens:{}}} as ReviewerConfig,
-      ctx: {...context(dir),body:'terminal-only'}, octokit:{} as never,
+    const calls = () => (existsSync(command + '.calls') ? readFileSync(command + '.calls', 'utf8').length : 0);
+    const config = {vaultPath:dir,models:{review:model},review:{maxSteps:150},limits:{maxOutputTokens:{}}} as ReviewerConfig;
+    // First attempt answers without a tool call; the retry carries the evidence
+    // note and inspects, so the review completes and counts both attempts.
+    const before = calls();
+    const retried = await runAgyReview({
+      config, ctx: {...context(dir),body:'terminal-only'}, octokit:{} as never,
       token:async ()=>'unused',skillMarkdown:'',startedAt:new Date(),
-    }), /without inspecting repository evidence/);
+    });
+    assert.equal(calls() - before, 2);
+    assert.equal(retried.inspections, 1);
+    assert.equal(retried.steps, 5);
+    assert.equal(retried.tokens, 64);
+    // Two uninspected attempts fail the review; there is no third.
+    const beforeAlways = calls();
+    await assert.rejects(runAgyReview({
+      config, ctx: {...context(dir),body:'terminal-only-always'}, octokit:{} as never,
+      token:async ()=>'unused',skillMarkdown:'',startedAt:new Date(),
+    }), /without inspecting repository evidence \(2 attempts\)/);
+    assert.equal(calls() - beforeAlways, 2);
   } finally {
     rmSync(dir, {recursive:true,force:true});
   }
