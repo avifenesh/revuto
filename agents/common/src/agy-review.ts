@@ -409,6 +409,11 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
         finishError(new ModelRefusalError(opts.spec.model, refusal.category));
         return;
       }
+      // A turn-limit stop, like a refusal, is decided by the result, whatever the exit status.
+      if (result?.limit) {
+        finishError(new NativeStepLimitError(`${label} run failed${result.error ? `: ${result.error}` : ''}`, stepCount, result.usage?.total_tokens ?? 0));
+        return;
+      }
       if (code !== 0) {
         const detail = result?.error || stderr.trim().slice(-1000);
         finishError(new Error(`${label} exited with status ${code}${detail ? `: ${detail}` : ''}`));
@@ -419,8 +424,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
         return;
       }
       if (result.status !== 'SUCCESS') {
-        const message = `${label} run failed${result.error ? `: ${result.error}` : ''}`;
-        finishError(result.limit ? new NativeStepLimitError(message, stepCount, result.usage?.total_tokens ?? 0) : new Error(message));
+        finishError(new Error(`${label} run failed${result.error ? `: ${result.error}` : ''}`));
         return;
       }
       settled = true;

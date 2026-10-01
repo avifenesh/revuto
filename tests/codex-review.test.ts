@@ -266,6 +266,8 @@ readFileSync(0, 'utf8');
 console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'mcp__revuto__read' }] } }));
 console.log(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: 'file' }] } }));
 console.log(JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, errors: [], usage: { input_tokens: 30, output_tokens: 5 } }));
+// Claude Code exits non-zero on a turn-limit stop; the result decides, not the status.
+process.exit(1);
 `);
   chmodSync(command, 0o755);
   const spec = { baseURL: 'claude-cli://local', api: 'claude' as const, auth: 'none' as const, command, model: 'global.anthropic.claude-opus-5-5[1m]' };

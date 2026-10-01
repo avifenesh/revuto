@@ -275,9 +275,17 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   let escalateTo = route.tier !== 'large' && config.review.escalate !== false && opts.config.models.review !== route.spec
     ? opts.config.models.review : undefined;
   let escalationNote: string | undefined;
-  const carried = { tokens: 0, steps: 0 };
-  const withCarried = (outcome: ReviewOutcome): ReviewOutcome => carried.tokens || carried.steps
-    ? { ...outcome, tokens: outcome.tokens + carried.tokens, steps: outcome.steps + carried.steps } : outcome;
+  // What an escalated pass did that the final outcome must keep: its cost, and
+  // anything it already put on the PR (an HTTP pass can post an issue comment
+  // before escalating), so a clean large-tier pass cannot turn that into a pass.
+  const carried = { tokens: 0, steps: 0, hasFindings: false, postFailures: 0 };
+  const withCarried = (outcome: ReviewOutcome): ReviewOutcome => ({
+    ...outcome,
+    tokens: outcome.tokens + carried.tokens,
+    steps: outcome.steps + carried.steps,
+    hasFindings: outcome.hasFindings || carried.hasFindings,
+    postFailures: outcome.postFailures + carried.postFailures,
+  });
   // One loop over passes: a cheap tier that escalates continues with the large tier,
   // native or HTTP.
   for (;;) {
@@ -360,6 +368,8 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
       console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} escalated to ${modelLabel(escalateTo)}: ${reason}`);
       carried.tokens += tokens;
       carried.steps += stepCount;
+      carried.hasFindings ||= hasFindings;
+      carried.postFailures += postFailures;
       config = withReviewModel(config, escalateTo);
       reviewedBy = modelLabel(escalateTo);
       escalationNote = reason;
