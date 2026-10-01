@@ -8,13 +8,17 @@
  *   npx tsx scripts/smoke/config.ts
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, defaultVaultPath, reviewOutputTokens } from '../../agents/common/src/config.js';
 import { applyModelOverrides, extractModelOverrideArgs, modelPreset } from '../../daemon/src/model-overrides.js';
 
-const dir = mkdtempSync(join(tmpdir(), 'revuto-cfg-'));
+const scratch: string[] = [];
+const scratchDir = (prefix: string) => { const d = mkdtempSync(join(tmpdir(), prefix)); scratch.push(d); return d; };
+// Removed on every exit, a failed assertion included.
+process.on('exit', () => { for (const d of scratch) rmSync(d, { recursive: true, force: true }); });
+const dir = scratchDir('revuto-cfg-');
 const m = { baseURL: 'http://x/v1', model: 'm' };
 const responses = { ...m, api: 'responses', auth: 'auto', reasoningEffort: 'xhigh', awsRegion: 'us-east-2' };
 const file = join(dir, 'revuto.config.json');
@@ -101,13 +105,13 @@ assert.throws(() => loadConfig(badAppFile), /github\.app\.port must be an intege
 
 // Vault is the default config home: point $REVUTO_VAULT at a temp dir, drop a config
 // there, and confirm loadConfig() (no path arg) finds it from a cwd with no local config.
-const vault = mkdtempSync(join(tmpdir(), 'revuto-vault-'));
+const vault = scratchDir('revuto-vault-');
 process.env.REVUTO_VAULT = vault;
 delete process.env.REVUTO_CONFIG;
 delete process.env.REVIEWER_CONFIG;
 assert.equal(defaultVaultPath(), vault, 'defaultVaultPath honors $REVUTO_VAULT');
 writeFileSync(join(vault, 'revuto.config.json'), JSON.stringify({ github: { tokenEnv: 'GH_TOKEN' }, models: { review: m, curator: m, distill: m, embedder: null } }));
-process.chdir(mkdtempSync(join(tmpdir(), 'revuto-cwd-'))); // no ./revuto.config.json here
+process.chdir(scratchDir('revuto-cwd-')); // no ./revuto.config.json here
 const v = loadConfig();
 assert.equal(v.vaultPath, vault, 'config found in $REVUTO_VAULT with no path arg; vaultPath self-locates to the vault');
 
