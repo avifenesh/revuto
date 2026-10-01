@@ -20,7 +20,7 @@ import { assembleCommonTools } from './tools/index.js';
 import { refusedEmptyReview } from './tools/gh.js';
 import { startReviewTrace, isToolErrorOutput } from './trace.js';
 import { selectSkills } from './skills/select.js';
-import { renderReReview, runAgyReview } from './agy-review.js';
+import { renderEscalation, renderReReview, ReviewEscalation, runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
 import { withReviewWorktree } from './review-worktree.js';
@@ -269,12 +269,31 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     skillMd = (await selectSkills(opts.store, opts.embedder ?? null, ctx.fileList)).trim();
   }
   let reviewedBy = route.label;
+  // A small or medium tier may hand the PR to the large tier once. The first
+  // pass's cost is added to the outcome, so daily token limits see both passes.
+  let escalateTo = route.tier !== 'large' && config.review.escalate !== false && opts.config.models.review !== route.spec
+    ? opts.config.models.review : undefined;
+  let escalationNote: string | undefined;
+  const carried = { tokens: 0, steps: 0 };
+  const withCarried = (outcome: ReviewOutcome): ReviewOutcome => carried.tokens || carried.steps
+    ? { ...outcome, tokens: outcome.tokens + carried.tokens, steps: outcome.steps + carried.steps } : outcome;
   // Native CLI reviewers. A refusal moves the run to the next configured
   // fallback (CLI or HTTP) instead of failing it; any other error still fails.
   while (isNativeRunner(config.models.review)) {
     try {
-      return await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy });
+      return withCarried(await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy,
+        allowEscalation: escalateTo !== undefined, ...(escalationNote ? { escalationNote } : {}) }));
     } catch (err) {
+      if (err instanceof ReviewEscalation && escalateTo) {
+        console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} escalated to ${modelLabel(escalateTo)}: ${err.reason}`);
+        carried.tokens += err.tokens;
+        carried.steps += err.steps;
+        config = withReviewModel(config, escalateTo);
+        reviewedBy = modelLabel(escalateTo);
+        escalationNote = err.reason;
+        escalateTo = undefined;
+        continue;
+      }
       const next = refusalFallback(config.models.review, err);
       if (!next) throw err;
       console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} refused (category=${(err as ModelRefusalError).category}); falling back to ${modelLabel(next)}`);
@@ -295,6 +314,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   const userMessage = [
     renderPrOverview(ctx),
     renderReReview(ctx, 'git'),
+    renderEscalation(escalationNote ? { note: escalationNote } : {}),
     '',
     '---',
     '',
@@ -422,7 +442,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   };
   const tracePath = trace.finish({ ...outcome, result: outcome.result.slice(0, 8000) });
 
-  return { ...outcome, ...(tracePath ? { tracePath } : {}) };
+  return withCarried({ ...outcome, ...(tracePath ? { tracePath } : {}) });
 }
 
 export type StepLike = {

@@ -38,32 +38,36 @@ const CODEX_INSPECTION_TOOLS = new Map([
  * property required and no conditionals, so optional comment fields are
  * nullable here and dropped before the shared verdict validator runs.
  */
-export const CODEX_REVIEW_SCHEMA = JSON.stringify({
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    decision: { type: 'string', enum: ['post_review', 'skip_review'] },
-    reason: { type: 'string' },
-    body: { type: 'string' },
-    comments: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          path: { type: 'string' },
-          line: { type: 'integer' },
-          side: { type: ['string', 'null'], enum: ['LEFT', 'RIGHT', null] },
-          start_line: { type: ['integer', 'null'] },
-          start_side: { type: ['string', 'null'], enum: ['LEFT', 'RIGHT', null] },
-          body: { type: 'string' },
+export function codexReviewSchema(allowEscalation = false): string {
+  return JSON.stringify({
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      decision: { type: 'string', enum: ['post_review', 'skip_review', ...(allowEscalation ? ['escalate'] : [])] },
+      reason: { type: 'string' },
+      body: { type: 'string' },
+      comments: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            path: { type: 'string' },
+            line: { type: 'integer' },
+            side: { type: ['string', 'null'], enum: ['LEFT', 'RIGHT', null] },
+            start_line: { type: ['integer', 'null'] },
+            start_side: { type: ['string', 'null'], enum: ['LEFT', 'RIGHT', null] },
+            body: { type: 'string' },
+          },
+          required: ['path', 'line', 'side', 'start_line', 'start_side', 'body'],
         },
-        required: ['path', 'line', 'side', 'start_line', 'start_side', 'body'],
       },
     },
-  },
-  required: ['decision', 'reason', 'body', 'comments'],
-});
+    required: ['decision', 'reason', 'body', 'comments'],
+  });
+}
+
+export const CODEX_REVIEW_SCHEMA = codexReviewSchema();
 
 const PASSTHROUGH_KEYS = ['HOME', 'USER', 'PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR'] as const;
 // Bedrock authentication only. No GitHub token, no OpenAI key, no shell settings.

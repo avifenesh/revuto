@@ -372,6 +372,13 @@ of medium-tier PRs to the large tier; 3 moves 23%.
 "review": { "risk": { "paths": ["**/auth/**", "**/migrations/**", ".github/workflows/**"], "hotspotMinReinforcement": 3 } }
 ```
 
+A small or medium tier can hand a PR to the large tier once (`review.escalate`,
+default `true`). The reviewer answers `escalate` with a reason when it cannot settle
+part of the change, and a native runner that hits its step or turn budget escalates
+instead of failing. The large tier then reviews the whole PR with the first pass's
+reason in its prompt. The outcome counts both passes' tokens and steps, so daily token
+limits see the full cost. The log says `<tier model> escalated to <large model>: <reason>`.
+
 ### Re-reviews look at what changed
 
 When revuto reviews a new head of a PR it already reviewed, the review covers what

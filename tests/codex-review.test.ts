@@ -10,8 +10,8 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { buildAgyReviewPrompt, probeAgy, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
-import { CODEX_REVIEW_SCHEMA, codexEnvironment, normalizeCodexEvents } from '../agents/common/src/codex-review.js';
+import { agyReviewSchema, buildAgyReviewPrompt, probeAgy, renderEscalation, ReviewEscalation, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
+import { CODEX_REVIEW_SCHEMA, codexEnvironment, codexReviewSchema, normalizeCodexEvents } from '../agents/common/src/codex-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import { ModelRefusalError } from '../agents/common/src/refusal.js';
 import type { PrContext } from '../agents/common/src/workspace.js';
@@ -61,6 +61,11 @@ if (prompt.includes('declined-text')) {
 if (prompt.includes('fail-turn')) {
   console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'stream disconnected' } }));
   process.exit(1);
+}
+if (prompt.includes('escalate-me')) {
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify({ decision: 'escalate', reason: 'lock ordering across reap needs a deeper look', body: '', comments: [] }) } }));
+  console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 40, output_tokens: 2 } }));
+  process.exit(0);
 }
 const findings = prompt.includes('with-findings');
 const verdict = findings
@@ -213,4 +218,34 @@ test('Codex events map to tool steps, failures and a parsed verdict', () => {
 test('Codex environment carries Bedrock credentials and nothing else sensitive', () => {
   const env = codexEnvironment('/tmp/home', { HOME: '/h', PATH: '/bin', GH_TOKEN: 'x', OPENAI_API_KEY: 'y', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p' });
   assert.deepEqual(env, { CODEX_HOME: '/tmp/home', HOME: '/h', PATH: '/bin', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p' });
+});
+
+test('a cheap tier escalates on request or on its step budget, carrying its cost', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-codex-test-'));
+  const command = fakeCodex(dir);
+  const spec = { name: 'codex-sol', baseURL: 'codex://bedrock', api: 'codex' as const, model: 'openai.gpt-6.1-sol', reasoningEffort: 'medium' as const, command };
+  const config = (maxSteps: number) => ({ vaultPath: dir, models: { review: spec }, review: { maxSteps }, limits: { maxOutputTokens: {} } }) as unknown as ReviewerConfig;
+  const run = (body: string, allowEscalation: boolean, maxSteps = 150) => runAgyReview({ config: config(maxSteps), ctx: context(dir, body), octokit: {} as never,
+    token: async () => 'unused', skillMarkdown: '', startedAt: new Date(), allowEscalation });
+  try {
+    await assert.rejects(run('escalate-me', true), (err: unknown) => err instanceof ReviewEscalation && err.reason === 'lock ordering across reap needs a deeper look' && err.tokens === 42 && err.steps > 0);
+    const last = JSON.parse(readFileSync(command + '.last', 'utf8'));
+    assert.deepEqual(JSON.parse(last.schema).properties.decision.enum, ['post_review', 'skip_review', 'escalate'], 'the escalate option is in the schema');
+    assert.match(last.prompt, /## Escalation/);
+    await assert.rejects(run('escalate-me', false), /escalate is not available on this tier/);
+    await assert.rejects(run('runaway', true, 3), (err: unknown) => err instanceof ReviewEscalation && err.reason === 'ran out of review steps');
+    await assert.rejects(run('runaway', false, 3), (err: unknown) => !(err instanceof ReviewEscalation) && /exceeded review\.maxSteps/.test(String(err)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the escalate option exists only where escalation is allowed, and the large tier gets the note', () => {
+  assert.deepEqual(JSON.parse(codexReviewSchema()).properties.decision.enum, ['post_review', 'skip_review']);
+  assert.deepEqual(JSON.parse(agyReviewSchema(true)).properties.decision.enum, ['post_review', 'skip_review', 'escalate']);
+  assert.equal(renderEscalation(), '');
+  assert.match(renderEscalation({ allow: true }), /set decision to escalate/);
+  const note = renderEscalation({ note: 'needs a look at the retry path' });
+  assert.match(note, /## Escalated review\nA first-pass reviewer on a smaller tier handed this PR to you: needs a look at the retry path/);
+  assert.doesNotMatch(buildAgyReviewPrompt(context('/ws'), '', 'codex'), /## Escalation/);
 });

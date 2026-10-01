@@ -139,6 +139,11 @@ export interface ReviewerConfig {
      * by that size (default true). False makes every review a full one.
      */
     readonly incremental?: boolean;
+    /**
+     * Let a small or medium tier hand a PR to `models.review` (default true):
+     * when it answers `escalate`, or when it runs out of steps.
+     */
+    readonly escalate?: boolean;
   };
   /** Caps. 0 = unlimited. Run/comment/token counts are per repo per UTC day. */
   readonly limits: {
@@ -458,8 +463,10 @@ export function loadConfig(path?: string): ReviewerConfig {
     medium: checkMediumReview(raw.review?.medium),
     risk: checkRiskReview(raw.review?.risk),
     incremental: raw.review?.incremental ?? true,
+    escalate: raw.review?.escalate ?? true,
   };
   if (typeof review.incremental !== 'boolean') throw new Error('config: review.incremental must be a boolean');
+  if (typeof review.escalate !== 'boolean') throw new Error('config: review.escalate must be a boolean');
   if (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 1) throw new Error('config: review.maxRounds must be a positive integer');
   for (const key of ['maxConcurrent', 'maxConcurrentPerRepo'] as const) {
     if (!Number.isSafeInteger(review[key]) || review[key] < 1) throw new Error(`config: review.${key} must be a positive integer`);
