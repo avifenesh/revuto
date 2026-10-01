@@ -23,7 +23,7 @@ import type { PrContext } from './workspace.js';
 import { buildPostReviewTool, buildSkipTool } from './tools/gh.js';
 import { isToolErrorOutput, startReviewTrace, type TraceWriter } from './trace.js';
 import { ModelRefusalError } from './refusal.js';
-import { CODEX_REVIEW_SCHEMA, codexEnvironment, codexExecArgs, normalizeCodexEvents, type CodexStreamState } from './codex-review.js';
+import { codexEnvironment, codexExecArgs, codexReviewSchema, normalizeCodexEvents, type CodexStreamState } from './codex-review.js';
 
 const AGY_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const AGY_DOCTOR_TIMEOUT_MS = 90 * 1000;
@@ -34,36 +34,63 @@ export const CLAUDE_DEFAULT_MAX_OUTPUT_TOKENS = 128000;
 /** Claude Code's text when the API declines a request on usage-policy grounds. */
 const CLAUDE_REFUSAL_TEXT = /unable to respond to this request, which appears to violate our Usage Policy/i;
 
-/** Schema enforced on AGY's terminal result. Keep this in sync with the Zod validator below. */
-export const AGY_REVIEW_SCHEMA = JSON.stringify({
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    decision: { type: 'string', enum: ['post_review', 'skip_review'] },
-    reason: { type: 'string', minLength: 1 },
-    body: { type: 'string' },
-    comments: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          path: { type: 'string' },
-          line: { type: 'integer', minimum: 1 },
-          side: { type: 'string', enum: ['LEFT', 'RIGHT'] },
-          start_line: { type: 'integer', minimum: 1 },
-          start_side: { type: 'string', enum: ['LEFT', 'RIGHT'] },
-          body: { type: 'string', minLength: 1 },
+/**
+ * Schema enforced on a native runner's terminal result. Keep this in sync with
+ * the Zod validator below. `escalate` exists only for a small or medium tier
+ * that may hand the PR to the large tier.
+ */
+export function agyReviewSchema(allowEscalation = false): string {
+  return JSON.stringify({
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      decision: { type: 'string', enum: ['post_review', 'skip_review', ...(allowEscalation ? ['escalate'] : [])] },
+      reason: { type: 'string', minLength: 1 },
+      body: { type: 'string' },
+      comments: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            path: { type: 'string' },
+            line: { type: 'integer', minimum: 1 },
+            side: { type: 'string', enum: ['LEFT', 'RIGHT'] },
+            start_line: { type: 'integer', minimum: 1 },
+            start_side: { type: 'string', enum: ['LEFT', 'RIGHT'] },
+            body: { type: 'string', minLength: 1 },
+          },
+          required: ['path', 'line', 'body'],
         },
-        required: ['path', 'line', 'body'],
       },
     },
-  },
-  required: ['decision', 'reason', 'body', 'comments'],
-  if: { properties: { decision: { const: 'post_review' } } },
-  then: { properties: { comments: { minItems: 1 } } },
-  else: { properties: { comments: { maxItems: 0 } } },
-});
+    required: ['decision', 'reason', 'body', 'comments'],
+    if: { properties: { decision: { const: 'post_review' } } },
+    then: { properties: { comments: { minItems: 1 } } },
+    else: { properties: { comments: { maxItems: 0 } } },
+  });
+}
+
+export const AGY_REVIEW_SCHEMA = agyReviewSchema();
+
+/**
+ * A small or medium tier handed the PR up: it said so, or it ran out of steps.
+ * Carries the first pass's cost so the outcome counts both passes.
+ */
+export class ReviewEscalation extends Error {
+  constructor(readonly reason: string, readonly tokens: number, readonly steps: number) {
+    super(`review escalated: ${reason}`);
+    this.name = 'ReviewEscalation';
+  }
+}
+
+/** A native run stopped at its step or turn budget, with what it had done by then. */
+export class NativeStepLimitError extends Error {
+  constructor(message: string, readonly steps: number, readonly tokens: number) {
+    super(message);
+    this.name = 'NativeStepLimitError';
+  }
+}
 
 const AgyComment = z.object({
   path: z.string(),
@@ -75,7 +102,7 @@ const AgyComment = z.object({
 });
 
 const AgyReviewResult = z.object({
-  decision: z.enum(['post_review', 'skip_review']),
+  decision: z.enum(['post_review', 'skip_review', 'escalate']),
   reason: z.string().min(1),
   body: z.string(),
   comments: z.array(AgyComment),
@@ -99,6 +126,8 @@ export interface AgyCliResult {
   readonly usage?: AgyUsage;
   /** Set when the model declined the request (Claude `stop_reason: "refusal"`). */
   readonly refusal?: { readonly category: string };
+  /** The run ended at its turn limit (Claude `error_max_turns`). */
+  readonly limit?: boolean;
 }
 
 interface AgyToolInfo {
@@ -304,7 +333,8 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
         const name = step.tool_name || info?.name || 'agy_tool';
         // Codex has no turn limit of its own, so revuto stops it at review.maxSteps tool calls.
         if (runner === 'codex' && ++toolCalls > maxSteps) {
-          stopWithError(new Error(`Codex CLI exceeded review.maxSteps (${maxSteps} tool calls)`));
+          // Codex reports usage only when a turn completes, so a stopped turn carries steps only.
+          stopWithError(new NativeStepLimitError(`Codex CLI exceeded review.maxSteps (${maxSteps} tool calls)`, stepCount, 0));
           return;
         }
         // Producing the verdict is not an inspection of repository evidence.
@@ -379,6 +409,11 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
         finishError(new ModelRefusalError(opts.spec.model, refusal.category));
         return;
       }
+      // A turn-limit stop, like a refusal, is decided by the result, whatever the exit status.
+      if (result?.limit) {
+        finishError(new NativeStepLimitError(`${label} run failed${result.error ? `: ${result.error}` : ''}`, stepCount, result.usage?.total_tokens ?? 0));
+        return;
+      }
       if (code !== 0) {
         const detail = result?.error || stderr.trim().slice(-1000);
         finishError(new Error(`${label} exited with status ${code}${detail ? `: ${detail}` : ''}`));
@@ -429,6 +464,10 @@ export interface RunAgyReviewOptions {
   readonly startedAt: Date;
   /** Model label for the outcome and the local logs; defaults to the spec's name or id. */
   readonly reviewedBy?: string;
+  /** A larger tier exists: the reviewer may return `escalate`, and a step-limit stop escalates. */
+  readonly allowEscalation?: boolean;
+  /** Set on the large tier after an escalation: the first pass's reason. */
+  readonly escalationNote?: string;
 }
 
 /** Run the full Revuto review through AGY, then post via Revuto's GitHub tool. */
@@ -444,7 +483,8 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
   });
 
   const runner = runnerOf(spec);
-  const basePrompt = buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown, runner);
+  const escalation = { allow: opts.allowEscalation === true, note: opts.escalationNote };
+  const basePrompt = buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown, runner, escalation);
   let run: AgyCliRun;
   let attempts = 0;
   let priorSteps = 0;
@@ -459,7 +499,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
       run = await runAgyCli({
         spec,
         cwd: opts.ctx.workspacePath,
-        schema: runner === 'codex' ? CODEX_REVIEW_SCHEMA : AGY_REVIEW_SCHEMA,
+        schema: runner === 'codex' ? codexReviewSchema(escalation.allow) : agyReviewSchema(escalation.allow),
         diffRange: opts.ctx.diffRefSpec,
         ...(opts.ctx.incremental ? { sinceRange: opts.ctx.incremental.range } : {}),
         maxSteps: opts.config.review.maxSteps,
@@ -475,6 +515,11 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
     }
   } catch (err) {
     trace.finish({ terminal: 'none', result: '', inspections: 0, toolErrors: 1, error: errorText(err) });
+    // A cheap tier that ran out of budget hands the PR up instead of failing it,
+    // carrying what the stopped pass had used.
+    if (escalation.allow && err instanceof NativeStepLimitError) {
+      throw new ReviewEscalation('ran out of review steps', priorTokens + err.tokens, priorSteps + err.steps);
+    }
     throw err;
   }
 
@@ -486,13 +531,19 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
     if (output.decision === 'post_review' && output.comments.length === 0) {
       throw new Error('post_review requires at least one inline comment');
     }
-    if (output.decision === 'skip_review' && output.comments.length > 0) {
-      throw new Error('skip_review cannot include inline comments');
+    if (output.decision !== 'post_review' && output.comments.length > 0) {
+      throw new Error(`${output.decision} cannot include inline comments`);
     }
+    if (output.decision === 'escalate' && !escalation.allow) throw new Error('escalate is not available on this tier');
   } catch (err) {
     const message = `AGY review result was invalid: ${errorText(err)}`;
     trace.finish({ terminal: 'none', result: '', inspections: run.inspections, toolErrors: run.toolErrors + 1, error: message });
     throw new Error(message);
+  }
+
+  if (output.decision === 'escalate') {
+    trace.finish({ terminal: 'none', result: '', inspections: run.inspections, toolErrors: run.toolErrors, reason: output.reason, error: `escalated: ${output.reason}` });
+    throw new ReviewEscalation(output.reason, priorTokens + (run.result.usage?.total_tokens ?? 0), priorSteps + run.stepCount);
   }
 
   const reviewedBy = opts.reviewedBy?.trim() || spec.name?.trim() || spec.model;
@@ -551,7 +602,25 @@ export const UNINSPECTED_RETRY_NOTE = [
   'Before deciding, fetch the diff (for the Claude and Codex runners: the revuto pr_diff tool with mode=stat, then the patch), read the changed files, and for deleted or renamed files search the repository for references to their paths. Then return the structured result.',
 ].join('\n');
 
-export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runner: NativeRunner = 'agy'): string {
+/**
+ * What the prompt says about escalation: the option on a cheap tier, the first
+ * pass's note on the large one. Native runners escalate through the verdict's
+ * decision, HTTP runners through the escalate_review tool.
+ */
+export function renderEscalation(escalation: { allow?: boolean; note?: string; via?: 'decision' | 'tool' } = {}): string {
+  if (escalation.note) {
+    return ['', '## Escalated review', `A first-pass reviewer on a smaller tier handed this PR to you: ${escalation.note}`, 'Give that part a careful look, but review the whole change.'].join('\n');
+  }
+  if (!escalation.allow) return '';
+  const how = escalation.via === 'tool'
+    ? 'call escalate_review with a reason that says what needs the deeper look, instead of post_review or skip_review'
+    : 'set decision to escalate, say in reason what needs the deeper look, set body to an empty string and return no comments';
+  return ['', '## Escalation',
+    `You are the first-pass reviewer on a smaller tier. If you cannot settle a part of this change with the evidence available to you (for example concurrency, security or data-loss behaviour you could not verify), ${how}. The full reviewer then runs with your reason. Do not escalate a change you could review; escalation costs a second review.`,
+  ].join('\n');
+}
+
+export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runner: NativeRunner = 'agy', escalation: { allow?: boolean; note?: string } = {}): string {
   const setup = runner === 'codex'
     ? [
         `You are Revuto's autonomous pull-request reviewer running inside Codex CLI.`,
@@ -584,6 +653,7 @@ export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runn
     '',
     renderPrOverviewForAgy(ctx),
     renderReReview(ctx, runner === 'agy' ? 'git' : 'mcp'),
+    renderEscalation(escalation),
     skillMarkdown.trim() ? `\n## Repository knowledge\n\n${skillMarkdown.trim()}` : '',
   ].filter(Boolean).join('\n');
 }
@@ -675,11 +745,12 @@ export function normalizeClaudeEvents(record: Record<string, unknown>, tools: Ma
     const refusal = claudeRefusal(record);
     return [{ event: 'result', result: {
       ...(refusal ? { refusal } : {}),
+      ...(record.subtype === 'error_max_turns' ? { limit: true } : {}),
       status: record.subtype === 'success' && record.is_error !== true ? 'SUCCESS' : 'ERROR',
       conversation_id: record.session_id,
       response: record.result,
       error: record.is_error === true || record.subtype !== 'success'
-        ? JSON.stringify(record.errors ?? record.result ?? record.subtype) : undefined,
+        ? `${String(record.subtype ?? 'error')}: ${JSON.stringify(record.errors ?? record.result ?? null)}` : undefined,
       structured_output: record.structured_output,
       usage: { input_tokens: usage?.input_tokens ?? 0, output_tokens: usage?.output_tokens ?? 0,
         total_tokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0)
