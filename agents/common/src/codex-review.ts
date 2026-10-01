@@ -30,6 +30,7 @@ const CODEX_INSPECTION_TOOLS = new Map([
   ['revuto.grep', 'mcp__revuto__grep'],
   ['revuto.glob', 'mcp__revuto__glob'],
   ['revuto.pr_diff', 'mcp__revuto__pr_diff'],
+  ['revuto.new_changes', 'mcp__revuto__new_changes'],
 ]);
 
 /**

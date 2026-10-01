@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { tool } from '../tool-def.js';
 import type { Octokit } from '@octokit/rest';
 import type { PrContext } from '../workspace.js';
+import { REVUTO_SIGNATURE_MARK } from '../incremental.js';
 
 function run(cmd: string, args: readonly string[], opts: { env?: NodeJS.ProcessEnv; input?: string; timeoutMs: number; maxBytes: number }): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
@@ -75,7 +76,7 @@ export interface GhToolsDeps {
 /** The revuto engine repo — the attribution header links here. */
 const REVUTO_URL = 'https://github.com/avifenesh/revuto';
 /** Hidden HTML-comment sentinel (invisible when rendered) used to detect an already-signed body. */
-const SIGNATURE_MARK = '<!-- revuto-signed -->';
+const SIGNATURE_MARK = REVUTO_SIGNATURE_MARK;
 const SIGNATURE = `${SIGNATURE_MARK}\n*This is an auto review done by [revuto](${REVUTO_URL}).*`;
 
 /**

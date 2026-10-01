@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { buildHarnessTools } from './tools/harness.js';
 import { isToolErrorOutput } from './trace.js';
 import type { ToolDef } from './tool-def.js';
+import { reReviewPaths } from './incremental.js';
 
 const EXCLUDED = ['.git/**', '.env*', '.aws/**', 'id_rsa*', '*.pem', '*.key', 'node_modules/**'];
 function sensitive(path: string): boolean {
@@ -55,7 +56,14 @@ function commandPage(command: 'git' | 'rg', root: string, args: string[], offset
   });
 }
 
-export async function claudeInspectionTools(workspaceRoot: string, diffRange?: string): Promise<readonly ToolDef[]> {
+const IMMUTABLE_RANGE = /^[a-f0-9]{40}\.\.[a-f0-9]{40}$/;
+
+/**
+ * Guarded inspection tools: read/grep/glob over the PR head, `pr_diff` over the
+ * fixed PR range and, on a re-review, `new_changes` over the range since the
+ * last reviewed head, limited to the files the PR changes.
+ */
+export async function claudeInspectionTools(workspaceRoot: string, diffRange?: string, sinceRange?: string): Promise<readonly ToolDef[]> {
   workspaceRoot = await realpath(workspaceRoot);
   const bundle = await buildHarnessTools({ workspaceRoot, allowWrite: false });
   const tools = bundle.tools.filter(t => ['read', 'grep', 'glob'].includes(t.name)).map(tool => ({
@@ -96,33 +104,55 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
     },
   }));
   if (diffRange) {
-    if (!/^[a-f0-9]{40}\.\.[a-f0-9]{40}$/.test(diffRange)) throw new Error('Invalid immutable diff range');
-    tools.push({
-      name: 'pr_diff', description: 'Read the exact PR diff. Start with mode=stat, then select a repository-relative path and page using next_offset until null. Offsets and limits count characters. No arbitrary commands or revisions are accepted.',
-      inputSchema: z.object({ path: z.string().optional(), mode: z.enum(['patch', 'stat']).optional(),
-        offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(12000).optional() }).strict(),
-      callback: async (input: { path?: string; mode?: string; offset?: number; limit?: number }) => {
-        let path = '.';
-        if (input.path !== undefined) {
-          path = relative(workspaceRoot, resolve(workspaceRoot, input.path));
-          if (isAbsolute(input.path) || path === '..' || path.startsWith('../') || sensitive(path)) throw new Error('Invalid PR diff path');
-        }
-        const page = await commandPage('git', workspaceRoot, [
-          '--no-pager', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--numstat', '--no-renames'] : []), diffRange, '--', `:(literal)${path || '.'}`,
-          ...EXCLUDED.map(p => `:(exclude,glob)**/${p}`),
-        ], input.offset ?? 0, input.limit ?? 10000);
-        if (path && path !== '.' && JSON.parse(page).total_characters === 0) throw new Error('The selected path has no changes in this PR diff');
-        return page;
-      },
-    });
+    if (!IMMUTABLE_RANGE.test(diffRange)) throw new Error('Invalid immutable diff range');
+    tools.push(diffTool(workspaceRoot, 'pr_diff',
+      'Read the exact PR diff. Start with mode=stat, then select a repository-relative path and page using next_offset until null. Offsets and limits count characters. No arbitrary commands or revisions are accepted.',
+      diffRange, 'The selected path has no changes in this PR diff'));
+    if (sinceRange) {
+      if (!IMMUTABLE_RANGE.test(sinceRange)) throw new Error('Invalid immutable re-review range');
+      let paths: Promise<string[]> | undefined;
+      // The PR's files now and at the reviewed head, so a merge from the base
+      // branch does not show up as new work and a reverted file still does.
+      const git = async (args: string[]) => JSON.parse(await commandPage('git', workspaceRoot, ['--no-pager', ...args], 0, 64_000_000)).text as string;
+      const [mergeBase, head] = diffRange.split('..') as [string, string];
+      const restrict = () => paths ??= reReviewPaths(git, mergeBase, sinceRange.split('..')[0]!, head);
+      tools.push(diffTool(workspaceRoot, 'new_changes',
+        'Read only what changed in the PR files since revuto last reviewed this PR. Same modes and paging as pr_diff. Use it first on a re-review; pr_diff still returns the whole PR diff for context.',
+        sinceRange, 'The selected path has no changes since the last review', restrict));
+    }
   }
   return tools;
+}
+
+function diffTool(workspaceRoot: string, name: string, description: string, range: string, emptyPathError: string,
+  restrict?: () => Promise<string[]>): { name: string; description: string; inputSchema: z.ZodTypeAny; callback: (input: any) => Promise<unknown> } {
+  return {
+    name, description,
+    inputSchema: z.object({ path: z.string().optional(), mode: z.enum(['patch', 'stat']).optional(),
+      offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(12000).optional() }).strict(),
+    callback: async (input: { path?: string; mode?: string; offset?: number; limit?: number }) => {
+      let path = '.';
+      if (input.path !== undefined) {
+        path = relative(workspaceRoot, resolve(workspaceRoot, input.path));
+        if (isAbsolute(input.path) || path === '..' || path.startsWith('../') || sensitive(path)) throw new Error(`Invalid ${name === 'pr_diff' ? 'PR diff' : 're-review diff'} path`);
+      }
+      const selected = path && path !== '.' ? [`:(literal)${path}`] : restrict ? (await restrict()).map((f) => `:(literal)${f}`) : [':(literal).'];
+      if (selected.length === 0) return JSON.stringify({ offset: 0, next_offset: null, total_characters: 0, text: '' });
+      // quotePath off: show non-ASCII names as they are, so the model can pass them back as `path`.
+      const page = await commandPage('git', workspaceRoot, [
+        '--no-pager', '-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--numstat', '--no-renames'] : []), range, '--', ...selected,
+        ...EXCLUDED.map(p => `:(exclude,glob)**/${p}`),
+      ], input.offset ?? 0, input.limit ?? 10000);
+      if (path && path !== '.' && JSON.parse(page).total_characters === 0) throw new Error(emptyPathError);
+      return page;
+    },
+  };
 }
 
 async function main(): Promise<void> {
   const workspace = process.argv[2];
   if (!workspace || resolve(workspace) !== workspace) throw new Error('An absolute workspace is required');
-  const tools = await claudeInspectionTools(workspace, process.argv[3] || undefined);
+  const tools = await claudeInspectionTools(workspace, process.argv[3] || undefined, process.argv[4] || undefined);
   const server = new Server({ name: 'revuto-inspection', version: '1.0.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.map(t => ({
     name: t.name, description: t.description, inputSchema: z.toJSONSchema(t.inputSchema) as any,

@@ -216,7 +216,8 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
       return reserved;
     });
     const outcome = round.allowed
-      ? await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth })
+      ? await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth,
+          reviewerLogins: [auth.login, readReviewer(config, repo)?.botLogin].filter((l): l is string => !!l) })
       : unreviewedOutcome(round.reason, pr.head.sha);
     if (outcome.ranModel && config.limits.dailyTokens) await store.incrCounter(counterKey('tokens', day), outcome.tokens);
     assertReviewedHead(managedTarget, outcome);

@@ -20,11 +20,11 @@ import { assembleCommonTools } from './tools/index.js';
 import { refusedEmptyReview } from './tools/gh.js';
 import { startReviewTrace, isToolErrorOutput } from './trace.js';
 import { selectSkills } from './skills/select.js';
-import { runAgyReview } from './agy-review.js';
+import { renderReReview, runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
 import { withReviewWorktree } from './review-worktree.js';
-import { chooseReviewModel, modelLabel, withReviewModel } from './review-routing.js';
+import { chooseReviewModel, modelLabel, routeInputFor, withReviewModel } from './review-routing.js';
 import { isModelRefusal, refusalAllowsFallback, type ModelRefusalError } from './refusal.js';
 import { runQueuedForRepo } from '../../../daemon/src/repo-queue.js';
 
@@ -52,6 +52,11 @@ export interface RunReviewOptions {
   readonly assembleTools?: AssembleTools;
   /** Installation-scoped auth for GitHub App webhook runs. */
   readonly githubAuth?: GithubAuth;
+  /**
+   * revuto's own GitHub login(s). Only their signed reviews mark a head as
+   * reviewed for a re-review. Defaults to the auth's login, then the token's user.
+   */
+  readonly reviewerLogins?: readonly string[];
 }
 
 export interface ReviewOutcome {
@@ -199,6 +204,19 @@ export function refusalFallback(spec: ModelSpec, err: unknown): ModelSpec | unde
   return chain.length ? { ...single, fallbacks: chain } : single;
 }
 
+/** Logins whose signed reviews count as revuto's; empty when none can be established (then no re-review range). */
+async function reviewerLoginsFor(opts: RunReviewOptions, auth: GithubAuth): Promise<string[]> {
+  const given = (opts.reviewerLogins ?? []).filter((l) => l?.trim());
+  if (given.length) return given;
+  if (auth.login) return [auth.login];
+  try {
+    return [(await auth.octokit.users.getAuthenticated()).data.login];
+  } catch {
+    // An App installation token cannot read /user; without a login there is no trusted baseline.
+    return [];
+  }
+}
+
 export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> {
   return withReviewWorktree(opts.config, opts.repo, opts.prNumber,
     (workspace, cache, signal) => runReviewInWorkspace(opts, workspace, cache, signal));
@@ -207,11 +225,13 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
 async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: string, cacheRoot: string, signal: AbortSignal): Promise<ReviewOutcome> {
   const startedAt = new Date();
   let config = opts.config;
-  const { octokit, token } = opts.githubAuth ?? getOctokit(config.github);
+  const auth = opts.githubAuth ?? getOctokit(config.github);
+  const { octokit, token } = auth;
 
   const [owner, name] = opts.repo.split('/');
   if (!owner || !name) throw new Error(`bad repo: ${opts.repo}`);
   const resolvedToken = await token();
+  const reviewerLogins = config.review.incremental === false ? [] : await reviewerLoginsFor(opts, auth);
   const ctx = await runQueuedForRepo(config, `_review-cache/${opts.repo}`, () => prepareWorkspace(
     { repo: opts.repo, pr_number: opts.prNumber, headSha: opts.headSha },
     octokit,
@@ -219,14 +239,16 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     // the tools below get the getter, since they run for the next half hour.
     resolvedToken,
     workspaceRoot,
-    { cacheRoot, signal },
+    { cacheRoot, signal, incremental: config.review.incremental !== false, reviewerLogins },
   ));
 
   // Small, medium and large PRs go to their tier's model when one is configured.
   // From here on `config.models.review` IS the routed model, for every code path below.
-  const route = chooseReviewModel(config, ctx);
+  // A re-review is sized by what changed since revuto's last reviewed head.
+  const route = chooseReviewModel(config, routeInputFor(ctx));
   config = withReviewModel(config, route.spec);
-  console.log(`[review] ${opts.repo}#${opts.prNumber}: model ${route.label} (${route.tier} tier): ${route.reason}`);
+  const since = ctx.incremental ? `re-review since ${ctx.incremental.fromSha.slice(0, 7)}, ` : '';
+  console.log(`[review] ${opts.repo}#${opts.prNumber}: model ${route.label} (${route.tier} tier): ${since}${route.reason}`);
 
   let skillMd = opts.skillMarkdown?.trim() ?? '';
   if (!skillMd && opts.store) {
@@ -258,6 +280,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
 
   const userMessage = [
     renderPrOverview(ctx),
+    renderReReview(ctx, 'git'),
     '',
     '---',
     '',
