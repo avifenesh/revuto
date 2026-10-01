@@ -119,8 +119,12 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
 
 /** Codex error codes for a request the provider declined on policy grounds. */
 const CODEX_POLICY_CODES = /\b(cyber_policy|bio_policy|misalignment_policy_violation|invalid_prompt|content_policy|policy_violation)\b/i;
-/** Policy wording in a failed turn's message. */
-const CODEX_POLICY_TEXT = /usage polic|flagged|violat(es|ion)|safety (system|check|polic)|refus/i;
+/**
+ * Policy wording in a failed turn's message. Only phrases tied to a policy or
+ * safety decision: transport errors ("Connection refused", ECONNREFUSED) must
+ * stay ordinary failures, not switch the review to another model.
+ */
+const CODEX_POLICY_TEXT = /\busage polic(y|ies)\b|\bsafety (system|check|polic(y|ies))\b|\bflagged\b.{0,60}\b(policy|safety|moderation)\b|\bviolat(es|ed|ion of)\b.{0,40}\bpolic(y|ies)\b|\b(request|prompt|content) (was )?refused\b/i;
 /** A final message that declines instead of returning the verdict. */
 const CODEX_REFUSAL_TEXT = /^\s*(i['’]m sorry|sorry)?[,.]?\s*(but\s+)?i\s+(can(no|['’])t|am unable to|won['’]t)\s+(help|assist|comply|do that|review|continue)/i;
 

@@ -194,6 +194,14 @@ test('Codex events map to tool steps, failures and a parsed verdict', () => {
   assert.deepEqual(failedTurn, { event: 'result', result: { status: 'ERROR', conversation_id: 't', error: 'quota' } }, 'an ordinary failure is no refusal');
   const [policy] = normalizeCodexEvents({ type: 'turn.failed', error: { message: 'Your request was flagged by our safety system' } }, state);
   assert.deepEqual((policy.result as { refusal: unknown }).refusal, { category: 'policy' });
+  for (const message of ['connect ECONNREFUSED 127.0.0.1:443', 'Connection refused (os error 111)', 'stream disconnected: invariant violation in decoder', 'feature flagged off for this account']) {
+    const [transport] = normalizeCodexEvents({ type: 'turn.failed', error: { message } }, state);
+    assert.equal((transport.result as { refusal?: unknown }).refusal, undefined, `"${message}" is not a refusal`);
+  }
+  for (const message of ['This request violates our usage policies', 'The prompt was refused by the safety system', 'Content flagged by the moderation check']) {
+    const [declined] = normalizeCodexEvents({ type: 'turn.failed', error: { message } }, state);
+    assert.deepEqual((declined.result as { refusal: unknown }).refusal, { category: 'policy' }, `"${message}" is a refusal`);
+  }
   normalizeCodexEvents({ type: 'item.completed', item: { type: 'agent_message', text: 'I cannot review code that bypasses login checks.' } }, state);
   const [declined] = normalizeCodexEvents({ type: 'turn.completed', usage: {} }, state);
   assert.deepEqual((declined.result as { refusal: unknown }).refusal, { category: 'declined' });
