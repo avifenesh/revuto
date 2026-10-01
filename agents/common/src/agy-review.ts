@@ -608,6 +608,7 @@ export function renderReReview(ctx: PrContext, tools: 'mcp' | 'git'): string {
     how,
     'Focus on those changes: check whether they resolve revuto\'s earlier findings (listed under the existing reviews and inline comments) and whether they introduce new problems. Read other code only as far as the new changes need it.',
     'If an earlier finding is still unresolved, post it again as an inline comment on its current line and say it is still open, so the review does not pass with a known issue outstanding. Do not repeat findings the new changes resolved.',
+    ...(inc.findings.length ? ['', `### Revuto's earlier findings (${inc.findings.length})`, ...inc.findings.map((f) => `- ${f.path}:${f.line ?? '?'}\n${f.body.split('\n').map((l) => `  ${l}`).join('\n')}`)] : []),
     'Inline comments must still land on a line of the full PR diff.',
   ].join('\n');
 }

@@ -20,7 +20,27 @@ export interface IncrementalReview {
   readonly range: string;
   /** Changes since `fromSha`, in the PR's files only. */
   readonly fileChanges: readonly FileChange[];
+  /** revuto's own earlier inline findings on this PR, signature removed, for the re-review to reassess. */
+  readonly findings: readonly EarlierFinding[];
 }
+
+export interface EarlierFinding {
+  readonly path: string;
+  readonly line: number | null;
+  readonly body: string;
+}
+
+export interface PriorComment {
+  readonly user?: string | null;
+  readonly path: string;
+  readonly line?: number | null;
+  readonly originalLine?: number | null;
+  readonly body: string;
+}
+
+/** Longest earlier finding carried into the re-review prompt, and the most of them. */
+const FINDING_MAX_CHARS = 4000;
+const FINDINGS_MAX = 50;
 
 export interface PriorReview {
   /** Login of the review's author. */
@@ -30,14 +50,30 @@ export interface PriorReview {
   readonly submittedAt?: string | null;
 }
 
-const normalizeLogin = (login: string) => login.trim().replace(/\[bot\]$/, '').toLowerCase();
+// Full logins, case-insensitive: `name` and `name[bot]` are different accounts.
+const normalizeLogin = (login: string) => login.trim().toLowerCase();
+
+const trusted = (reviewerLogins: readonly string[]) => new Set(reviewerLogins.filter((l) => l.trim()).map(normalizeLogin));
+
+/** revuto's own signed inline comments, newest last, with the attribution header removed. */
+export function earlierFindings(comments: readonly PriorComment[], reviewerLogins: readonly string[]): EarlierFinding[] {
+  const logins = trusted(reviewerLogins);
+  return comments
+    .filter((c) => c.user && logins.has(normalizeLogin(c.user)) && c.body.includes(REVUTO_SIGNATURE_MARK))
+    .slice(-FINDINGS_MAX)
+    .map((c) => ({
+      path: c.path,
+      line: c.line ?? c.originalLine ?? null,
+      body: c.body.slice(c.body.indexOf('\n---\n') >= 0 ? c.body.indexOf('\n---\n') + 5 : 0).trim().slice(0, FINDING_MAX_CHARS),
+    }));
+}
 
 /**
  * The newest signed review on a head other than `headSha` written by one of
  * `reviewerLogins`. The signature alone proves nothing: anyone can paste it.
  */
 export function lastReviewedHead(reviews: readonly PriorReview[], headSha: string, reviewerLogins: readonly string[]): string | undefined {
-  const logins = new Set(reviewerLogins.filter((l) => l.trim()).map(normalizeLogin));
+  const logins = trusted(reviewerLogins);
   if (logins.size === 0) return undefined;
   const prior = reviews
     .filter((r) => r.user && logins.has(normalizeLogin(r.user)))
@@ -74,6 +110,8 @@ export async function reReviewPaths(git: GitRunner, mergeBaseSha: string, fromSh
 
 export interface IncrementalInput {
   readonly reviews: readonly PriorReview[];
+  /** The PR's inline review comments, for revuto's own earlier findings. */
+  readonly comments?: readonly PriorComment[];
   readonly headSha: string;
   readonly mergeBaseSha: string;
   /** revuto's own login(s); a review by anyone else never marks a head as reviewed. */
@@ -89,13 +127,14 @@ export async function findIncrementalReview(input: IncrementalInput): Promise<In
     await input.git(['fetch', '--filter=tree:0', 'origin', fromSha]);
     await input.git(['merge-base', '--is-ancestor', fromSha, input.headSha]);
     const range = `${fromSha}..${input.headSha}`;
+    const findings = earlierFindings(input.comments ?? [], input.reviewerLogins);
     const paths = await reReviewPaths(input.git, input.mergeBaseSha, fromSha, input.headSha);
-    if (paths.length === 0) return { fromSha, range, fileChanges: [] };
+    if (paths.length === 0) return { fromSha, range, fileChanges: [], findings };
     const pathspecs = paths.map((path) => `:(literal)${path}`);
     const fileChanges = parseNumstat(await input.git(['diff', '--numstat', '-z', '--no-renames', range, '--', ...pathspecs]));
     // The reviewer runs without credentials; fetch the blobs it will diff now.
     await input.git(['diff', '--no-ext-diff', '--no-textconv', range, '--', ...pathspecs], true);
-    return { fromSha, range, fileChanges };
+    return { fromSha, range, fileChanges, findings };
   } catch {
     return undefined;
   }

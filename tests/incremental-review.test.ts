@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { findIncrementalReview, lastReviewedHead, parseNumstat, REVUTO_SIGNATURE_MARK } from '../agents/common/src/incremental.js';
+import { earlierFindings, findIncrementalReview, lastReviewedHead, parseNumstat, REVUTO_SIGNATURE_MARK } from '../agents/common/src/incremental.js';
 import { chooseReviewModel, routeInputFor } from '../agents/common/src/review-routing.js';
 import { claudeInspectionTools } from '../agents/common/src/claude-review-mcp.js';
 import { buildAgyReviewPrompt, renderReReview } from '../agents/common/src/agy-review.js';
@@ -20,7 +20,7 @@ import type { PrContext } from '../agents/common/src/workspace.js';
 
 const signed = `${REVUTO_SIGNATURE_MARK}\n*This is an auto review done by revuto.*`;
 const sha = (c: string) => c.repeat(40);
-const BOT = ['revuto-review'];
+const BOT = ['revuto-review[bot]'];
 
 test('the last reviewed head is revuto\'s own newest signed review on another head', () => {
   const reviews = [
@@ -32,11 +32,26 @@ test('the last reviewed head is revuto\'s own newest signed review on another he
   ];
   assert.equal(lastReviewedHead(reviews, sha('e'), BOT), sha('b'), 'a pasted signature from another user does not count');
   assert.equal(lastReviewedHead(reviews, sha('b'), BOT), sha('a'), 'a review of the current head does not count');
-  assert.equal(lastReviewedHead(reviews, sha('e'), ['Revuto-Review[bot]']), sha('b'), 'logins compare without [bot] and case');
+  assert.equal(lastReviewedHead(reviews, sha('e'), ['Revuto-Review[BOT]']), sha('b'), 'logins compare case-insensitively');
+  assert.equal(lastReviewedHead([...reviews, { user: 'revuto-review', commitId: sha('f'), body: signed, submittedAt: '2026-10-01T13:00:00Z' }], sha('e'), BOT), sha('b'),
+    'a human account named like the bot is a different account');
   assert.equal(lastReviewedHead(reviews, sha('e'), []), undefined, 'no known reviewer login, no baseline');
   assert.deepEqual(parseNumstat('3\t1\tsrc/a.ts\0-\t-\tlogo.png\0' + '1\t0\tsrc/é\tb.ts\0'), [
     { path: 'src/a.ts', additions: 3, deletions: 1 }, { path: 'logo.png', additions: 0, deletions: 0 }, { path: 'src/é\tb.ts', additions: 1, deletions: 0 },
   ]);
+});
+
+test('earlier findings are revuto\'s own signed comments, in full, without the attribution header', () => {
+  const long = 'Failure scenario: ' + 'x'.repeat(1000);
+  const findings = earlierFindings([
+    { user: 'revuto-review[bot]', path: 'src.ts', line: 3, body: `${signed}\n\n---\n\n[P1] Bug title\n\n${long}` },
+    { user: 'someone', path: 'src.ts', line: 4, body: `${signed}\n\n---\n\nforged` },
+    { user: 'revuto-review[bot]', path: 'b.ts', line: null, originalLine: 9, body: 'unsigned bot text' },
+  ], BOT);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].path, 'src.ts'); assert.equal(findings[0].line, 3);
+  assert.ok(findings[0].body.startsWith('[P1] Bug title'));
+  assert.ok(findings[0].body.includes(long), 'the whole finding, not the first 240 characters');
 });
 
 function repo() {
@@ -65,8 +80,10 @@ test('a re-review covers only the PR files changed since the last reviewed head'
     r.git('checkout', '-q', 'feature'); r.git('merge', '-q', '--no-edit', 'main');
     const head = r.commit({ 'src.ts': 'one\ntwo\nthree\n', 'é.ts': 'x\ny\n' }, 'second PR commit');
     const mergeBase = r.git('merge-base', head, 'main');
-    const inc = await findIncrementalReview({ reviews: by(reviewed), headSha: head, mergeBaseSha: mergeBase, reviewerLogins: BOT, git: r.run });
+    const comments = [{ user: 'revuto-review[bot]', path: 'src.ts', line: 1, body: `${signed}\n\n---\n\nearlier finding` }];
+    const inc = await findIncrementalReview({ reviews: by(reviewed), comments, headSha: head, mergeBaseSha: mergeBase, reviewerLogins: BOT, git: r.run });
     assert.equal(inc?.fromSha, reviewed);
+    assert.deepEqual(inc?.findings, [{ path: 'src.ts', line: 1, body: 'earlier finding' }]);
     assert.equal(inc?.range, `${reviewed}..${head}`);
     assert.deepEqual(inc?.fileChanges, [{ path: 'src.ts', additions: 2, deletions: 0 }, { path: 'é.ts', additions: 1, deletions: 0 }],
       'the merge from main is not new PR work, and a non-ASCII name survives');
@@ -140,12 +157,14 @@ function context(incremental?: PrContext['incremental']): PrContext {
 }
 
 test('the re-review note names the range and files and keeps open findings failing', () => {
-  const inc = { fromSha: sha('d'), range: `${sha('d')}..${sha('a')}`, fileChanges: [{ path: 'src.ts', additions: 2, deletions: 1 }] };
+  const inc = { fromSha: sha('d'), range: `${sha('d')}..${sha('a')}`, fileChanges: [{ path: 'src.ts', additions: 2, deletions: 1 }],
+    findings: [{ path: 'other.ts', line: 7, body: '[P1] Open bug\nwith detail' }] };
   assert.equal(renderReReview(context(), 'mcp'), '');
   const mcp = renderReReview(context(inc), 'mcp');
   assert.match(mcp, /## Re-review/); assert.match(mcp, new RegExp(`reviewed this PR at ${sha('d')}`));
   assert.match(mcp, /- src\.ts \(\+2 \/ -1\)/); assert.match(mcp, /new_changes tool/);
   assert.match(mcp, /still unresolved, post it again/, 'an open finding is posted again so the review does not pass');
+  assert.match(mcp, /### Revuto's earlier findings \(1\)\n- other\.ts:7\n  \[P1\] Open bug\n  with detail/);
   assert.match(renderReReview(context(inc), 'git'), new RegExp(`git diff ${sha('d')}\\.\\.${sha('a')}`));
   assert.match(buildAgyReviewPrompt(context(inc), '', 'codex'), /new_changes, which returns what changed since the last review/);
   assert.doesNotMatch(buildAgyReviewPrompt(context(), '', 'codex'), /new_changes/);

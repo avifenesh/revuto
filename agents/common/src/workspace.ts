@@ -166,6 +166,7 @@ export async function prepareWorkspace(
   ]);
   const incremental = options.incremental === false || !options.reviewerLogins?.length ? undefined : await findIncrementalReview({
     reviews: reviewsResp.data.map((r) => ({ user: r.user?.login, commitId: r.commit_id, body: r.body, submittedAt: r.submitted_at })),
+    comments: reviewCommentsResp.data.map((c) => ({ user: c.user?.login, path: c.path, line: c.line, originalLine: c.original_line, body: c.body })),
     headSha,
     mergeBaseSha,
     reviewerLogins: options.reviewerLogins,
