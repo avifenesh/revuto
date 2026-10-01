@@ -11,7 +11,8 @@
  * Both are pure functions of the config plus data the daemon already holds, so
  * they are unit-tested without a network.
  */
-import { DEFAULT_MEDIUM_REVIEW, DEFAULT_SMALL_REVIEW, type ModelSpec, type ReviewerConfig, type SmallReviewConfig } from './config.js';
+import { DEFAULT_MEDIUM_REVIEW, DEFAULT_RISK_REVIEW, DEFAULT_SMALL_REVIEW, type ModelSpec, type ReviewerConfig, type RiskReviewConfig, type SmallReviewConfig } from './config.js';
+import { globMatches } from './skills/select.js';
 import type { FileChange } from './workspace.js';
 
 /** True when `repo` ("owner/name") matches an ignore entry: an exact full name or "owner/*". Case-insensitive. */
@@ -67,6 +68,14 @@ export interface RouteInput {
   readonly deletions: number;
   /** The PR's own changed-file count (`pr.changed_files`). Absent = trust `fileList` as complete. */
   readonly changedFiles?: number;
+  /** Area globs of learned concerns strong enough to count as hotspots (see `review.risk`). */
+  readonly hotspots?: readonly Hotspot[];
+}
+
+export interface Hotspot {
+  readonly glob: string;
+  /** The concern's subject, for the log. */
+  readonly subject: string;
 }
 
 export type ReviewTier = 'small' | 'medium' | 'large';
@@ -95,6 +104,21 @@ export function isTestFile(path: string): boolean {
 }
 
 /**
+ * The first changed code file (not docs, not tests) under a risk path or a
+ * hotspot, with what it matched, for the route reason.
+ */
+export function riskMatch(files: readonly string[], risk: RiskReviewConfig, hotspots: readonly Hotspot[], small: SmallReviewConfig): string | undefined {
+  for (const file of files) {
+    if (isDocsFile(file, small) || isTestFile(file)) continue;
+    const path = risk.paths.find((glob) => globMatches(glob, file));
+    if (path) return `touches risk path ${file} (${path})`;
+    const hot = hotspots.find((h) => globMatches(h.glob, file));
+    if (hot) return `touches hotspot ${file} (${hot.glob}: ${hot.subject})`;
+  }
+  return undefined;
+}
+
+/**
  * Changed lines in files that are neither documentation nor tests. Without
  * per-file counts for the whole list, the PR total stands in, which can only
  * push a PR to a bigger tier.
@@ -115,7 +139,9 @@ export function changedCodeLines(input: RouteInput, small: SmallReviewConfig): n
  *   `review.small.docsOnly`), or the diff is at most `review.small.maxChangedLines`.
  * - medium (`models.reviewMedium`): at most `review.medium.maxCodeLines` changed
  *   code lines (docs and tests excluded).
- * - large (`models.review`): everything else, and any PR whose size is unknown.
+ * - large (`models.review`): everything else, any PR whose size is unknown, and
+ *   any PR whose code touches a `review.risk.paths` glob or a hotspot (the area
+ *   of a learned concern reinforced `review.risk.hotspotMinReinforcement` times).
  *
  * A tier without a configured model falls through to the next one. When the
  * medium rule matches but `models.reviewMedium` is unset, the reason says so,
@@ -138,6 +164,8 @@ export function chooseReviewModel(config: ReviewerConfig, input: RouteInput): Re
   const sizeKnown = changed > 0 || (input.changedFiles ?? files.length) === 0;
   if (!listComplete) return large(`file list truncated (${files.length} of ${input.changedFiles} files listed)`);
   if (!sizeKnown) return large(`diff size unknown for ${files.length} file(s)`);
+  const risky = riskMatch(files, config.review.risk ?? DEFAULT_RISK_REVIEW, input.hotspots ?? [], small);
+  if (risky) return large(risky);
   if (smallSpec) {
     const route = (reason: string): ReviewRoute => ({ spec: smallSpec, tier: 'small', small: true, label: modelLabel(smallSpec), reason });
     if (small.docsOnly && files.length > 0 && files.every((f) => isDocsFile(f, small))) return route(`docs only (${files.length} file(s))`);

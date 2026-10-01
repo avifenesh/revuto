@@ -104,6 +104,40 @@ test('the medium tier takes PRs with few changed code lines; tests and docs do n
   assert.equal(chooseReviewModel(config({ reviewMedium: http('m') }), changes(['src/a.ts', 10])).tier, 'medium');
 });
 
+test('risk paths and hotspots send even a small PR to the large tier; docs and tests do not trigger them', () => {
+  const cfg = { ...config({ reviewSmall: http('s', 'small'), reviewMedium: http('m', 'medium') }) };
+  const risky = { ...cfg, review: { ...cfg.review, risk: { paths: ['**/auth/**', '.github/workflows/**'], hotspotMinReinforcement: 2 } } };
+  const one = (path: string, extra: object = {}) => ({ fileList: [path], fileChanges: [{ path, additions: 5, deletions: 0 }], additions: 5, deletions: 0, changedFiles: 1, ...extra });
+  const auth = chooseReviewModel(risky, one('src/auth/session.ts'));
+  assert.equal(auth.tier, 'large'); assert.match(auth.reason, /touches risk path src\/auth\/session\.ts \(\*\*\/auth\/\*\*\)/);
+  assert.equal(chooseReviewModel(risky, one('.github/workflows/ci.yml')).tier, 'large');
+  assert.equal(chooseReviewModel(risky, one('src/auth/session.test.ts')).tier, 'small', 'a test file under a risk path does not count');
+  assert.equal(chooseReviewModel(risky, one('docs/auth/guide.md')).tier, 'small', 'docs under a risk path do not count');
+  const hotspots = [{ glob: 'crates/transport/src/**', subject: 'lease reuse after reap' }];
+  const hot = chooseReviewModel(risky, one('crates/transport/src/adapter.rs', { hotspots }));
+  assert.equal(hot.tier, 'large'); assert.match(hot.reason, /touches hotspot crates\/transport\/src\/adapter\.rs \(crates\/transport\/src\/\*\*: lease reuse after reap\)/);
+  assert.equal(chooseReviewModel(cfg, one('src/other.ts', { hotspots })).tier, 'small', 'no match, normal routing');
+  assert.equal(chooseReviewModel(cfg, one('src/auth/x.ts')).tier, 'small', 'no risk paths by default');
+});
+
+test('review.risk loads with validation and defaults', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-risk-'));
+  const path = join(dir, 'revuto.config.json');
+  const base = { vaultPath: dir, models: { review: http('r'), curator: http('c'), distill: http('d') } };
+  try {
+    writeFileSync(path, JSON.stringify(base));
+    assert.deepEqual(loadConfig(path).review.risk, { paths: [], hotspotMinReinforcement: 3 });
+    writeFileSync(path, JSON.stringify({ ...base, review: { risk: { paths: [' **/auth/** '], hotspotMinReinforcement: 0 } } }));
+    assert.deepEqual(loadConfig(path).review.risk, { paths: ['**/auth/**'], hotspotMinReinforcement: 0 });
+    writeFileSync(path, JSON.stringify({ ...base, review: { risk: { paths: [''] } } }));
+    assert.throws(() => loadConfig(path), /review\.risk\.paths must be an array of non-empty strings/);
+    writeFileSync(path, JSON.stringify({ ...base, review: { risk: { hotspotMinReinforcement: -1 } } }));
+    assert.throws(() => loadConfig(path), /hotspotMinReinforcement must be a non-negative integer/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('without models.reviewMedium the log says what the medium tier would take', () => {
   const route = chooseReviewModel(config(), { fileList: ['src/a.ts'], fileChanges: [{ path: 'src/a.ts', additions: 300, deletions: 0 }], additions: 300, deletions: 0 });
   assert.equal(route.tier, 'large');

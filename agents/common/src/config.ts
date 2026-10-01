@@ -85,6 +85,17 @@ export interface MediumReviewConfig {
   readonly maxCodeLines: number;
 }
 
+/** PRs that touch these always go to the large tier (`models.review`). */
+export interface RiskReviewConfig {
+  /** Path globs (`**`, `*`, `?`) for code that always gets the full model: auth, migrations, CI, and the like. */
+  readonly paths: readonly string[];
+  /**
+   * A changed code file matching the area of a learned concern reinforced at
+   * least this many times is a hotspot. 0 turns hotspots off.
+   */
+  readonly hotspotMinReinforcement: number;
+}
+
 export interface GithubConfig {
   readonly tokenEnv: string;
   /** Optional real-time GitHub App receiver. Polling remains available without it. */
@@ -121,6 +132,8 @@ export interface ReviewerConfig {
     readonly small?: SmallReviewConfig;
     /** Routing rules for `models.reviewMedium`; `DEFAULT_MEDIUM_REVIEW` applies when absent. */
     readonly medium?: MediumReviewConfig;
+    /** Risk paths and hotspots that force the large tier; `DEFAULT_RISK_REVIEW` applies when absent. */
+    readonly risk?: RiskReviewConfig;
     /**
      * Re-review only what changed since revuto's last reviewed head, and route
      * by that size (default true). False makes every review a full one.
@@ -199,6 +212,7 @@ export const DEFAULT_SMALL_REVIEW: SmallReviewConfig = {
   docsPaths: ['docs/', 'doc/', 'notes/'],
 };
 export const DEFAULT_MEDIUM_REVIEW: MediumReviewConfig = { maxCodeLines: 500 };
+export const DEFAULT_RISK_REVIEW: RiskReviewConfig = { paths: [], hotspotMinReinforcement: 3 };
 const MODEL_APIS = ['chat', 'responses', 'converse', 'agy', 'claude', 'codex'] as const;
 const REVIEW_ROLES = ['review', 'reviewSmall', 'reviewMedium'];
 const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -321,6 +335,17 @@ function checkMediumReview(raw: unknown): MediumReviewConfig {
   return { maxCodeLines: maxCodeLines as number };
 }
 
+function checkRiskReview(raw: unknown): RiskReviewConfig {
+  if (raw === undefined || raw === null) return DEFAULT_RISK_REVIEW;
+  if (typeof raw !== 'object') throw new Error('config: review.risk must be an object');
+  const r = raw as Record<string, unknown>;
+  const paths = r.paths ?? DEFAULT_RISK_REVIEW.paths;
+  if (!Array.isArray(paths) || paths.some((p) => typeof p !== 'string' || !p.trim())) throw new Error('config: review.risk.paths must be an array of non-empty strings');
+  const min = r.hotspotMinReinforcement ?? DEFAULT_RISK_REVIEW.hotspotMinReinforcement;
+  if (!Number.isSafeInteger(min) || (min as number) < 0) throw new Error('config: review.risk.hotspotMinReinforcement must be a non-negative integer');
+  return { paths: paths.map((p: string) => p.trim()), hotspotMinReinforcement: min as number };
+}
+
 /** The default vault: $REVUTO_VAULT, else ~/revuto. The config + skills + reviewer notes live here. */
 export function defaultVaultPath(): string {
   return resolveHome(process.env.REVUTO_VAULT ?? '~/revuto');
@@ -431,6 +456,7 @@ export function loadConfig(path?: string): ReviewerConfig {
     workspaceDir: resolveHome(raw.review?.workspaceDir ?? `${vaultPath}/.workspaces`),
     small: checkSmallReview(raw.review?.small),
     medium: checkMediumReview(raw.review?.medium),
+    risk: checkRiskReview(raw.review?.risk),
     incremental: raw.review?.incremental ?? true,
   };
   if (typeof review.incremental !== 'boolean') throw new Error('config: review.incremental must be a boolean');
