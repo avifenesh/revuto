@@ -361,6 +361,17 @@ would have taken a PR. Nothing posted to GitHub names the model.
 `maxChangedLines: 0` turns the small size rule off; `docsOnly: false` turns the docs
 rule off; `maxCodeLines: 0` turns the medium tier off.
 
+Risk paths and hotspots send a PR to the large tier whatever its size. A changed code
+file (not docs, not tests) that matches a `review.risk.paths` glob, or the area of a
+learned concern reinforced at least `review.risk.hotspotMinReinforcement` times
+(default 3; 0 turns hotspots off), routes the PR to `models.review`. The log says
+which file matched what. A replay of 400 recent PRs found a threshold of 2 moved 58%
+of medium-tier PRs to the large tier; 3 moves 23%.
+
+```jsonc
+"review": { "risk": { "paths": ["**/auth/**", "**/migrations/**", ".github/workflows/**"], "hotspotMinReinforcement": 3 } }
+```
+
 ### Re-reviews look at what changed
 
 When revuto reviews a new head of a PR it already reviewed, the review covers what

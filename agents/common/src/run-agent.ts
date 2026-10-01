@@ -10,7 +10,7 @@
 import { generateText, stepCountIs, hasToolCall, type ModelMessage } from 'ai';
 import type { Octokit } from '@octokit/rest';
 
-import { isNativeRunner, reviewOutputTokens, type ModelSpec, type ReviewerConfig } from './config.js';
+import { DEFAULT_RISK_REVIEW, isNativeRunner, reviewOutputTokens, type ModelSpec, type ReviewerConfig } from './config.js';
 import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEMENT } from './model.js';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
 import { getOctokit, type GithubAuth } from './github-auth.js';
@@ -24,7 +24,7 @@ import { renderReReview, runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
 import { withReviewWorktree } from './review-worktree.js';
-import { chooseReviewModel, modelLabel, routeInputFor, withReviewModel } from './review-routing.js';
+import { chooseReviewModel, modelLabel, routeInputFor, withReviewModel, type Hotspot } from './review-routing.js';
 import { isModelRefusal, refusalAllowsFallback, type ModelRefusalError } from './refusal.js';
 import { runQueuedForRepo } from '../../../daemon/src/repo-queue.js';
 
@@ -204,6 +204,20 @@ export function refusalFallback(spec: ModelSpec, err: unknown): ModelSpec | unde
   return chain.length ? { ...single, fallbacks: chain } : single;
 }
 
+/** Areas of learned concerns strong enough to send a PR touching them to the large tier. */
+async function hotspotsFor(config: ReviewerConfig, store?: KnowledgeStore): Promise<Hotspot[]> {
+  const min = (config.review.risk ?? DEFAULT_RISK_REVIEW).hotspotMinReinforcement;
+  if (!store || min <= 0) return [];
+  try {
+    return (await store.allConcerns())
+      .filter((c) => c.reinforcementCount >= min)
+      .flatMap((c) => c.area.map((glob) => ({ glob, subject: c.subject })));
+  } catch (err) {
+    console.warn(`[review] hotspots unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
 /** Logins whose signed reviews count as revuto's; empty when none can be established (then no re-review range). */
 async function reviewerLoginsFor(opts: RunReviewOptions, auth: GithubAuth): Promise<string[]> {
   const given = (opts.reviewerLogins ?? []).filter((l) => l?.trim());
@@ -245,7 +259,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   // Small, medium and large PRs go to their tier's model when one is configured.
   // From here on `config.models.review` IS the routed model, for every code path below.
   // A re-review is sized by what changed since revuto's last reviewed head.
-  const route = chooseReviewModel(config, routeInputFor(ctx));
+  const route = chooseReviewModel(config, { ...routeInputFor(ctx), hotspots: await hotspotsFor(config, opts.store) });
   config = withReviewModel(config, route.spec);
   const since = ctx.incremental ? `re-review since ${ctx.incremental.fromSha.slice(0, 7)}, ` : '';
   console.log(`[review] ${opts.repo}#${opts.prNumber}: model ${route.label} (${route.tier} tier): ${since}${route.reason}`);

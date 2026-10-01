@@ -34,7 +34,7 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${re}$`);
 }
 
-function globMatches(pattern: string, path: string): boolean {
+export function globMatches(pattern: string, path: string): boolean {
   return globToRegExp(pattern).test(path);
 }
 
