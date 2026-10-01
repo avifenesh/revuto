@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { buildAgyReviewPrompt, probeAgy, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
 import { CODEX_REVIEW_SCHEMA, codexEnvironment, normalizeCodexEvents } from '../agents/common/src/codex-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
+import { ModelRefusalError } from '../agents/common/src/refusal.js';
 import type { PrContext } from '../agents/common/src/workspace.js';
 
 function fakeCodex(dir: string): string {
@@ -48,6 +49,15 @@ for (let i = 0; i < calls; i++) {
   console.log(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'revuto', tool: i === 0 ? 'pr_diff' : 'read', arguments: {}, result: { content: [{ type: 'text', text: 'evidence ' + i }] }, error: null, status: 'completed' } }));
 }
 console.log(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'revuto', tool: 'grep', arguments: {}, result: { content: [{ type: 'text', text: 'ERROR: bad pattern' }] }, error: null, status: 'failed' } }));
+if (prompt.includes('policy-turn')) {
+  console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'This request was declined', codex_error_info: 'cyber_policy' } }));
+  process.exit(1);
+}
+if (prompt.includes('declined-text')) {
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: "I'm sorry, but I can't help with reviewing this." } }));
+  console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 3 } }));
+  process.exit(0);
+}
 if (prompt.includes('fail-turn')) {
   console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'stream disconnected' } }));
   process.exit(1);
@@ -113,6 +123,8 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'runaway', maxSteps: 3 }), /exceeded review\.maxSteps \(3 tool calls\)/);
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'fail-turn' }), /Codex CLI exited with status 1: stream disconnected/);
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'review', maxSteps: 0 }), /positive integer/);
+    await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'policy-turn' }), (err: unknown) => err instanceof ModelRefusalError && err.category === 'cyber_policy');
+    await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'declined-text' }), (err: unknown) => err instanceof ModelRefusalError && err.category === 'declined');
     assert.deepEqual(codexTemps(), tempsBefore, 'failed runs clean up too');
   } finally {
     if (previous.gh === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = previous.gh;
@@ -179,7 +191,15 @@ test('Codex events map to tool steps, failures and a parsed verdict', () => {
   const [result] = normalizeCodexEvents({ type: 'turn.completed', usage: { input_tokens: 3, output_tokens: 2 } }, state);
   assert.equal((result.result as { structured_output: unknown }).structured_output, undefined, 'a non-JSON final message is no verdict');
   const [failedTurn] = normalizeCodexEvents({ type: 'turn.failed', error: { message: 'quota' } }, state);
-  assert.deepEqual(failedTurn, { event: 'result', result: { status: 'ERROR', conversation_id: 't', error: 'quota' } });
+  assert.deepEqual(failedTurn, { event: 'result', result: { status: 'ERROR', conversation_id: 't', error: 'quota' } }, 'an ordinary failure is no refusal');
+  const [policy] = normalizeCodexEvents({ type: 'turn.failed', error: { message: 'Your request was flagged by our safety system' } }, state);
+  assert.deepEqual((policy.result as { refusal: unknown }).refusal, { category: 'policy' });
+  normalizeCodexEvents({ type: 'item.completed', item: { type: 'agent_message', text: 'I cannot review code that bypasses login checks.' } }, state);
+  const [declined] = normalizeCodexEvents({ type: 'turn.completed', usage: {} }, state);
+  assert.deepEqual((declined.result as { refusal: unknown }).refusal, { category: 'declined' });
+  normalizeCodexEvents({ type: 'item.completed', item: { type: 'agent_message', text: 'The schema output was not produced.' } }, state);
+  const [notRefusal] = normalizeCodexEvents({ type: 'turn.completed', usage: {} }, state);
+  assert.equal((notRefusal.result as { refusal?: unknown }).refusal, undefined, 'a malformed verdict is not a refusal');
 });
 
 test('Codex environment carries Bedrock credentials and nothing else sensitive', () => {
