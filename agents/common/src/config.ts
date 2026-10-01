@@ -144,6 +144,12 @@ export interface ReviewerConfig {
      * when it answers `escalate`, or when it runs out of steps.
      */
     readonly escalate?: boolean;
+    /**
+     * Share (0 to 1) of small and medium reviews the large tier also runs on,
+     * posting nothing, to measure what the cheaper tiers miss. Default 0.
+     * Results go to <vault>/.shadow/<YYYY-MM>.jsonl. Native large tiers only.
+     */
+    readonly shadowSample?: number;
   };
   /** Caps. 0 = unlimited. Run/comment/token counts are per repo per UTC day. */
   readonly limits: {
@@ -464,7 +470,11 @@ export function loadConfig(path?: string): ReviewerConfig {
     risk: checkRiskReview(raw.review?.risk),
     incremental: raw.review?.incremental ?? true,
     escalate: raw.review?.escalate ?? true,
+    shadowSample: raw.review?.shadowSample ?? 0,
   };
+  if (typeof review.shadowSample !== 'number' || !(review.shadowSample >= 0 && review.shadowSample <= 1)) {
+    throw new Error('config: review.shadowSample must be a number from 0 to 1');
+  }
   if (typeof review.incremental !== 'boolean') throw new Error('config: review.incremental must be a boolean');
   if (typeof review.escalate !== 'boolean') throw new Error('config: review.escalate must be a boolean');
   if (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 1) throw new Error('config: review.maxRounds must be a positive integer');

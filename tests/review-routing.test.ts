@@ -133,6 +133,11 @@ test('review.risk loads with validation and defaults', () => {
     assert.throws(() => loadConfig(path), /review\.risk\.paths must be an array of non-empty strings/);
     writeFileSync(path, JSON.stringify({ ...base, review: { risk: { hotspotMinReinforcement: -1 } } }));
     assert.throws(() => loadConfig(path), /hotspotMinReinforcement must be a non-negative integer/);
+    writeFileSync(path, JSON.stringify({ ...base, review: { shadowSample: 1.5 } }));
+    assert.throws(() => loadConfig(path), /review\.shadowSample must be a number from 0 to 1/);
+    writeFileSync(path, JSON.stringify({ ...base, review: { shadowSample: 0.05, escalate: false } }));
+    assert.equal(loadConfig(path).review.shadowSample, 0.05);
+    assert.equal(loadConfig(path).review.escalate, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

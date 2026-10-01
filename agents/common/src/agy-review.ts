@@ -468,6 +468,8 @@ export interface RunAgyReviewOptions {
   readonly allowEscalation?: boolean;
   /** Set on the large tier after an escalation: the first pass's reason. */
   readonly escalationNote?: string;
+  /** Shadow run: return the verdict without posting anything to GitHub. */
+  readonly dryRun?: boolean;
 }
 
 /** Run the full Revuto review through AGY, then post via Revuto's GitHub tool. */
@@ -555,7 +557,9 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
   let toolErrors = run.toolErrors;
 
   try {
-    const payload = output.decision === 'post_review'
+    const payload = opts.dryRun
+      ? JSON.stringify({ dryRun: true, decision: output.decision, reason: output.reason, comments: output.comments.map((c) => ({ path: c.path, line: c.line })) })
+      : output.decision === 'post_review'
       ? await buildPostReviewTool(deps).callback({ body: output.body, comments: output.comments })
       : await buildSkipTool(deps).callback({ reason: output.reason });
     result = resultText(payload);

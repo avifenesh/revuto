@@ -379,6 +379,14 @@ instead of failing. The large tier then reviews the whole PR with the first pass
 reason in its prompt. The outcome counts both passes' tokens and steps, so daily token
 limits see the full cost. The log says `<tier model> escalated to <large model>: <reason>`.
 
+`review.shadowSample` (0 to 1, default 0) measures what the cheaper tiers miss. That
+share of small and medium reviews also runs on the large tier after the real review,
+in the same workspace, posting nothing. Each comparison is appended to
+`<vault>/.shadow/<YYYY-MM>.jsonl`: both tiers' decisions, the large tier's comment
+locations, both token counts, and whether they agree. The log line ends in `agree` or
+`DISAGREE`. Shadow runs need a native large tier; their tokens are recorded in the file,
+not added to the review's outcome or the daily token count.
+
 ### Re-reviews look at what changed
 
 When revuto reviews a new head of a PR it already reviewed, the review covers what
