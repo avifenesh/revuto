@@ -121,6 +121,11 @@ export interface ReviewerConfig {
     readonly small?: SmallReviewConfig;
     /** Routing rules for `models.reviewMedium`; `DEFAULT_MEDIUM_REVIEW` applies when absent. */
     readonly medium?: MediumReviewConfig;
+    /**
+     * Re-review only what changed since revuto's last reviewed head, and route
+     * by that size (default true). False makes every review a full one.
+     */
+    readonly incremental?: boolean;
   };
   /** Caps. 0 = unlimited. Run/comment/token counts are per repo per UTC day. */
   readonly limits: {
@@ -426,7 +431,9 @@ export function loadConfig(path?: string): ReviewerConfig {
     workspaceDir: resolveHome(raw.review?.workspaceDir ?? `${vaultPath}/.workspaces`),
     small: checkSmallReview(raw.review?.small),
     medium: checkMediumReview(raw.review?.medium),
+    incremental: raw.review?.incremental ?? true,
   };
+  if (typeof review.incremental !== 'boolean') throw new Error('config: review.incremental must be a boolean');
   if (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 1) throw new Error('config: review.maxRounds must be a positive integer');
   for (const key of ['maxConcurrent', 'maxConcurrentPerRepo'] as const) {
     if (!Number.isSafeInteger(review[key]) || review[key] < 1) throw new Error(`config: review.${key} must be a positive integer`);

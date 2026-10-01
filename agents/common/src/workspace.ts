@@ -4,6 +4,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { Octokit } from '@octokit/rest';
 import { reviewGit } from './review-worktree.js';
+import { findIncrementalReview, type IncrementalReview } from './incremental.js';
 
 export interface InvocationPayload {
   readonly repo: string; // "owner/name"
@@ -61,6 +62,8 @@ export interface PrContext {
   }[];
   readonly workspacePath: string;
   readonly diffRefSpec: string; // "<mergeBaseSha>..<headSha>"
+  /** Set on a re-review: what changed since revuto's last reviewed head. */
+  readonly incremental?: IncrementalReview;
 }
 
 function run(cmd: string, args: readonly string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
@@ -116,7 +119,7 @@ export async function prepareWorkspace(
   octokit: Octokit,
   token: string,
   workspaceRoot: string,
-  options: { cacheRoot?: string; signal?: AbortSignal } = {},
+  options: { cacheRoot?: string; signal?: AbortSignal; incremental?: boolean } = {},
 ): Promise<PrContext> {
   const [owner, repoName] = payload.repo.split('/');
   if (!owner || !repoName) throw new Error(`bad repo: ${payload.repo}`);
@@ -126,11 +129,13 @@ export async function prepareWorkspace(
   const targetHeadSha = payload.headSha ?? pr.head.sha;
   const baseSha = pr.base.sha;
   let headSha: string, mergeBaseSha: string;
+  let repoGit: (args: string[], discard?: boolean) => Promise<string>;
   if (options.cacheRoot) {
     const cache = options.cacheRoot;
     const env = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
       GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` };
     const git = (args: string[], cwd = cache, discard = false) => reviewGit(args, { cwd, env, signal: options.signal, discard });
+    repoGit = (args, discard = false) => git(args, cache, discard);
     if (!existsSync(`${cache}/HEAD`)) {
       await mkdir(dirname(cache), { recursive: true });
       // A killed first clone may leave a non-repository directory in this owned cache slot.
@@ -149,6 +154,7 @@ export async function prepareWorkspace(
     await run('git', ['fetch', '--filter=tree:0', 'origin', `${pr.base.ref}:refs/remotes/origin/${pr.base.ref}`], { cwd: workspaceRoot }).catch(() => {});
     await run('git', ['fetch', '--filter=tree:0', 'origin', baseSha], { cwd: workspaceRoot }).catch(() => {});
     mergeBaseSha = (await run('git', ['merge-base', headSha, baseSha], { cwd: workspaceRoot })).trim();
+    repoGit = (args) => run('git', args, { cwd: workspaceRoot, env: { GIT_TERMINAL_PROMPT: '0' } });
   }
   options.signal?.throwIfAborted();
 
@@ -158,6 +164,14 @@ export async function prepareWorkspace(
     octokit.issues.listComments({ owner, repo: repoName, issue_number: payload.pr_number, per_page: 100 }),
     octokit.pulls.listFiles({ owner, repo: repoName, pull_number: payload.pr_number, per_page: 300 }),
   ]);
+  const incremental = options.incremental === false ? undefined : await findIncrementalReview({
+    reviews: reviewsResp.data.map((r) => ({ commitId: r.commit_id, body: r.body, submittedAt: r.submitted_at })),
+    headSha,
+    prFiles: filesResp.data.map((f) => f.filename),
+    changedFiles: pr.changed_files ?? 0,
+    git: repoGit,
+  });
+  options.signal?.throwIfAborted();
 
   return {
     owner,
@@ -200,6 +214,7 @@ export async function prepareWorkspace(
     })),
     workspacePath: workspaceRoot,
     diffRefSpec: `${mergeBaseSha}..${headSha}`,
+    ...(incremental ? { incremental } : {}),
   };
 }
 

@@ -361,6 +361,19 @@ would have taken a PR. Nothing posted to GitHub names the model.
 `maxChangedLines: 0` turns the small size rule off; `docsOnly: false` turns the docs
 rule off; `maxCodeLines: 0` turns the medium tier off.
 
+### Re-reviews look at what changed
+
+When revuto reviews a new head of a PR it already reviewed, the review covers what
+changed since its last reviewed head (`review.incremental`, default `true`). The last
+reviewed head is the commit of revuto's newest signed review on an earlier head. When
+that commit is still an ancestor of the new head, the review is routed by the size of
+`<last>..<head>` in the PR's own files, so a merge from the base branch does not
+count, and the reviewer gets a re-review note with the changed files. Native CLI
+runners also get a `new_changes` tool with that diff; `pr_diff` still returns the
+whole PR diff, and inline comments still land on lines of the full PR diff. A
+force-push that rewrote the reviewed head, a file list cut at one page, or no earlier
+revuto review means a full review. The daemon log says `re-review since <sha>`.
+
 `review.maxRounds` defaults to **3 model-run attempts per PR across all commits**.
 Signed reviews already posted by the configured reviewer seed the lifetime count.
 A reserved attempt counts even if the run errors; a new push, daemon restart, or

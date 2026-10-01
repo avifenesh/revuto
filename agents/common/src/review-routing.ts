@@ -152,6 +152,22 @@ export function chooseReviewModel(config: ReviewerConfig, input: RouteInput): Re
   return large(size);
 }
 
+/**
+ * What the router sizes a PR by: on a re-review, the changes since revuto's
+ * last reviewed head (PR files only); otherwise the whole PR.
+ */
+export function routeInputFor(ctx: RouteInput & { readonly incremental?: { readonly fileChanges: readonly FileChange[] } }): RouteInput {
+  const inc = ctx.incremental;
+  if (!inc) return ctx;
+  return {
+    fileList: inc.fileChanges.map((c) => c.path),
+    fileChanges: inc.fileChanges,
+    additions: inc.fileChanges.reduce((sum, c) => sum + c.additions, 0),
+    deletions: inc.fileChanges.reduce((sum, c) => sum + c.deletions, 0),
+    changedFiles: inc.fileChanges.length,
+  };
+}
+
 /** The config with `models.review` replaced by the routed spec, for code paths that read `config.models.review`. */
 export function withReviewModel(config: ReviewerConfig, spec: ModelSpec): ReviewerConfig {
   if (spec === config.models.review) return config;

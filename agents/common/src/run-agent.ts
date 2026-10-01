@@ -20,11 +20,11 @@ import { assembleCommonTools } from './tools/index.js';
 import { refusedEmptyReview } from './tools/gh.js';
 import { startReviewTrace, isToolErrorOutput } from './trace.js';
 import { selectSkills } from './skills/select.js';
-import { runAgyReview } from './agy-review.js';
+import { renderReReview, runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
 import { withReviewWorktree } from './review-worktree.js';
-import { chooseReviewModel, modelLabel, withReviewModel } from './review-routing.js';
+import { chooseReviewModel, modelLabel, routeInputFor, withReviewModel } from './review-routing.js';
 import { isModelRefusal, refusalAllowsFallback, type ModelRefusalError } from './refusal.js';
 import { runQueuedForRepo } from '../../../daemon/src/repo-queue.js';
 
@@ -219,14 +219,16 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     // the tools below get the getter, since they run for the next half hour.
     resolvedToken,
     workspaceRoot,
-    { cacheRoot, signal },
+    { cacheRoot, signal, incremental: config.review.incremental !== false },
   ));
 
   // Small, medium and large PRs go to their tier's model when one is configured.
   // From here on `config.models.review` IS the routed model, for every code path below.
-  const route = chooseReviewModel(config, ctx);
+  // A re-review is sized by what changed since revuto's last reviewed head.
+  const route = chooseReviewModel(config, routeInputFor(ctx));
   config = withReviewModel(config, route.spec);
-  console.log(`[review] ${opts.repo}#${opts.prNumber}: model ${route.label} (${route.tier} tier): ${route.reason}`);
+  const since = ctx.incremental ? `re-review since ${ctx.incremental.fromSha.slice(0, 7)}, ` : '';
+  console.log(`[review] ${opts.repo}#${opts.prNumber}: model ${route.label} (${route.tier} tier): ${since}${route.reason}`);
 
   let skillMd = opts.skillMarkdown?.trim() ?? '';
   if (!skillMd && opts.store) {
@@ -258,6 +260,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
 
   const userMessage = [
     renderPrOverview(ctx),
+    renderReReview(ctx, 'git'),
     '',
     '---',
     '',

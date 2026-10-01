@@ -138,6 +138,8 @@ export interface RunAgyCliOptions {
   readonly schema?: string;
   readonly timeoutMs?: number;
   readonly diffRange?: string;
+  /** On a re-review, the range since the last reviewed head (adds the new_changes tool). */
+  readonly sinceRange?: string;
   readonly maxSteps?: number;
   readonly maxOutputTokens?: number;
   readonly probe?: boolean;
@@ -151,10 +153,10 @@ function runnerOf(spec: ModelSpec): NativeRunner {
   return spec.api === 'claude' ? 'claude' : spec.api === 'codex' ? 'codex' : 'agy';
 }
 
-const INSPECTION_TOOLS = ['mcp__revuto__read', 'mcp__revuto__grep', 'mcp__revuto__glob', 'mcp__revuto__pr_diff'];
+const INSPECTION_TOOLS = ['mcp__revuto__read', 'mcp__revuto__grep', 'mcp__revuto__glob', 'mcp__revuto__pr_diff', 'mcp__revuto__new_changes'];
 
-function reviewMcpServer(cwd: string, diffRange?: string): { command: string; args: string[] } {
-  return { command: process.execPath, args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), cwd, diffRange ?? ''] };
+function reviewMcpServer(cwd: string, diffRange?: string, sinceRange?: string): { command: string; args: string[] } {
+  return { command: process.execPath, args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), cwd, diffRange ?? '', ...(sinceRange ? [sinceRange] : [])] };
 }
 
 /**
@@ -199,7 +201,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   const args = runner === 'codex' ? codexExecArgs({
     spec: opts.spec,
     cwd: opts.cwd,
-    ...(opts.probe ? {} : { mcpServer: reviewMcpServer(opts.cwd, opts.diffRange) }),
+    ...(opts.probe ? {} : { mcpServer: reviewMcpServer(opts.cwd, opts.diffRange, opts.sinceRange) }),
     ...(codex?.schemaPath ? { schemaPath: codex.schemaPath } : {}),
   }) : [
     '-p',
@@ -212,10 +214,10 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   if (claude) {
     args.push('--verbose', '--bare', '--restricted', '--setting-sources', '', '--no-session-persistence',
       '--input-format', 'text',
-      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: opts.probe ? {} : { revuto: reviewMcpServer(opts.cwd, opts.diffRange) } }),
+      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: opts.probe ? {} : { revuto: reviewMcpServer(opts.cwd, opts.diffRange, opts.sinceRange) } }),
       '--permission-mode', 'dontAsk', '--tools', '',
       '--max-turns', String(maxSteps),
-      '--allowedTools', opts.probe ? '' : 'mcp__revuto__read,mcp__revuto__grep,mcp__revuto__glob,mcp__revuto__pr_diff');
+      '--allowedTools', opts.probe ? '' : INSPECTION_TOOLS.join(','));
     if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
   } else if (runner === 'agy') {
     args.push('--print-timeout', timeoutArg(timeoutMs));
@@ -459,6 +461,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
         cwd: opts.ctx.workspacePath,
         schema: runner === 'codex' ? CODEX_REVIEW_SCHEMA : AGY_REVIEW_SCHEMA,
         diffRange: opts.ctx.diffRefSpec,
+        ...(opts.ctx.incremental ? { sinceRange: opts.ctx.incremental.range } : {}),
         maxSteps: opts.config.review.maxSteps,
         maxOutputTokens: reviewOutputTokens(opts.config),
         signal: opts.signal,
@@ -552,14 +555,14 @@ export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runn
   const setup = runner === 'codex'
     ? [
         `You are Revuto's autonomous pull-request reviewer running inside Codex CLI.`,
-        `Review exactly the single PR described below. Your tools are the revuto MCP tools: pr_diff, which returns the PR diff, and read, grep and glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
+        `Review exactly the single PR described below. Your tools are the revuto MCP tools: pr_diff, which returns the PR diff, ${ctx.incremental ? 'new_changes, which returns what changed since the last review, ' : ''}and read, grep and glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
         `Do not ask questions and do not stop at a plan. Read the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
         `This is a read-only review. Do not print credentials or remote URLs.`,
       ]
     : runner === 'claude'
     ? [
         `You are Revuto's autonomous pull-request reviewer running inside Claude Code CLI.`,
-        `Review exactly the single PR described below. Your tools are mcp__revuto__pr_diff, which returns the PR diff, and mcp__revuto__read, mcp__revuto__grep and mcp__revuto__glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
+        `Review exactly the single PR described below. Your tools are mcp__revuto__pr_diff, which returns the PR diff, ${ctx.incremental ? 'mcp__revuto__new_changes, which returns what changed since the last review, ' : ''}and mcp__revuto__read, mcp__revuto__grep and mcp__revuto__glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
         `Do not ask questions and do not stop at a plan. Read the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
         `This is a read-only review. Do not print credentials or remote URLs.`,
       ]
@@ -580,8 +583,32 @@ export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runn
     ...(runner === 'codex' ? [`In each comment, set side, start_line and start_side to null unless the comment needs them.`] : []),
     '',
     renderPrOverviewForAgy(ctx),
+    renderReReview(ctx, runner === 'agy' ? 'git' : 'mcp'),
     skillMarkdown.trim() ? `\n## Repository knowledge\n\n${skillMarkdown.trim()}` : '',
   ].filter(Boolean).join('\n');
+}
+
+/**
+ * The re-review section: what changed since revuto's last reviewed head, and
+ * how to read it. `mcp` runners get the new_changes tool, the others git.
+ */
+export function renderReReview(ctx: PrContext, tools: 'mcp' | 'git'): string {
+  const inc = ctx.incremental;
+  if (!inc) return '';
+  const added = inc.fileChanges.reduce((sum, c) => sum + c.additions, 0);
+  const removed = inc.fileChanges.reduce((sum, c) => sum + c.deletions, 0);
+  const how = tools === 'mcp'
+    ? 'The new_changes tool returns only that diff (start with mode=stat); pr_diff still returns the whole PR diff for context.'
+    : `Read it with \`git diff ${inc.range} -- <path>\`; the full PR diff stays at \`${ctx.diffRefSpec}\`.`;
+  return [
+    '',
+    '## Re-review',
+    `Revuto already reviewed this PR at ${inc.fromSha}. Since then ${inc.fileChanges.length} of the PR's files changed (+${added} / -${removed}):`,
+    ...inc.fileChanges.slice(0, 200).map((c) => `- ${c.path} (+${c.additions} / -${c.deletions})`),
+    how,
+    'Focus on those changes: check whether they resolve revuto\'s earlier findings (listed under the existing reviews and inline comments) and whether they introduce new problems. Do not post an earlier finding again; it is still on the PR. Read other code only as far as the new changes need it.',
+    'Inline comments must still land on a line of the full PR diff.',
+  ].join('\n');
 }
 
 function renderPrOverviewForAgy(ctx: PrContext): string {
