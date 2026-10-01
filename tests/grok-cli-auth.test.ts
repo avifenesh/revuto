@@ -3,9 +3,9 @@
  *
  * Run: npm test
  */
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,8 +18,12 @@ import {
   usesGrokCLIAuth,
 } from '../agents/common/src/grok-cli-auth.js';
 
+const authDirs: string[] = [];
+after(() => { for (const dir of authDirs) rmSync(dir, { recursive: true, force: true }); });
+
 function writeAuth(entries: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'revuto-grok-'));
+  authDirs.push(dir);
   const path = join(dir, 'auth.json');
   writeFileSync(path, JSON.stringify(entries));
   process.env.REVUTO_GROK_AUTH_FILE = path;
