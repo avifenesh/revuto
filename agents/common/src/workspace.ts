@@ -119,7 +119,7 @@ export async function prepareWorkspace(
   octokit: Octokit,
   token: string,
   workspaceRoot: string,
-  options: { cacheRoot?: string; signal?: AbortSignal; incremental?: boolean } = {},
+  options: { cacheRoot?: string; signal?: AbortSignal; incremental?: boolean; reviewerLogins?: readonly string[] } = {},
 ): Promise<PrContext> {
   const [owner, repoName] = payload.repo.split('/');
   if (!owner || !repoName) throw new Error(`bad repo: ${payload.repo}`);
@@ -164,11 +164,11 @@ export async function prepareWorkspace(
     octokit.issues.listComments({ owner, repo: repoName, issue_number: payload.pr_number, per_page: 100 }),
     octokit.pulls.listFiles({ owner, repo: repoName, pull_number: payload.pr_number, per_page: 300 }),
   ]);
-  const incremental = options.incremental === false ? undefined : await findIncrementalReview({
-    reviews: reviewsResp.data.map((r) => ({ commitId: r.commit_id, body: r.body, submittedAt: r.submitted_at })),
+  const incremental = options.incremental === false || !options.reviewerLogins?.length ? undefined : await findIncrementalReview({
+    reviews: reviewsResp.data.map((r) => ({ user: r.user?.login, commitId: r.commit_id, body: r.body, submittedAt: r.submitted_at })),
     headSha,
-    prFiles: filesResp.data.map((f) => f.filename),
-    changedFiles: pr.changed_files ?? 0,
+    mergeBaseSha,
+    reviewerLogins: options.reviewerLogins,
     git: repoGit,
   });
   options.signal?.throwIfAborted();

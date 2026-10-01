@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { buildHarnessTools } from './tools/harness.js';
 import { isToolErrorOutput } from './trace.js';
 import type { ToolDef } from './tool-def.js';
+import { reReviewPaths } from './incremental.js';
 
 const EXCLUDED = ['.git/**', '.env*', '.aws/**', 'id_rsa*', '*.pem', '*.key', 'node_modules/**'];
 function sensitive(path: string): boolean {
@@ -109,10 +110,12 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
       diffRange, 'The selected path has no changes in this PR diff'));
     if (sinceRange) {
       if (!IMMUTABLE_RANGE.test(sinceRange)) throw new Error('Invalid immutable re-review range');
-      let prFiles: Promise<string[]> | undefined;
-      // The PR's own files, so a merge from the base branch does not show up as new work.
-      const restrict = () => prFiles ??= commandPage('git', workspaceRoot, ['--no-pager', 'diff', '--name-only', '--no-renames', diffRange], 0, 4_000_000)
-        .then((page) => (JSON.parse(page).text as string).split('\n').filter(Boolean));
+      let paths: Promise<string[]> | undefined;
+      // The PR's files now and at the reviewed head, so a merge from the base
+      // branch does not show up as new work and a reverted file still does.
+      const git = async (args: string[]) => JSON.parse(await commandPage('git', workspaceRoot, ['--no-pager', ...args], 0, 64_000_000)).text as string;
+      const [mergeBase, head] = diffRange.split('..') as [string, string];
+      const restrict = () => paths ??= reReviewPaths(git, mergeBase, sinceRange.split('..')[0]!, head);
       tools.push(diffTool(workspaceRoot, 'new_changes',
         'Read only what changed in the PR files since revuto last reviewed this PR. Same modes and paging as pr_diff. Use it first on a re-review; pr_diff still returns the whole PR diff for context.',
         sinceRange, 'The selected path has no changes since the last review', restrict));
@@ -135,8 +138,9 @@ function diffTool(workspaceRoot: string, name: string, description: string, rang
       }
       const selected = path && path !== '.' ? [`:(literal)${path}`] : restrict ? (await restrict()).map((f) => `:(literal)${f}`) : [':(literal).'];
       if (selected.length === 0) return JSON.stringify({ offset: 0, next_offset: null, total_characters: 0, text: '' });
+      // quotePath off: show non-ASCII names as they are, so the model can pass them back as `path`.
       const page = await commandPage('git', workspaceRoot, [
-        '--no-pager', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--numstat', '--no-renames'] : []), range, '--', ...selected,
+        '--no-pager', '-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--numstat', '--no-renames'] : []), range, '--', ...selected,
         ...EXCLUDED.map(p => `:(exclude,glob)**/${p}`),
       ], input.offset ?? 0, input.limit ?? 10000);
       if (path && path !== '.' && JSON.parse(page).total_characters === 0) throw new Error(emptyPathError);

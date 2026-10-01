@@ -606,7 +606,8 @@ export function renderReReview(ctx: PrContext, tools: 'mcp' | 'git'): string {
     `Revuto already reviewed this PR at ${inc.fromSha}. Since then ${inc.fileChanges.length} of the PR's files changed (+${added} / -${removed}):`,
     ...inc.fileChanges.slice(0, 200).map((c) => `- ${c.path} (+${c.additions} / -${c.deletions})`),
     how,
-    'Focus on those changes: check whether they resolve revuto\'s earlier findings (listed under the existing reviews and inline comments) and whether they introduce new problems. Do not post an earlier finding again; it is still on the PR. Read other code only as far as the new changes need it.',
+    'Focus on those changes: check whether they resolve revuto\'s earlier findings (listed under the existing reviews and inline comments) and whether they introduce new problems. Read other code only as far as the new changes need it.',
+    'If an earlier finding is still unresolved, post it again as an inline comment on its current line and say it is still open, so the review does not pass with a known issue outstanding. Do not repeat findings the new changes resolved.',
     'Inline comments must still land on a line of the full PR diff.',
   ].join('\n');
 }
