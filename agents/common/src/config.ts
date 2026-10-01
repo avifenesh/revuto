@@ -263,10 +263,12 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (api === 'agy' && auth !== 'agy-oauth') {
     throw new Error(`config: models.${role}.auth must be agy-oauth when models.${role}.api is agy`);
   }
-  if (api === 'claude' && !REVIEW_ROLES.includes(role)) {
+  // A fallback is checked as `review.fallbacks[0]`; it serves the role it hangs off.
+  const baseRole = role.split('.')[0];
+  if (api === 'claude' && !REVIEW_ROLES.includes(baseRole)) {
     throw new Error(`config: native Claude CLI is supported only for models.review, models.reviewSmall and models.reviewMedium`);
   }
-  if (api === 'codex' && !REVIEW_ROLES.includes(role)) {
+  if (api === 'codex' && !REVIEW_ROLES.includes(baseRole)) {
     throw new Error(`config: native Codex CLI is supported only for models.review, models.reviewSmall and models.reviewMedium`);
   }
   if ((api === 'claude' || api === 'codex') && (reasoningEffort === 'none' || reasoningEffort === 'minimal')) {

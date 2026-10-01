@@ -124,6 +124,15 @@ test('reviewMedium and review.medium load with validation and defaults', () => {
     assert.throws(() => loadConfig(path), /review\.medium\.maxCodeLines must be a non-negative integer/);
     writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, curator: { baseURL: 'codex://bedrock', model: 'x', api: 'codex' } } }));
     assert.throws(() => loadConfig(path), /native Codex CLI is supported only for models\.review/);
+    // native CLIs as each other's refusal fallbacks on review tiers, but not on other roles
+    const codex = { baseURL: 'codex://bedrock', model: 'openai.gpt-6.1-sol', api: 'codex' };
+    const claude = { baseURL: 'claude-cli://local', model: 'global.anthropic.claude-opus-5-5[1m]', api: 'claude' };
+    writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, review: { ...claude, fallbacks: [codex] }, reviewSmall: { ...codex, fallbacks: [claude] }, reviewMedium: { ...codex, fallbacks: [claude] } } }));
+    const chained = loadConfig(path);
+    assert.equal(chained.models.review.fallbacks?.[0]?.api, 'codex');
+    assert.equal(chained.models.reviewSmall?.fallbacks?.[0]?.api, 'claude');
+    writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, curator: { ...base.models.curator, fallbacks: [codex] } } }));
+    assert.throws(() => loadConfig(path), /native Codex CLI is supported only for models\.review/);
     writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, review: { baseURL: 'codex://bedrock', model: 'x', api: 'codex', reasoningEffort: 'minimal' } } }));
     assert.throws(() => loadConfig(path), /native Codex CLI reasoningEffort must be low/);
   } finally {

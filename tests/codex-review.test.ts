@@ -6,7 +6,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -84,8 +84,6 @@ function context(workspacePath: string, body = 'PR body'): PrContext {
   };
 }
 
-const codexTemps = () => readdirSync(tmpdir()).filter((name) => name.startsWith('revuto-codex-')).sort();
-
 test('Codex runs on Bedrock with no user config, no shell and only the revuto MCP server', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'revuto-codex-test-'));
   const command = fakeCodex(dir);
@@ -93,7 +91,6 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
   const previous = { gh: process.env.GH_TOKEN, aws: process.env.AWS_BEARER_TOKEN_BEDROCK };
   process.env.GH_TOKEN = 'must-not-leak';
   process.env.AWS_BEARER_TOKEN_BEDROCK = 'bedrock-token';
-  const tempsBefore = codexTemps();
   try {
     const run = await runAgyCli({ spec, cwd: dir, prompt: 'review', schema: CODEX_REVIEW_SCHEMA, diffRange: context(dir).diffRefSpec });
     const last = JSON.parse(readFileSync(command + '.last', 'utf8'));
@@ -110,7 +107,9 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
     assert.equal(last.env.AWS_BEARER_TOKEN_BEDROCK, 'bedrock-token');
     assert.match(last.env.CODEX_HOME, /revuto-codex-/);
     assert.equal(existsSync(last.env.CODEX_HOME), false, 'the private CODEX_HOME is removed after the run');
-    assert.deepEqual(codexTemps(), tempsBefore);
+    // Each run's own home is checked, not tmpdir as a whole: a live daemon on the
+    // same host creates and removes its own revuto-codex-* directories.
+    const homeOfLastRun = () => JSON.parse(readFileSync(command + '.last', 'utf8')).env.CODEX_HOME as string;
 
     assert.equal(run.result.status, 'SUCCESS');
     assert.equal(run.result.conversation_id, 'thread-1');
@@ -121,11 +120,12 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
     assert.deepEqual(run.result.structured_output, { decision: 'skip_review', reason: 'no concerns', body: '', comments: [] });
 
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'runaway', maxSteps: 3 }), /exceeded review\.maxSteps \(3 tool calls\)/);
+    assert.equal(existsSync(homeOfLastRun()), false, 'a run stopped at the step limit cleans up');
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'fail-turn' }), /Codex CLI exited with status 1: stream disconnected/);
+    assert.equal(existsSync(homeOfLastRun()), false, 'a failed turn cleans up');
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'review', maxSteps: 0 }), /positive integer/);
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'policy-turn' }), (err: unknown) => err instanceof ModelRefusalError && err.category === 'cyber_policy');
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'declined-text' }), (err: unknown) => err instanceof ModelRefusalError && err.category === 'declined');
-    assert.deepEqual(codexTemps(), tempsBefore, 'failed runs clean up too');
   } finally {
     if (previous.gh === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = previous.gh;
     if (previous.aws === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK; else process.env.AWS_BEARER_TOKEN_BEDROCK = previous.aws;
