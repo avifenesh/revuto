@@ -5,7 +5,7 @@
  * daemon or a review.
  */
 import { generateText, embedMany } from 'ai';
-import type { ReviewerConfig, ModelSpec } from '../../agents/common/src/config.js';
+import { isNativeRunner, type ReviewerConfig, type ModelSpec } from '../../agents/common/src/config.js';
 import { buildChatModel, buildEmbeddingModel } from '../../agents/common/src/model.js';
 import { probeAgy } from '../../agents/common/src/agy-review.js';
 import { getOctokit } from '../../agents/common/src/github-auth.js';
@@ -45,6 +45,7 @@ export async function runModelProbes(config: ReviewerConfig, opts: { includeNati
   const entries: Array<{ role: string; spec: ModelSpec; kind: 'chat' | 'embedding' }> = [
     ...modelEntries('review', config.models.review, 'chat'),
     ...(config.models.reviewSmall ? modelEntries('reviewSmall', config.models.reviewSmall, 'chat') : []),
+    ...(config.models.reviewMedium ? modelEntries('reviewMedium', config.models.reviewMedium, 'chat') : []),
     ...modelEntries('curator', config.models.curator, 'chat'),
     ...modelEntries('distill', config.models.distill, 'chat'),
   ];
@@ -54,7 +55,7 @@ export async function runModelProbes(config: ReviewerConfig, opts: { includeNati
   for (const e of entries) {
     // The dashboard polls this function. A native CLI model turn is explicit
     // diagnostic work, not a background status read.
-    if (!opts.includeNative && (e.spec.api === 'agy' || e.spec.api === 'claude')) continue;
+    if (!opts.includeNative && isNativeRunner(e.spec)) continue;
     const key = `${e.kind}:${e.spec.api ?? 'chat'}:${e.spec.baseURL}:${e.spec.model}`;
     const g = groups.get(key);
     if (g) g.roles.push(e.role);
@@ -71,7 +72,7 @@ export async function runModelProbes(config: ReviewerConfig, opts: { includeNati
     const t = Date.now();
     try {
       if (g.kind === 'chat') {
-        if (g.spec.api === 'agy' || g.spec.api === 'claude') {
+        if (isNativeRunner(g.spec)) {
           const result = await probeAgy(g.spec, process.cwd());
           return {
             roles: g.roles,

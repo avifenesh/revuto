@@ -12,19 +12,20 @@ import { applyModelOverrides, extractModelOverrideArgs } from '../daemon/src/mod
 
 const http = (model: string, name?: string): ModelSpec => ({ baseURL: 'http://localhost', model, ...(name ? { name } : {}) });
 
-function config(overrides: { reviewSmall?: ModelSpec; small?: Partial<ReviewerConfig['review']['small']> } = {}): ReviewerConfig {
+function config(overrides: { reviewSmall?: ModelSpec; reviewMedium?: ModelSpec; small?: Partial<ReviewerConfig['review']['small']>; medium?: ReviewerConfig['review']['medium'] } = {}): ReviewerConfig {
   return {
     vaultPath: '/tmp/vault',
     github: { tokenEnv: 'GH_TOKEN' },
     models: {
       review: http('big-model', 'opus'),
       ...(overrides.reviewSmall ? { reviewSmall: overrides.reviewSmall } : {}),
+      ...(overrides.reviewMedium ? { reviewMedium: overrides.reviewMedium } : {}),
       curator: http('c'),
       distill: http('d'),
       embedder: null,
     },
     schedules: { review: '* * * * *', learn: '* * * * *', decay: '* * * * *' },
-    review: { maxSteps: 10, allowWrite: false, workspaceDir: '/tmp/ws', ...(overrides.small ? { small: { ...DEFAULT_SMALL_REVIEW, ...overrides.small } } : {}) },
+    review: { maxSteps: 10, allowWrite: false, workspaceDir: '/tmp/ws', ...(overrides.small ? { small: { ...DEFAULT_SMALL_REVIEW, ...overrides.small } } : {}), ...(overrides.medium ? { medium: overrides.medium } : {}) },
     limits: { maxOutputTokens: { review: 1, curator: 1, distill: 1 }, dailyReviews: 0, learnBatch: 0, dailyLearn: 0, dailyTokens: 0 },
     store: { backend: 'sqlite', surreal: { url: '', namespace: '' } },
   };
@@ -76,6 +77,68 @@ test('without models.reviewSmall every PR goes to models.review', () => {
   assert.equal(route.small, false);
   assert.equal(route.label, 'opus');
   assert.equal(route.spec, cfg.models.review);
+});
+
+test('the medium tier takes PRs with few changed code lines; tests and docs do not count', () => {
+  const cfg = config({ reviewSmall: http('small-model', 'sol-medium'), reviewMedium: http('medium-model', 'sol-high') });
+  const changes = (...c: Array<[string, number]>) => ({
+    fileList: c.map(([path]) => path),
+    fileChanges: c.map(([path, n]) => ({ path, additions: n, deletions: 0 })),
+    additions: c.reduce((sum, [, n]) => sum + n, 0), deletions: 0, changedFiles: c.length,
+  });
+  const small = chooseReviewModel(cfg, changes(['src/a.ts', 150]));
+  assert.equal(small.tier, 'small'); assert.equal(small.label, 'sol-medium');
+  const medium = chooseReviewModel(cfg, changes(['src/a.ts', 400], ['src/a.test.ts', 2000], ['tests/b.py', 900], ['docs/x.md', 600]));
+  assert.equal(medium.tier, 'medium'); assert.equal(medium.label, 'sol-high'); assert.equal(medium.small, false);
+  assert.match(medium.reason, /3900 changed lines, 400 in code, across 4 file\(s\) \(<= 500 code lines\)/);
+  const large = chooseReviewModel(cfg, changes(['src/a.ts', 300], ['src/b.ts', 201]));
+  assert.equal(large.tier, 'large'); assert.equal(large.label, 'opus'); assert.match(large.reason, /501 in code/);
+  // without per-file counts the PR total stands in, which can only push a PR up a tier
+  const noCounts = chooseReviewModel(cfg, { fileList: ['src/a.ts', 'tests/b.ts'], additions: 400, deletions: 200, changedFiles: 2 });
+  assert.equal(noCounts.tier, 'large'); assert.match(noCounts.reason, /600 in code/);
+  // a file list cut at one page never routes below large
+  assert.equal(chooseReviewModel(cfg, { ...changes(['src/a.ts', 300]), changedFiles: 150 }).tier, 'large');
+  // maxCodeLines 0 turns the medium tier off
+  assert.equal(chooseReviewModel(config({ reviewMedium: http('m'), medium: { maxCodeLines: 0 } }), changes(['src/a.ts', 300])).tier, 'large');
+  // without a small tier, small PRs go to the medium tier
+  assert.equal(chooseReviewModel(config({ reviewMedium: http('m') }), changes(['src/a.ts', 10])).tier, 'medium');
+});
+
+test('without models.reviewMedium the log says what the medium tier would take', () => {
+  const route = chooseReviewModel(config(), { fileList: ['src/a.ts'], fileChanges: [{ path: 'src/a.ts', additions: 300, deletions: 0 }], additions: 300, deletions: 0 });
+  assert.equal(route.tier, 'large');
+  assert.equal(route.spec.model, 'big-model');
+  assert.match(route.reason, /the medium tier would take it, but models\.reviewMedium is not set/);
+});
+
+test('reviewMedium and review.medium load with validation and defaults', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-medium-'));
+  const path = join(dir, 'revuto.config.json');
+  const base = { vaultPath: dir, models: { review: http('r'), curator: http('c'), distill: http('d') } };
+  try {
+    writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, reviewMedium: { baseURL: 'codex://bedrock', model: 'openai.gpt-6.1-sol', api: 'codex', reasoningEffort: 'high' } } }));
+    const loaded = loadConfig(path);
+    assert.equal(loaded.models.reviewMedium?.api, 'codex');
+    assert.equal(loaded.review.medium?.maxCodeLines, 500);
+    writeFileSync(path, JSON.stringify({ ...base, review: { medium: { maxCodeLines: -1 } } }));
+    assert.throws(() => loadConfig(path), /review\.medium\.maxCodeLines must be a non-negative integer/);
+    writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, curator: { baseURL: 'codex://bedrock', model: 'x', api: 'codex' } } }));
+    assert.throws(() => loadConfig(path), /native Codex CLI is supported only for models\.review/);
+    writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, review: { baseURL: 'codex://bedrock', model: 'x', api: 'codex', reasoningEffort: 'minimal' } } }));
+    assert.throws(() => loadConfig(path), /native Codex CLI reasoningEffort must be low/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('pinning the review model drops the small and medium tiers unless they are pinned too', () => {
+  const cfg = config({ reviewSmall: http('s'), reviewMedium: http('m') });
+  const pinned = applyModelOverrides(cfg, extractModelOverrideArgs(['--review-model', 'opus']));
+  assert.equal(pinned.models.reviewSmall, undefined);
+  assert.equal(pinned.models.reviewMedium, undefined);
+  const both = applyModelOverrides(cfg, extractModelOverrideArgs(['--review-model', 'opus', '--review-medium-model', 'codex']));
+  assert.equal(both.models.reviewMedium?.api, 'codex');
+  assert.equal(both.models.reviewMedium?.awsRegion, 'us-east-1');
 });
 
 test('docs-only and small diffs route to models.reviewSmall; large code diffs do not', () => {
@@ -155,7 +218,7 @@ test('config: ignoredRepos, reviewSmall and review.small load with validation an
     writeFileSync(path, JSON.stringify({ ...base, review: { small: { docsOnly: 'yes' } } }));
     assert.throws(() => loadConfig(path), /review\.small\.docsOnly/);
     writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, curator: { ...http('c'), api: 'claude' } } }));
-    assert.throws(() => loadConfig(path), /only for models\.review and models\.reviewSmall/);
+    assert.throws(() => loadConfig(path), /only for models\.review, models\.reviewSmall and models\.reviewMedium/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

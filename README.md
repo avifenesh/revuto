@@ -272,7 +272,8 @@ Subscription OAuth and keychain authentication are unavailable in bare mode.
 Revuto forwards only allowlisted provider environment values from the daemon
 environment or the operator's `~/.claude/settings.json`; it does not forward
 GitHub credentials, arbitrary user settings, or project/local settings.
-This mode applies only to `models.review` and runs `claude -p` with streamed
+This mode applies only to the review tiers (`models.review`, `reviewSmall`,
+`reviewMedium`) and runs `claude -p` with streamed
 JSON, schema validation, restricted mode, and all built-in tools disabled.
 An isolated MCP server exposes workspace-guarded read/grep/glob tools and the
 fixed PR diff, excluding sensitive paths. It exposes no shell, arbitrary Git,
@@ -287,32 +288,74 @@ Automatic dashboard probes skip native CLI models. Explicit `revuto doctor`
 opts in; its Claude probe has no tools/MCP servers, one turn, low effort and a
 32-token output cap, and checks the exact expected response.
 
+For Codex CLI on Amazon Bedrock (`api: "codex"`), set a review tier to:
+
+```json
+{
+  "name": "codex-sol",
+  "api": "codex",
+  "baseURL": "codex://bedrock",
+  "auth": "aws",
+  "command": "/home/avifenesh/.local/bin/codex",
+  "model": "openai.gpt-6.1-sol",
+  "awsRegion": "us-east-1",
+  "reasoningEffort": "high"
+}
+```
+
+Revuto runs `codex exec --json` with `--ignore-user-config --ignore-rules`, the shell
+tool disabled, web search off, a read-only sandbox, `--ephemeral`, and a private
+`CODEX_HOME` in a temporary directory that is removed after the run. It never uses
+the operator's Codex login or `~/.codex` config. The model provider is Codex's
+built-in `amazon-bedrock` with `awsRegion` (default `us-east-1`, where Bedrock
+serves the GPT-6 family). Only `HOME`, `PATH`, locale and TLS variables and the
+AWS credentials (`AWS_BEARER_TOKEN_BEDROCK`, keys, profile) reach the process.
+The inspection surface is the same guarded revuto MCP server the Claude runner
+gets, and the verdict comes back through `--output-schema` with a strict schema.
+The prompt goes over stdin. Codex has no turn limit, so revuto stops the run after
+`review.maxSteps` tool calls. Revuto passes a 900K context window (Codex's bundled
+catalog lists 272K for every GPT model) and compacts at 250K, so no request crosses
+the 272K-input price step. `limits.maxOutputTokens.review` does not apply to Codex.
+`command` defaults to `$REVUTO_CODEX_COMMAND` or `codex` on PATH.
+
 `github.app.ignoredRepos` lists repositories revuto never reviews: full names
 (`owner/name`) or `owner/*`. A matching pull request is skipped before anything is
 enqueued: no claim, no round or daily counter, no check run (revuto only creates its
 check once it has claimed a head, so nothing stays pending). The skip is logged once
 per PR as `skipped: repo ignored`. `revuto review <repo> <pr> --force` still works.
 
-### Small and docs-only PRs on a cheaper model
+### Review tiers: small, medium and large PRs
 
-Add `models.reviewSmall` (same shape as `models.review`, native Claude CLI allowed)
-and revuto routes a pull request to it when every changed file is documentation, or
-when the diff is at most `review.small.maxChangedLines` changed lines (additions plus
-deletions). Everything else, and every PR when `reviewSmall` is absent, runs on
-`models.review`. The route shows in the daemon log (`model <name> (small-PR
-reviewer): <reason>`). Nothing posted to GitHub names the model.
+Revuto routes each pull request to one of three review tiers before any model call,
+from the PR's file list and line counts. No LLM call is spent on routing.
+
+| tier | model | takes |
+|---|---|---|
+| small | `models.reviewSmall` | every changed file is documentation (`review.small.docsOnly`), or at most `review.small.maxChangedLines` changed lines |
+| medium | `models.reviewMedium` | at most `review.medium.maxCodeLines` changed code lines (default 500) |
+| large | `models.review` | everything else, and any PR whose file list or size is incomplete |
+
+Code lines are additions plus deletions in files that are neither documentation nor
+tests (test directories, `*.test.*`, `*.spec.*`, `*_test.*`). A tier with no model
+configured falls through to the next one. Each tier takes any model shape, native
+CLIs included. The route shows in the daemon log (`model <name> (<tier> tier):
+<reason>`); without `models.reviewMedium`, the log still says when the medium tier
+would have taken a PR. Nothing posted to GitHub names the model.
 
 ```jsonc
 "models": {
-  "review":      { "name": "claude-cli-opus-5",   "api": "claude", "baseURL": "claude-cli://local", "auth": "none", "model": "global.anthropic.claude-opus-5[1m]",   "reasoningEffort": "medium" },
-  "reviewSmall": { "name": "claude-cli-sonnet-5", "api": "claude", "baseURL": "claude-cli://local", "auth": "none", "model": "global.anthropic.claude-sonnet-5[1m]", "reasoningEffort": "medium" }
+  "review":       { "name": "claude-cli-opus", "api": "claude", "baseURL": "claude-cli://local", "auth": "none", "model": "global.anthropic.claude-opus-5-5[1m]", "reasoningEffort": "high" },
+  "reviewMedium": { "name": "codex-sol-high",  "api": "codex",  "baseURL": "codex://bedrock", "auth": "aws", "model": "openai.gpt-6.1-sol", "reasoningEffort": "high" },
+  "reviewSmall":  { "name": "codex-sol-medium", "api": "codex", "baseURL": "codex://bedrock", "auth": "aws", "model": "openai.gpt-6.1-sol", "reasoningEffort": "medium" }
 },
 "review": {
-  "small": { "maxChangedLines": 200, "docsOnly": true, "docsExtensions": [".md", ".mdx", ".txt", ".rst", ".adoc"], "docsPaths": ["docs/", "doc/", "notes/"] }
+  "small": { "maxChangedLines": 200, "docsOnly": true, "docsExtensions": [".md", ".mdx", ".txt", ".rst", ".adoc"], "docsPaths": ["docs/", "doc/", "notes/"] },
+  "medium": { "maxCodeLines": 500 }
 }
 ```
 
-`maxChangedLines: 0` turns the size rule off; `docsOnly: false` turns the docs rule off.
+`maxChangedLines: 0` turns the small size rule off; `docsOnly: false` turns the docs
+rule off; `maxCodeLines: 0` turns the medium tier off.
 
 `review.maxRounds` defaults to **3 model-run attempts per PR across all commits**.
 Signed reviews already posted by the configured reviewer seed the lifetime count.
@@ -344,11 +387,15 @@ revuto review owner/repo 123 --review-model gpt55,opus
 revuto daemon --model review=gpt55@us-east-2,opus --model curator=opus,sonnet --model distill=opus,sonnet
 ```
 
-Aliases are `gpt55`, `gpt54`, `opus`, and `sonnet`; OpenAI model ids use
-Bedrock Mantle (`https://bedrock-mantle.<region>.api.aws/openai/v1`) and
-Anthropic ids use Bedrock Runtime Converse
-(`https://bedrock-runtime.<region>.amazonaws.com`). Use `--bedrock-region` or
-append `@region` to one alias to change the generated endpoint.
+Aliases are `sol61`, `sol`, `astra`, `gpt55`, `codex`, `opus`, `fable`, `sonnet`
+and `grok`. OpenAI model ids use Bedrock Mantle
+(`https://bedrock-mantle.<region>.api.aws/openai/v1`, default region `us-east-1`)
+and Anthropic ids use Bedrock Runtime Converse
+(`https://bedrock-runtime.<region>.amazonaws.com`, default `us-east-2`). `codex` is
+GPT-6.1 Sol through the native Codex runner at high effort. `--review-medium-model`
+overrides the medium tier; a pinned `--review-model` drops the small and medium tiers
+unless they are pinned too. Use `--bedrock-region` (every alias) or append
+`@region` to one alias to change the generated endpoint.
 
 On Claude ids the Converse adapter follows the Opus 5.5 / Fable 5.1 request rules:
 it calls ConverseStream (a 128K-token turn outlasts a plain HTTP response), never

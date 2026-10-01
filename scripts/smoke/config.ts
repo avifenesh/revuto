@@ -54,7 +54,7 @@ assert.equal(c.github.app?.path, '/github/webhook', 'GitHub App receiver default
 assert.equal(c.github.app?.checkName, 'revuto-review', 'GitHub App check name default applied');
 
 const gpt = modelPreset('us.openai-gpt-5-5');
-assert.equal(gpt.baseURL, 'https://bedrock-mantle.us-east-2.api.aws/openai/v1', 'gpt55 alias uses Bedrock Mantle OpenAI path');
+assert.equal(gpt.baseURL, 'https://bedrock-mantle.us-east-1.api.aws/openai/v1', 'gpt55 alias uses Bedrock Mantle in us-east-1, where the GPT models are served');
 assert.equal(gpt.model, 'openai.gpt-5.5', 'gpt55 alias normalizes to the documented OpenAI model id');
 assert.equal(gpt.api, 'responses', 'gpt55 alias uses Responses');
 const sonnet = modelPreset('sonnet@us-east-2');
@@ -69,6 +69,15 @@ const fable = modelPreset('fable');
 assert.equal(fable.model, 'global.anthropic.claude-fable-5-1', 'fable alias uses Fable 5.1');
 assert.equal(modelPreset('opus').reasoningEffort, 'medium', 'Converse presets default to medium effort');
 assert.throws(() => modelPreset('gpt54'), /unknown model alias/, 'retired gpt54 alias is gone');
+const sol61 = modelPreset('sol61');
+assert.equal(sol61.model, 'openai.gpt-6.1-sol', 'sol61 alias uses GPT-6.1 Sol');
+assert.equal(sol61.awsRegion, 'us-east-1', 'Mantle aliases default to us-east-1');
+assert.equal(modelPreset('opus').awsRegion, 'us-east-2', 'Converse aliases keep us-east-2');
+assert.equal(modelPreset('sol61', 'eu-west-1').awsRegion, 'eu-west-1', 'an explicit default region applies to Mantle too');
+const codex = modelPreset('codex@us-west-2');
+assert.equal(codex.api, 'codex', 'codex alias uses the native Codex runner');
+assert.equal(codex.model, 'openai.gpt-6.1-sol', 'codex alias runs GPT-6.1 Sol');
+assert.equal(codex.awsRegion, 'us-west-2', 'codex alias honors @region');
 
 const overrides = extractModelOverrideArgs(['--bedrock-region', 'us-east-2', 'daemon', '--review-model', 'gpt55,opus', '--model=curator=opus,sonnet', '--distill-model=opus@us-west-2,sonnet@us-east-2']);
 assert.deepEqual(overrides.args, ['daemon'], 'model override flags are stripped from argv');
