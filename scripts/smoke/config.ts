@@ -59,7 +59,7 @@ assert.equal(gpt.model, 'openai.gpt-5.5', 'gpt55 alias normalizes to the documen
 assert.equal(gpt.api, 'responses', 'gpt55 alias uses Responses');
 const sonnet = modelPreset('sonnet@us-east-2');
 assert.equal(sonnet.baseURL, 'https://bedrock-runtime.us-east-2.amazonaws.com', 'sonnet alias uses Bedrock Runtime');
-assert.equal(sonnet.model, 'global.anthropic.claude-sonnet-5', 'sonnet alias uses the global Sonnet 5 inference id');
+assert.equal(sonnet.model, 'global.anthropic.claude-sonnet-5-5', 'sonnet alias uses the global Sonnet 5.5 inference id');
 assert.equal(sonnet.api, 'converse', 'sonnet alias uses Converse');
 const sol = modelPreset('sol');
 assert.equal(sol.model, 'openai.gpt-6-sol', 'sol alias uses GPT-6 Sol on Mantle');
@@ -84,7 +84,7 @@ assert.deepEqual(overrides.args, ['daemon'], 'model override flags are stripped 
 const overridden = applyModelOverrides(c, overrides);
 assert.equal(overridden.models.review.model, 'openai.gpt-5.5', 'review override sets primary');
 assert.equal(overridden.models.review.fallbacks?.[0]?.model, 'global.anthropic.claude-opus-5-5', 'review override sets Opus 5.5 fallback');
-assert.equal(overridden.models.curator.fallbacks?.[0]?.model, 'global.anthropic.claude-sonnet-5', 'curator override sets Sonnet fallback');
+assert.equal(overridden.models.curator.fallbacks?.[0]?.model, 'global.anthropic.claude-sonnet-5-5', 'curator override sets Sonnet fallback');
 assert.equal(overridden.models.distill.awsRegion, 'us-west-2', 'entry @region overrides the default region');
 assert.equal(overridden.models.distill.fallbacks?.[0]?.awsRegion, 'us-east-2', 'fallback entry @region can differ from primary');
 

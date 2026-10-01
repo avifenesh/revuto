@@ -117,6 +117,17 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
   return args;
 }
 
+/** Codex error codes for a request the provider declined on policy grounds. */
+const CODEX_POLICY_CODES = /\b(cyber_policy|bio_policy|misalignment_policy_violation|invalid_prompt|content_policy|policy_violation)\b/i;
+/**
+ * Policy wording in a failed turn's message. Only phrases tied to a policy or
+ * safety decision: transport errors ("Connection refused", ECONNREFUSED) must
+ * stay ordinary failures, not switch the review to another model.
+ */
+const CODEX_POLICY_TEXT = /\busage polic(y|ies)\b|\bsafety (system|check|polic(y|ies))\b|\bflagged\b.{0,60}\b(policy|safety|moderation)\b|\bviolat(es|ed|ion of)\b.{0,40}\bpolic(y|ies)\b|\b(request|prompt|content) (was )?refused\b/i;
+/** A final message that declines instead of returning the verdict. */
+const CODEX_REFUSAL_TEXT = /^\s*(i['’]m sorry|sorry)?[,.]?\s*(but\s+)?i\s+(can(no|['’])t|am unable to|won['’]t)\s+(help|assist|comply|do that|review|continue)/i;
+
 /** What the Codex adapter carries across events of one run. */
 export interface CodexStreamState {
   threadId?: string;
@@ -150,20 +161,33 @@ export function normalizeCodexEvents(record: Record<string, unknown>, state: Cod
     const usage = record.usage as Record<string, number> | undefined;
     const input = usage?.input_tokens ?? 0;
     const output = usage?.output_tokens ?? 0;
+    const verdict = parseVerdict(state.lastMessage);
+    // A declined request comes back as plain text instead of the schema's JSON.
+    const declined = verdict === undefined && CODEX_REFUSAL_TEXT.test(state.lastMessage ?? '');
     return [{ event: 'result', result: {
+      ...(declined ? { refusal: { category: 'declined' } } : {}),
       status: 'SUCCESS',
       conversation_id: state.threadId,
       response: state.lastMessage,
-      structured_output: parseVerdict(state.lastMessage),
+      structured_output: verdict,
       usage: { input_tokens: input, output_tokens: output, total_tokens: input + output },
     } }];
   }
   if (record.type === 'turn.failed') {
-    const error = (record.error as { message?: unknown } | undefined)?.message;
-    return [{ event: 'result', result: { status: 'ERROR', conversation_id: state.threadId, error: String(error ?? 'Codex turn failed') } }];
+    const message = String((record.error as { message?: unknown } | undefined)?.message ?? 'Codex turn failed');
+    const refusal = codexRefusal(record.error, message);
+    return [{ event: 'result', result: { ...(refusal ? { refusal } : {}), status: 'ERROR', conversation_id: state.threadId, error: message } }];
   }
   // `error` events are reconnect notices; a turn that cannot recover ends in turn.failed.
   return [];
+}
+
+/** A failed turn the provider declined: a policy error code anywhere in the error, or policy wording in its message. */
+function codexRefusal(error: unknown, message: string): { category: string } | undefined {
+  const raw = JSON.stringify(error ?? null);
+  const code = raw.match(CODEX_POLICY_CODES)?.[1] ?? message.match(CODEX_POLICY_CODES)?.[1];
+  if (code) return { category: code.toLowerCase() };
+  return CODEX_POLICY_TEXT.test(message) ? { category: 'policy' } : undefined;
 }
 
 function toolOutput(result: unknown): string {

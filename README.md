@@ -315,7 +315,11 @@ gets, and the verdict comes back through `--output-schema` with a strict schema.
 The prompt goes over stdin. Codex has no turn limit, so revuto stops the run after
 `review.maxSteps` tool calls. Revuto passes a 900K context window (Codex's bundled
 catalog lists 272K for every GPT model) and compacts at 250K, so no request crosses
-the 272K-input price step. `limits.maxOutputTokens.review` does not apply to Codex.
+the 272K-input price step. Codex has no output-token setting, so
+`limits.maxOutputTokens.review` does not apply to it. A turn Codex reports as a
+policy failure (`cyber_policy`, `bio_policy`, `invalid_prompt` and the like) or a
+final message that declines instead of returning the verdict raises a refusal, and
+the review moves to the spec's next `fallbacks` entry, as Claude refusals do.
 `command` defaults to `$REVUTO_CODEX_COMMAND` or `codex` on PATH.
 
 `github.app.ignoredRepos` lists repositories revuto never reviews: full names
