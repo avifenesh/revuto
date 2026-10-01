@@ -276,7 +276,18 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   }
   if (m.fallbacks !== undefined && !Array.isArray(m.fallbacks)) throw new Error(`config: models.${role}.fallbacks must be an array`);
   const fallbacks = m.fallbacks?.map((fallback, i) => checkModel(fallback, `${role}.fallbacks[${i}]`));
-  return { ...m, api, reasoningEffort, auth, permissionMode, ...(fallbacks?.length ? { fallbacks } : {}) };
+  const checked: ModelSpec = { ...m, api, reasoningEffort, auth, permissionMode, ...(fallbacks?.length ? { fallbacks } : {}) };
+  // The review runner works through native CLIs first, then hands the rest of
+  // the chain to the HTTP model factory, which cannot build a native spec. So
+  // once a chain reaches an HTTP model, nothing after it may be native.
+  if (!role.includes('.')) {
+    const chain = modelChain(checked);
+    const firstHttp = chain.findIndex((spec) => !isNativeRunner(spec));
+    if (firstHttp >= 0 && chain.slice(firstHttp + 1).some(isNativeRunner)) {
+      throw new Error(`config: models.${role} has a native CLI fallback after an HTTP model; native CLIs must come first in the chain`);
+    }
+  }
+  return checked;
 }
 
 function checkSmallReview(raw: unknown): SmallReviewConfig {

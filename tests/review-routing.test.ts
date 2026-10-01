@@ -133,6 +133,13 @@ test('reviewMedium and review.medium load with validation and defaults', () => {
     assert.equal(chained.models.reviewSmall?.fallbacks?.[0]?.api, 'claude');
     writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, curator: { ...base.models.curator, fallbacks: [codex] } } }));
     assert.throws(() => loadConfig(path), /native Codex CLI is supported only for models\.review/);
+    // native first, then HTTP, is runnable; HTTP before a native CLI is not
+    writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, review: { ...claude, fallbacks: [codex, http('h')] } } }));
+    assert.equal(loadConfig(path).models.review.fallbacks?.length, 2);
+    writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, review: { ...http('h'), fallbacks: [codex] } } }));
+    assert.throws(() => loadConfig(path), /native CLI fallback after an HTTP model/);
+    writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, reviewMedium: { ...codex, fallbacks: [{ ...http('h'), fallbacks: [claude] }] } } }));
+    assert.throws(() => loadConfig(path), /models\.reviewMedium has a native CLI fallback after an HTTP model/);
     writeFileSync(path, JSON.stringify({ ...base, models: { ...base.models, review: { baseURL: 'codex://bedrock', model: 'x', api: 'codex', reasoningEffort: 'minimal' } } }));
     assert.throws(() => loadConfig(path), /native Codex CLI reasoningEffort must be low/);
   } finally {
