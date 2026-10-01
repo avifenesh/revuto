@@ -60,8 +60,12 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Install + start SurrealDB
+        env:
+          # The releases API rate-limits unauthenticated runners (HTTP 403).
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VER=$(curl -fsSL https://api.github.com/repos/surrealdb/surrealdb/releases/latest | grep -oE '"tag_name": *"[^"]+"' | head -1 | grep -oE 'v[0-9.]+')
+          VER=$(gh api repos/surrealdb/surrealdb/releases/latest --jq .tag_name)
+          case "$VER" in v[0-9]*) ;; *) echo "unexpected SurrealDB tag: $VER" >&2; exit 1 ;; esac
           curl -fL "https://github.com/surrealdb/surrealdb/releases/download/${VER}/surreal-${VER}.linux-amd64.tgz" -o /tmp/surreal.tgz
           tar xzf /tmp/surreal.tgz
           ./surreal start --user root --pass root --bind 127.0.0.1:8000 memory &
