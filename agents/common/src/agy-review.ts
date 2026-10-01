@@ -1,5 +1,5 @@
 /**
- * Native agent CLI review runner for Antigravity and Claude Code.
+ * Native agent CLI review runner for Antigravity, Claude Code and Codex.
  *
  * AGY is an agent harness rather than an OpenAI-compatible model endpoint. The
  * review is therefore driven by AGY's supported headless interface, while the
@@ -7,6 +7,9 @@
  * Authentication is intentionally delegated to AGY's own OAuth/keyring flow.
  */
 import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { killReviewChild } from './review-worktree.js';
@@ -20,6 +23,7 @@ import type { PrContext } from './workspace.js';
 import { buildPostReviewTool, buildSkipTool } from './tools/gh.js';
 import { isToolErrorOutput, startReviewTrace, type TraceWriter } from './trace.js';
 import { ModelRefusalError } from './refusal.js';
+import { CODEX_REVIEW_SCHEMA, codexEnvironment, codexExecArgs, normalizeCodexEvents, type CodexStreamState } from './codex-review.js';
 
 const AGY_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const AGY_DOCTOR_TIMEOUT_MS = 90 * 1000;
@@ -141,18 +145,63 @@ export interface RunAgyCliOptions {
   readonly onStep?: (step: AgyStepUpdate) => void;
 }
 
-/** Run one AGY headless turn using its own cached OAuth session. */
-export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
+type NativeRunner = 'agy' | 'claude' | 'codex';
+
+function runnerOf(spec: ModelSpec): NativeRunner {
+  return spec.api === 'claude' ? 'claude' : spec.api === 'codex' ? 'codex' : 'agy';
+}
+
+const INSPECTION_TOOLS = ['mcp__revuto__read', 'mcp__revuto__grep', 'mcp__revuto__glob', 'mcp__revuto__pr_diff'];
+
+function reviewMcpServer(cwd: string, diffRange?: string): { command: string; args: string[] } {
+  return { command: process.execPath, args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), cwd, diffRange ?? ''] };
+}
+
+/**
+ * Run one headless turn of a native CLI. AGY uses its cached OAuth session,
+ * Claude Code and Codex use the provider credentials forwarded to them. Codex
+ * gets a private CODEX_HOME and its output schema in a temporary directory that
+ * is removed when the run ends.
+ */
+export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   opts.signal?.throwIfAborted();
-  const claude = opts.spec.api === 'claude';
-  const command = opts.spec.command?.trim() || (claude ? 'claude' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
+  if (runnerOf(opts.spec) !== 'codex') return spawnNativeCli(opts);
+  const dir = await mkdtemp(join(tmpdir(), 'revuto-codex-'));
+  try {
+    const codexHome = join(dir, 'home');
+    await mkdir(codexHome);
+    let schemaPath: string | undefined;
+    if (opts.schema) {
+      schemaPath = join(dir, 'schema.json');
+      await writeFile(schemaPath, opts.schema);
+    }
+    return await spawnNativeCli(opts, { codexHome, schemaPath });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string }): Promise<AgyCliRun> {
+  const runner = runnerOf(opts.spec);
+  const claude = runner === 'claude';
+  const label = runner === 'claude' ? 'Claude CLI' : runner === 'codex' ? 'Codex CLI' : 'AGY';
+  const command = opts.spec.command?.trim()
+    || (claude ? 'claude' : runner === 'codex' ? process.env.REVUTO_CODEX_COMMAND?.trim() || 'codex' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
   const timeoutMs = opts.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
   const maxSteps = opts.maxSteps ?? 150;
   const maxOutputTokens = opts.maxOutputTokens ?? CLAUDE_DEFAULT_MAX_OUTPUT_TOKENS;
   if (claude && (![maxSteps, maxOutputTokens].every(n => Number.isSafeInteger(n) && n > 0))) {
     return Promise.reject(new Error('Claude review step and output limits must be positive integers'));
   }
-  const args = [
+  if (runner === 'codex' && !(Number.isSafeInteger(maxSteps) && maxSteps > 0)) {
+    return Promise.reject(new Error('Codex review step limit must be a positive integer'));
+  }
+  const args = runner === 'codex' ? codexExecArgs({
+    spec: opts.spec,
+    cwd: opts.cwd,
+    ...(opts.probe ? {} : { mcpServer: reviewMcpServer(opts.cwd, opts.diffRange) }),
+    ...(codex?.schemaPath ? { schemaPath: codex.schemaPath } : {}),
+  }) : [
     '-p',
     ...(claude ? [] : [opts.prompt]),
     '--model',
@@ -163,19 +212,20 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   if (claude) {
     args.push('--verbose', '--bare', '--restricted', '--setting-sources', '', '--no-session-persistence',
       '--input-format', 'text',
-      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: opts.probe ? {} : { revuto: {
-        command: process.execPath,
-        args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), opts.cwd, opts.diffRange ?? ''],
-      } } }),
+      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: opts.probe ? {} : { revuto: reviewMcpServer(opts.cwd, opts.diffRange) } }),
       '--permission-mode', 'dontAsk', '--tools', '',
       '--max-turns', String(maxSteps),
       '--allowedTools', opts.probe ? '' : 'mcp__revuto__read,mcp__revuto__grep,mcp__revuto__glob,mcp__revuto__pr_diff');
     if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
-  } else {
+  } else if (runner === 'agy') {
     args.push('--print-timeout', timeoutArg(timeoutMs));
   }
-  if (opts.schema) args.push('--json-schema', opts.schema);
-  if (!claude && opts.spec.permissionMode === 'bypass') args.push('--dangerously-skip-permissions');
+  if (runner !== 'codex' && opts.schema) args.push('--json-schema', opts.schema);
+  if (runner === 'agy' && opts.spec.permissionMode === 'bypass') args.push('--dangerously-skip-permissions');
+  const env = claude
+    ? { ...claudeEnvironment(), CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) }
+    : runner === 'codex' ? codexEnvironment(codex!.codexHome) : { ...process.env, AGY_CLI_HIDE_LOGO: 'true' };
+  const promptOnStdin = runner !== 'agy';
 
   return new Promise((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
@@ -183,8 +233,8 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       child = spawn(command, args, {
         detached: process.platform !== 'win32',
         cwd: opts.cwd,
-        env: claude ? { ...claudeEnvironment(), CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) } : { ...process.env, AGY_CLI_HIDE_LOGO: 'true' },
-        stdio: [claude ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+        env,
+        stdio: [promptOnStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
       reject(err);
@@ -213,7 +263,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     const toolSteps: AgyToolStep[] = [];
 
     const timer = setTimeout(() => {
-      stopWithError(new Error(`AGY timed out after ${timeoutArg(timeoutMs)}`));
+      stopWithError(new Error(`${label} timed out after ${timeoutArg(timeoutMs)}`));
     }, timeoutMs);
 
     const stopWithError = (error: Error): void => {
@@ -233,11 +283,13 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     const stdout = child.stdout;
     const stderrStream = child.stderr;
     if (!stdout || !stderrStream) {
-      stopWithError(new Error('AGY was not started with piped stdout/stderr'));
+      stopWithError(new Error(`${label} was not started with piped stdout/stderr`));
       return;
     }
 
     const toolNames = new Map<string, string>();
+    const codexState: CodexStreamState = {};
+    let toolCalls = 0;
     const handleRecord = (record: Record<string, unknown>): void => {
       if (record.event === 'step_update') {
         const update = record.step_update;
@@ -248,8 +300,13 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
         if (step.step_type !== 'tool') return;
         const info = step.tool_info;
         const name = step.tool_name || info?.name || 'agy_tool';
+        // Codex has no turn limit of its own, so revuto stops it at review.maxSteps tool calls.
+        if (runner === 'codex' && ++toolCalls > maxSteps) {
+          stopWithError(new Error(`Codex CLI exceeded review.maxSteps (${maxSteps} tool calls)`));
+          return;
+        }
         // Producing the verdict is not an inspection of repository evidence.
-        if (claude && !['mcp__revuto__read', 'mcp__revuto__grep', 'mcp__revuto__glob', 'mcp__revuto__pr_diff'].includes(name)) return;
+        if (runner !== 'agy' && !INSPECTION_TOOLS.includes(name)) return;
         const error = info?.error;
         toolSteps.push({ name, output: info?.output, error });
         if (error === undefined || error === null) inspections++;
@@ -272,12 +329,15 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       try {
         event = JSON.parse(line);
       } catch {
+        // Codex writes its own log lines (MCP client errors, warnings) next to the JSON events.
+        if (runner === 'codex') return;
         stopWithError(new Error('Native CLI emitted a non-JSON line in stream-json mode'));
         return;
       }
       if (!event || typeof event !== 'object') return;
       const record = event as Record<string, unknown>;
-      for (const normalized of claude ? normalizeClaudeEvents(record, toolNames) : [record]) {
+      const events = claude ? normalizeClaudeEvents(record, toolNames) : runner === 'codex' ? normalizeCodexEvents(record, codexState) : [record];
+      for (const normalized of events) {
         handleRecord(normalized);
       }
     };
@@ -286,7 +346,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       if (settled || pendingError) return;
       stdoutChars += chunk.length;
       if (stdoutChars > AGY_MAX_STDOUT_CHARS) {
-        stopWithError(new Error(`AGY output exceeded ${AGY_MAX_STDOUT_CHARS} bytes`));
+        stopWithError(new Error(`${label} output exceeded ${AGY_MAX_STDOUT_CHARS} bytes`));
         return;
       }
       lineBuffer += decoder.write(chunk);
@@ -319,22 +379,22 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       }
       if (code !== 0) {
         const detail = result?.error || stderr.trim().slice(-1000);
-        finishError(new Error(`AGY exited with status ${code}${detail ? `: ${detail}` : ''}`));
+        finishError(new Error(`${label} exited with status ${code}${detail ? `: ${detail}` : ''}`));
         return;
       }
       if (!result) {
-        finishError(new Error('AGY exited without a result event'));
+        finishError(new Error(`${label} exited without a result event`));
         return;
       }
       if (result.status !== 'SUCCESS') {
-        finishError(new Error(`AGY run failed${result.error ? `: ${result.error}` : ''}`));
+        finishError(new Error(`${label} run failed${result.error ? `: ${result.error}` : ''}`));
         return;
       }
       settled = true;
       clearTimeout(timer);
       resolve({ result, stepCount, inspections, toolErrors, toolSteps });
     });
-    if (claude) {
+    if (promptOnStdin) {
       child.stdin!.on('error', stopWithError);
       child.stdin!.end(opts.prompt);
     }
@@ -345,7 +405,7 @@ export function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
 /** Small live probe used by `revuto doctor` without creating a review trace. */
 export async function probeAgy(spec: ModelSpec, cwd: string): Promise<AgyCliRun> {
   const result = await runAgyCli({
-    spec: spec.api === 'claude' ? { ...spec, reasoningEffort: 'low' } : spec,
+    spec: spec.api === 'claude' || spec.api === 'codex' ? { ...spec, reasoningEffort: 'low' } : spec,
     cwd,
     prompt: 'Return exactly AGY_REVUTO_DOCTOR_OK and nothing else.',
     timeoutMs: AGY_DOCTOR_TIMEOUT_MS,
@@ -381,7 +441,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
     startedAt: opts.startedAt,
   });
 
-  const runner = spec.api === 'claude' ? 'claude' : 'agy';
+  const runner = runnerOf(spec);
   const basePrompt = buildAgyReviewPrompt(opts.ctx, opts.skillMarkdown, runner);
   let run: AgyCliRun;
   let attempts = 0;
@@ -397,7 +457,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
       run = await runAgyCli({
         spec,
         cwd: opts.ctx.workspacePath,
-        schema: AGY_REVIEW_SCHEMA,
+        schema: runner === 'codex' ? CODEX_REVIEW_SCHEMA : AGY_REVIEW_SCHEMA,
         diffRange: opts.ctx.diffRefSpec,
         maxSteps: opts.config.review.maxSteps,
         maxOutputTokens: reviewOutputTokens(opts.config),
@@ -477,19 +537,26 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
 }
 
 /**
- * Review prompt for a native CLI runner. The two runners have different tools:
- * AGY gets the workspace's native read/search/git/command tools, Claude Code
- * gets only the guarded revuto MCP tools. Each prompt names only its own.
+ * Review prompt for a native CLI runner. The runners have different tools: AGY
+ * gets the workspace's native read/search/git/command tools, Claude Code and
+ * Codex get only the guarded revuto MCP tools. Each prompt names only its own.
  */
 const UNINSPECTED_MAX_ATTEMPTS = 2;
 export const UNINSPECTED_RETRY_NOTE = [
   '## Retry: evidence required',
   'Your previous attempt returned a verdict without calling any inspection tool and it was discarded.',
-  'Before deciding, fetch the diff (for the Claude runner: mcp__revuto__pr_diff with mode=stat, then the patch), read the changed files, and for deleted or renamed files search the repository for references to their paths. Then return the structured result.',
+  'Before deciding, fetch the diff (for the Claude and Codex runners: the revuto pr_diff tool with mode=stat, then the patch), read the changed files, and for deleted or renamed files search the repository for references to their paths. Then return the structured result.',
 ].join('\n');
 
-export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runner: 'agy' | 'claude' = 'agy'): string {
-  const setup = runner === 'claude'
+export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runner: NativeRunner = 'agy'): string {
+  const setup = runner === 'codex'
+    ? [
+        `You are Revuto's autonomous pull-request reviewer running inside Codex CLI.`,
+        `Review exactly the single PR described below. Your tools are the revuto MCP tools: pr_diff, which returns the PR diff, and read, grep and glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
+        `Do not ask questions and do not stop at a plan. Read the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
+        `This is a read-only review. Do not print credentials or remote URLs.`,
+      ]
+    : runner === 'claude'
     ? [
         `You are Revuto's autonomous pull-request reviewer running inside Claude Code CLI.`,
         `Review exactly the single PR described below. Your tools are mcp__revuto__pr_diff, which returns the PR diff, and mcp__revuto__read, mcp__revuto__grep and mcp__revuto__glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
@@ -510,6 +577,7 @@ export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runn
     `If nothing clears the bar, set decision to skip_review, provide a one-sentence reason, set body to an empty string, and return no comments.`,
     `If there are findings, set decision to post_review, put a concise summary in body, and include one or more precise inline comments.`,
     `Return only the enforced structured result with decision, reason, body, and comments. Never return a simulated GitHub post or an empty findings review.`,
+    ...(runner === 'codex' ? [`In each comment, set side, start_line and start_side to null unless the comment needs them.`] : []),
     '',
     renderPrOverviewForAgy(ctx),
     skillMarkdown.trim() ? `\n## Repository knowledge\n\n${skillMarkdown.trim()}` : '',

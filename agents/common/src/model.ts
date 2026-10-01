@@ -15,7 +15,7 @@ import type {
   LanguageModelV4GenerateResult,
   LanguageModelV4StreamResult,
 } from '@ai-sdk/provider';
-import type { ModelSpec } from './config.js';
+import { isNativeRunner, type ModelSpec } from './config.js';
 import { buildResponsesModel } from './responses-model.js';
 import { buildConverseModel } from './converse-model.js';
 import { grokCLIHeaders, grokCLIToken, usesGrokCLIAuth } from './grok-cli-auth.js';
@@ -69,7 +69,7 @@ function withoutFallbacks(spec: ModelSpec): ModelSpec {
 
 function buildSingleChatModel(spec: ModelSpec): LanguageModelV4 {
   const single = withoutFallbacks(spec);
-  if (single.api === 'agy' || single.api === 'claude') {
+  if (isNativeRunner(single)) {
     throw new Error('CLI models are driven by the native review runner, not the OpenAI-compatible model factory');
   }
   if (single.api === 'responses') return buildResponsesModel(single) as LanguageModelV4;

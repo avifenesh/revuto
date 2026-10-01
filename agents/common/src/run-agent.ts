@@ -10,7 +10,7 @@
 import { generateText, stepCountIs, hasToolCall, type ModelMessage } from 'ai';
 import type { Octokit } from '@octokit/rest';
 
-import { reviewOutputTokens, type ModelSpec, type ReviewerConfig } from './config.js';
+import { isNativeRunner, reviewOutputTokens, type ModelSpec, type ReviewerConfig } from './config.js';
 import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEMENT } from './model.js';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
 import { getOctokit, type GithubAuth } from './github-auth.js';
@@ -222,11 +222,11 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     { cacheRoot, signal },
   ));
 
-  // Small or docs-only PRs go to models.reviewSmall when configured. From here on
-  // `config.models.review` IS the routed model, for every code path below.
+  // Small, medium and large PRs go to their tier's model when one is configured.
+  // From here on `config.models.review` IS the routed model, for every code path below.
   const route = chooseReviewModel(config, ctx);
   config = withReviewModel(config, route.spec);
-  console.log(`[review] ${opts.repo}#${opts.prNumber}: model ${route.label}${route.small ? ' (small-PR reviewer)' : ''}: ${route.reason}`);
+  console.log(`[review] ${opts.repo}#${opts.prNumber}: model ${route.label} (${route.tier} tier): ${route.reason}`);
 
   let skillMd = opts.skillMarkdown?.trim() ?? '';
   if (!skillMd && opts.store) {
@@ -235,7 +235,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   let reviewedBy = route.label;
   // Native CLI reviewers. A refusal moves the run to the next configured
   // fallback (CLI or HTTP) instead of failing it; any other error still fails.
-  while (config.models.review.api === 'agy' || config.models.review.api === 'claude') {
+  while (isNativeRunner(config.models.review)) {
     try {
       return await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy });
     } catch (err) {

@@ -1,6 +1,6 @@
 import type { ModelSpec, ReviewerConfig } from '../../agents/common/src/config.js';
 
-export type ModelRole = 'review' | 'reviewSmall' | 'curator' | 'distill';
+export type ModelRole = 'review' | 'reviewSmall' | 'reviewMedium' | 'curator' | 'distill';
 
 export interface ModelOverride {
   readonly role: ModelRole;
@@ -15,6 +15,9 @@ export interface ParsedModelOverrideArgs {
 }
 
 const DEFAULT_BEDROCK_REGION = 'us-east-2';
+/** Bedrock Mantle serves the GPT-6 family from us-east-1, not from the Claude default region. */
+const DEFAULT_MANTLE_REGION = 'us-east-1';
+const SOL61_MODEL = 'openai.gpt-6.1-sol';
 const BEDROCK_API_KEY_ENV = 'AWS_BEARER_TOKEN_BEDROCK';
 const OPUS_MODEL = 'global.anthropic.claude-opus-5-5';
 const FABLE_MODEL = 'global.anthropic.claude-fable-5-1';
@@ -22,10 +25,11 @@ const SONNET_MODEL = 'global.anthropic.claude-sonnet-5';
 const ROLE_FLAGS: Record<string, ModelRole> = {
   '--review-model': 'review',
   '--review-small-model': 'reviewSmall',
+  '--review-medium-model': 'reviewMedium',
   '--curator-model': 'curator',
   '--distill-model': 'distill',
 };
-const ROLES = new Set<ModelRole>(['review', 'reviewSmall', 'curator', 'distill']);
+const ROLES = new Set<ModelRole>(['review', 'reviewSmall', 'reviewMedium', 'curator', 'distill']);
 
 export function extractModelOverrideArgs(argv: readonly string[]): ParsedModelOverrideArgs {
   const args: string[] = [];
@@ -65,50 +69,65 @@ export function extractModelOverrideArgs(argv: readonly string[]): ParsedModelOv
 
 export function applyModelOverrides(config: ReviewerConfig, parsed: Pick<ParsedModelOverrideArgs, 'overrides' | 'bedrockRegion'>): ReviewerConfig {
   if (parsed.overrides.length === 0) return config;
-  const defaultRegion = parsed.bedrockRegion ?? process.env.REVUTO_BEDROCK_REGION ?? DEFAULT_BEDROCK_REGION;
+  const defaultRegion = parsed.bedrockRegion ?? process.env.REVUTO_BEDROCK_REGION;
   const models: { -readonly [K in keyof ReviewerConfig['models']]: ReviewerConfig['models'][K] } = { ...config.models };
   for (const override of parsed.overrides) {
     models[override.role] = modelChain(override.chain, defaultRegion);
   }
-  // A pinned review model reviews every PR: the vault's small-PR reviewer steps
-  // aside unless the operator pinned that role too (--review-small-model).
+  // A pinned review model reviews every PR: the vault's small and medium tiers
+  // step aside unless the operator pinned those roles too.
   const roles = new Set(parsed.overrides.map((o) => o.role));
   if (roles.has('review') && !roles.has('reviewSmall')) delete models.reviewSmall;
+  if (roles.has('review') && !roles.has('reviewMedium')) delete models.reviewMedium;
   return { ...config, models };
 }
 
-export function modelPreset(alias: string, defaultRegion = DEFAULT_BEDROCK_REGION): ModelSpec {
-  const { value, region } = splitRegion(alias, defaultRegion);
+/**
+ * Resolve a model alias. `defaultRegion` (from --bedrock-region or
+ * $REVUTO_BEDROCK_REGION) applies to every Bedrock entry; without it, Mantle
+ * (OpenAI) models use us-east-1 and Converse (Claude) models us-east-2. A
+ * trailing @region on the alias wins over both.
+ */
+export function modelPreset(alias: string, defaultRegion?: string): ModelSpec {
+  const { value, region: explicit } = splitRegion(alias, defaultRegion);
+  const mantle = explicit ?? DEFAULT_MANTLE_REGION;
+  const converse = explicit ?? DEFAULT_BEDROCK_REGION;
   const raw = value.trim();
   const lower = raw.toLowerCase();
   const compact = lower.replace(/[\s._-]/g, '');
 
+  if (compact === 'codex' || compact === 'codexsol' || compact === 'codexsol61') {
+    return codexBedrock(SOL61_MODEL, mantle);
+  }
+  if (compact === 'sol61' || compact === 'gpt61sol' || compact === 'openaigpt61sol') {
+    return bedrockMantle(SOL61_MODEL, mantle);
+  }
   if (compact === 'sol' || compact === 'gpt6sol' || compact === 'openaigpt6sol') {
-    return bedrockMantle('openai.gpt-6-sol', region);
+    return bedrockMantle('openai.gpt-6-sol', mantle);
   }
   if (compact === 'astra' || compact === 'gpt6astra' || compact === 'openaigpt6astra') {
-    return bedrockMantle('openai.gpt-6-astra', region);
+    return bedrockMantle('openai.gpt-6-astra', mantle);
   }
   if (compact === 'gpt55' || compact === 'gpt5dot5' || compact === 'openaigpt55' || compact === 'usopenaigpt55') {
-    return bedrockMantle('openai.gpt-5.5', region);
+    return bedrockMantle('openai.gpt-5.5', mantle);
   }
   if (lower.startsWith('openai.')) {
-    return bedrockMantle(raw, region);
+    return bedrockMantle(raw, mantle);
   }
   if (compact === 'opus' || compact === 'opus55' || compact === 'claudeopus55' || compact === 'globalanthropicclaudeopus55') {
-    return bedrockConverse(OPUS_MODEL, region);
+    return bedrockConverse(OPUS_MODEL, converse);
   }
   if (compact === 'fable' || compact === 'fable51' || compact === 'claudefable51' || compact === 'globalanthropicclaudefable51') {
-    return bedrockConverse(FABLE_MODEL, region);
+    return bedrockConverse(FABLE_MODEL, converse);
   }
   if (compact === 'sonnet' || compact === 'sonnet5' || compact === 'claudesonnet5' || compact === 'anthropicclaudesonnet5' || compact === 'globalanthropicclaudesonnet5') {
-    return bedrockConverse(SONNET_MODEL, region);
+    return bedrockConverse(SONNET_MODEL, converse);
   }
   if (isAnthropicModelId(lower)) {
-    return bedrockConverse(raw, region);
+    return bedrockConverse(raw, converse);
   }
   if (lower === 'us.openai-gpt-5-5' || lower === 'us.openai.gpt-5.5') {
-    return bedrockMantle('openai.gpt-5.5', region);
+    return bedrockMantle('openai.gpt-5.5', mantle);
   }
 
   if (compact === 'grok' || compact === 'grok47' || compact === 'grok46' || compact === 'grokcode' || compact === 'grok4dot7') {
@@ -122,19 +141,21 @@ export function modelPreset(alias: string, defaultRegion = DEFAULT_BEDROCK_REGIO
     };
   }
 
-  throw new Error(`unknown model alias "${alias}". Use sol, astra, gpt55, opus, fable, sonnet, grok, an openai.* model id, or an anthropic Bedrock model id; append @region to change region.`);
+  throw new Error(`unknown model alias "${alias}". Use sol61, sol, astra, gpt55, codex, opus, fable, sonnet, grok, an openai.* model id, or an anthropic Bedrock model id; append @region to change region.`);
 }
 
 export function modelOverrideUsage(): string {
   return `Model override flags:
-  --model <role=alias[,fallback...]>  role is review|reviewSmall|curator|distill
-  --review-model <alias[,fallback...]>  override review model chain (also disables the small-PR reviewer unless --review-small-model is given)
+  --model <role=alias[,fallback...]>  role is review|reviewSmall|reviewMedium|curator|distill
+  --review-model <alias[,fallback...]>  override review model chain (also disables the small and medium tiers unless they are given too)
   --review-small-model <alias[,fallback...]>  override the small / docs-only PR reviewer (models.reviewSmall)
+  --review-medium-model <alias[,fallback...]>  override the medium-tier PR reviewer (models.reviewMedium)
   --curator-model <alias[,fallback...]> override curator model chain
   --distill-model <alias[,fallback...]> override distill model chain
-  --bedrock-region <region>           default region for aliases (default: us-east-2)
+  --bedrock-region <region>           region for every Bedrock alias (default: us-east-1 for OpenAI models, us-east-2 for Claude)
 
-Aliases: sol, astra, gpt55, opus, fable, sonnet, grok. Append @region for one entry, e.g.
+Aliases: sol61, sol, astra, gpt55, codex (Sol 6.1 through the Codex CLI), opus, fable, sonnet, grok.
+Append @region for one entry, e.g.
   revuto review owner/repo 123 --review-model sol,opus
   revuto daemon --model review=sol@us-east-2,opus --model curator=opus,sonnet
 `;
@@ -142,14 +163,14 @@ Aliases: sol, astra, gpt55, opus, fable, sonnet, grok. Append @region for one en
 
 function parseModelOverride(value: string, source: string): ModelOverride {
   const match = value.match(/^([^=:]+)[=:](.+)$/);
-  if (!match) throw new Error(`${source} expects <review|reviewSmall|curator|distill>=<alias[,fallback...]>`);
+  if (!match) throw new Error(`${source} expects <review|reviewSmall|reviewMedium|curator|distill>=<alias[,fallback...]>`);
   const role = normalizeRole(match[1]);
   const chain = match[2].trim();
   if (!chain) throw new Error(`${source} ${role}=... requires at least one model alias`);
   return { role, chain, source };
 }
 
-function modelChain(chain: string, defaultRegion: string): ModelSpec {
+function modelChain(chain: string, defaultRegion: string | undefined): ModelSpec {
   const specs = chain.split(',').map((part) => part.trim()).filter(Boolean).map((part) => modelPreset(part, defaultRegion));
   if (specs.length === 0) throw new Error(`model chain "${chain}" is empty`);
   const [primary, ...fallbacks] = specs;
@@ -165,6 +186,19 @@ function bedrockMantle(model: string, region: string): ModelSpec {
     reasoningEffort: 'medium',
     auth: 'auto',
     apiKeyEnv: BEDROCK_API_KEY_ENV,
+    awsRegion: region,
+  };
+}
+
+/** Native Codex CLI review runner on Bedrock; the CLI is $REVUTO_CODEX_COMMAND or `codex` on PATH. */
+function codexBedrock(model: string, region: string): ModelSpec {
+  return {
+    name: 'codex-bedrock',
+    baseURL: 'codex://bedrock',
+    model,
+    api: 'codex',
+    reasoningEffort: 'high',
+    auth: 'aws',
     awsRegion: region,
   };
 }
@@ -188,9 +222,10 @@ function isAnthropicModelId(value: string): boolean {
 
 function normalizeRole(value: string): ModelRole {
   const trimmed = value.trim();
-  const role = trimmed.toLowerCase() === 'reviewsmall' ? 'reviewSmall' : trimmed.toLowerCase();
+  const lower = trimmed.toLowerCase();
+  const role = lower === 'reviewsmall' ? 'reviewSmall' : lower === 'reviewmedium' ? 'reviewMedium' : lower;
   if (ROLES.has(role as ModelRole)) return role as ModelRole;
-  throw new Error(`unknown model role "${value}". Expected review, reviewSmall, curator, or distill.`);
+  throw new Error(`unknown model role "${value}". Expected review, reviewSmall, reviewMedium, curator, or distill.`);
 }
 
 function roleFlagFor(arg: string): { flag: string; role: ModelRole } | undefined {
@@ -216,7 +251,7 @@ function requireValue(value: string, flag: string): string {
   return value;
 }
 
-function splitRegion(alias: string, defaultRegion: string): { value: string; region: string } {
+function splitRegion(alias: string, defaultRegion: string | undefined): { value: string; region: string | undefined } {
   const trimmed = alias.trim();
   const at = trimmed.lastIndexOf('@');
   if (at < 0) return { value: trimmed, region: defaultRegion };

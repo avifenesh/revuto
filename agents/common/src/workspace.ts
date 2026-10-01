@@ -13,6 +13,12 @@ export interface InvocationPayload {
   readonly headSha?: string;
 }
 
+export interface FileChange {
+  readonly path: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
 export interface PrContext {
   readonly owner: string;
   readonly repo: string;
@@ -30,6 +36,8 @@ export interface PrContext {
   readonly deletions: number;
   readonly changedFiles: number;
   readonly fileList: readonly string[];
+  /** Per-file line counts for `fileList`, same order and page. */
+  readonly fileChanges?: readonly FileChange[];
   readonly existingReviews: readonly {
     readonly id: number;
     readonly user: string;
@@ -168,6 +176,7 @@ export async function prepareWorkspace(
     deletions: pr.deletions ?? 0,
     changedFiles: pr.changed_files ?? 0,
     fileList: filesResp.data.map((f) => f.filename),
+    fileChanges: filesResp.data.map((f) => ({ path: f.filename, additions: f.additions ?? 0, deletions: f.deletions ?? 0 })),
     existingReviews: reviewsResp.data.map((r) => ({
       id: r.id,
       user: r.user?.login ?? '',

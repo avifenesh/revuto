@@ -22,19 +22,19 @@ export interface ModelSpec {
   readonly baseURL: string;
   /** Model id as the endpoint expects it (e.g. "global.anthropic.claude-opus-5-5", "qwen3-8b"). */
   readonly model: string;
-  /** API surface. chat/responses/converse use HTTP; agy/claude use native CLI review runners. Defaults to chat. */
-  readonly api?: 'chat' | 'responses' | 'converse' | 'agy' | 'claude';
+  /** API surface. chat/responses/converse use HTTP; agy/claude/codex use native CLI review runners. Defaults to chat. */
+  readonly api?: 'chat' | 'responses' | 'converse' | 'agy' | 'claude' | 'codex';
   /** Reasoning effort for Responses/reasoning models. Converse Claude defaults to "medium"; "max" is its ceiling. */
   readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. "agy-oauth" uses the AGY CLI's cached Google OAuth session. */
   readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'agy-oauth' | 'none';
-  /** AWS region for SigV4-signed bedrock-mantle requests. */
+  /** AWS region for SigV4-signed bedrock-mantle requests, and the Bedrock region a native Codex runner uses. */
   readonly awsRegion?: string;
   /** Env var holding the API key. Omit for keyless local endpoints. */
   readonly apiKeyEnv?: string;
   /** Optional provider label for diagnostics. */
   readonly name?: string;
-  /** Native CLI executable. AGY defaults to $REVUTO_AGY_COMMAND or agy; Claude defaults to claude. */
+  /** Native CLI executable. AGY defaults to $REVUTO_AGY_COMMAND or agy; Claude defaults to claude; Codex to $REVUTO_CODEX_COMMAND or codex. */
   readonly command?: string;
   /** AGY CLI permission policy. "bypass" adds --dangerously-skip-permissions. */
   readonly permissionMode?: 'bypass' | 'settings';
@@ -75,6 +75,16 @@ export interface SmallReviewConfig {
   readonly docsPaths: readonly string[];
 }
 
+/** When `models.reviewMedium` is set, which PRs it handles instead of `models.review`. */
+export interface MediumReviewConfig {
+  /**
+   * PRs with at most this many changed code lines go to the medium tier. Code
+   * lines are additions plus deletions in files that are neither documentation
+   * nor tests. 0 disables the medium tier.
+   */
+  readonly maxCodeLines: number;
+}
+
 export interface GithubConfig {
   readonly tokenEnv: string;
   /** Optional real-time GitHub App receiver. Polling remains available without it. */
@@ -89,6 +99,8 @@ export interface ReviewerConfig {
     readonly review: ModelSpec;
     /** Optional cheaper reviewer for small or docs-only PRs (see `review.small`). Absent = every PR uses `review`. */
     readonly reviewSmall?: ModelSpec;
+    /** Optional mid-cost reviewer for PRs above the small tier with few changed code lines (see `review.medium`). */
+    readonly reviewMedium?: ModelSpec;
     readonly curator: ModelSpec;
     readonly distill: ModelSpec;
     /** null = no embedder; dedup + skill selection fall back to LLM-judge / area-glob. */
@@ -107,6 +119,8 @@ export interface ReviewerConfig {
     readonly workspaceDir: string;
     /** Routing rules for `models.reviewSmall`; `DEFAULT_SMALL_REVIEW` applies when absent. */
     readonly small?: SmallReviewConfig;
+    /** Routing rules for `models.reviewMedium`; `DEFAULT_MEDIUM_REVIEW` applies when absent. */
+    readonly medium?: MediumReviewConfig;
   };
   /** Caps. 0 = unlimited. Run/comment/token counts are per repo per UTC day. */
   readonly limits: {
@@ -149,6 +163,11 @@ export function isAnthropicModelId(model: string): boolean {
   return m.includes('anthropic.') || m.startsWith('claude');
 }
 
+/** True for specs driven by a native agent CLI (AGY, Claude Code, Codex) instead of an HTTP model API. */
+export function isNativeRunner(spec: ModelSpec): boolean {
+  return spec.api === 'agy' || spec.api === 'claude' || spec.api === 'codex';
+}
+
 function isClaudeSpec(spec: ModelSpec): boolean {
   return spec.api === 'claude' || (spec.api === 'converse' && isAnthropicModelId(spec.model));
 }
@@ -174,7 +193,9 @@ export const DEFAULT_SMALL_REVIEW: SmallReviewConfig = {
   docsExtensions: ['.md', '.mdx', '.txt', '.rst', '.adoc'],
   docsPaths: ['docs/', 'doc/', 'notes/'],
 };
-const MODEL_APIS = ['chat', 'responses', 'converse', 'agy', 'claude'] as const;
+export const DEFAULT_MEDIUM_REVIEW: MediumReviewConfig = { maxCodeLines: 500 };
+const MODEL_APIS = ['chat', 'responses', 'converse', 'agy', 'claude', 'codex'] as const;
+const REVIEW_ROLES = ['review', 'reviewSmall', 'reviewMedium'];
 const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'agy-oauth', 'none'] as const;
 const AGY_PERMISSION_MODES = ['bypass', 'settings'] as const;
@@ -242,11 +263,14 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (api === 'agy' && auth !== 'agy-oauth') {
     throw new Error(`config: models.${role}.auth must be agy-oauth when models.${role}.api is agy`);
   }
-  if (api === 'claude' && role !== 'review' && role !== 'reviewSmall') {
-    throw new Error(`config: native Claude CLI is supported only for models.review and models.reviewSmall`);
+  if (api === 'claude' && !REVIEW_ROLES.includes(role)) {
+    throw new Error(`config: native Claude CLI is supported only for models.review, models.reviewSmall and models.reviewMedium`);
   }
-  if (api === 'claude' && (reasoningEffort === 'none' || reasoningEffort === 'minimal')) {
-    throw new Error('config: native Claude CLI reasoningEffort must be low, medium, high, xhigh, or max');
+  if (api === 'codex' && !REVIEW_ROLES.includes(role)) {
+    throw new Error(`config: native Codex CLI is supported only for models.review, models.reviewSmall and models.reviewMedium`);
+  }
+  if ((api === 'claude' || api === 'codex') && (reasoningEffort === 'none' || reasoningEffort === 'minimal')) {
+    throw new Error(`config: native ${api === 'claude' ? 'Claude' : 'Codex'} CLI reasoningEffort must be low, medium, high, xhigh, or max`);
   }
   if (m.fallbacks !== undefined && !Array.isArray(m.fallbacks)) throw new Error(`config: models.${role}.fallbacks must be an array`);
   const fallbacks = m.fallbacks?.map((fallback, i) => checkModel(fallback, `${role}.fallbacks[${i}]`));
@@ -269,6 +293,14 @@ function checkSmallReview(raw: unknown): SmallReviewConfig {
     return value.map((v: string) => v.trim().toLowerCase());
   };
   return { maxChangedLines: maxChangedLines as number, docsOnly, docsExtensions: strings('docsExtensions'), docsPaths: strings('docsPaths') };
+}
+
+function checkMediumReview(raw: unknown): MediumReviewConfig {
+  if (raw === undefined || raw === null) return DEFAULT_MEDIUM_REVIEW;
+  if (typeof raw !== 'object') throw new Error('config: review.medium must be an object');
+  const maxCodeLines = (raw as Record<string, unknown>).maxCodeLines ?? DEFAULT_MEDIUM_REVIEW.maxCodeLines;
+  if (!Number.isSafeInteger(maxCodeLines) || (maxCodeLines as number) < 0) throw new Error('config: review.medium.maxCodeLines must be a non-negative integer');
+  return { maxCodeLines: maxCodeLines as number };
 }
 
 /** The default vault: $REVUTO_VAULT, else ~/revuto. The config + skills + reviewer notes live here. */
@@ -365,6 +397,7 @@ export function loadConfig(path?: string): ReviewerConfig {
   const models = {
     review: checkModel(raw.models?.review, 'review'),
     ...(raw.models?.reviewSmall ? { reviewSmall: checkModel(raw.models.reviewSmall, 'reviewSmall') } : {}),
+    ...(raw.models?.reviewMedium ? { reviewMedium: checkModel(raw.models.reviewMedium, 'reviewMedium') } : {}),
     curator: checkModel(raw.models?.curator, 'curator'),
     distill: checkModel(raw.models?.distill, 'distill'),
     embedder: raw.models?.embedder ? checkModel(raw.models.embedder, 'embedder') : null,
@@ -379,6 +412,7 @@ export function loadConfig(path?: string): ReviewerConfig {
     allowWrite: raw.review?.allowWrite ?? DEFAULT_REVIEW.allowWrite,
     workspaceDir: resolveHome(raw.review?.workspaceDir ?? `${vaultPath}/.workspaces`),
     small: checkSmallReview(raw.review?.small),
+    medium: checkMediumReview(raw.review?.medium),
   };
   if (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 1) throw new Error('config: review.maxRounds must be a positive integer');
   for (const key of ['maxConcurrent', 'maxConcurrentPerRepo'] as const) {
