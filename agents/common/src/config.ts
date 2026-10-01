@@ -263,10 +263,12 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   if (api === 'agy' && auth !== 'agy-oauth') {
     throw new Error(`config: models.${role}.auth must be agy-oauth when models.${role}.api is agy`);
   }
-  if (api === 'claude' && !REVIEW_ROLES.includes(role)) {
+  // A fallback is checked as `review.fallbacks[0]`; it serves the role it hangs off.
+  const baseRole = role.split('.')[0];
+  if (api === 'claude' && !REVIEW_ROLES.includes(baseRole)) {
     throw new Error(`config: native Claude CLI is supported only for models.review, models.reviewSmall and models.reviewMedium`);
   }
-  if (api === 'codex' && !REVIEW_ROLES.includes(role)) {
+  if (api === 'codex' && !REVIEW_ROLES.includes(baseRole)) {
     throw new Error(`config: native Codex CLI is supported only for models.review, models.reviewSmall and models.reviewMedium`);
   }
   if ((api === 'claude' || api === 'codex') && (reasoningEffort === 'none' || reasoningEffort === 'minimal')) {
@@ -274,7 +276,18 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   }
   if (m.fallbacks !== undefined && !Array.isArray(m.fallbacks)) throw new Error(`config: models.${role}.fallbacks must be an array`);
   const fallbacks = m.fallbacks?.map((fallback, i) => checkModel(fallback, `${role}.fallbacks[${i}]`));
-  return { ...m, api, reasoningEffort, auth, permissionMode, ...(fallbacks?.length ? { fallbacks } : {}) };
+  const checked: ModelSpec = { ...m, api, reasoningEffort, auth, permissionMode, ...(fallbacks?.length ? { fallbacks } : {}) };
+  // The review runner works through native CLIs first, then hands the rest of
+  // the chain to the HTTP model factory, which cannot build a native spec. So
+  // once a chain reaches an HTTP model, nothing after it may be native.
+  if (!role.includes('.')) {
+    const chain = modelChain(checked);
+    const firstHttp = chain.findIndex((spec) => !isNativeRunner(spec));
+    if (firstHttp >= 0 && chain.slice(firstHttp + 1).some(isNativeRunner)) {
+      throw new Error(`config: models.${role} has a native CLI fallback after an HTTP model; native CLIs must come first in the chain`);
+    }
+  }
+  return checked;
 }
 
 function checkSmallReview(raw: unknown): SmallReviewConfig {
