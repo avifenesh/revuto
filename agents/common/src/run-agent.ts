@@ -293,7 +293,10 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   const finish = async (outcome: ReviewOutcome): Promise<ReviewOutcome> => {
     const final = withCarried(outcome);
     const large = opts.config.models.review;
-    if (route.tier !== 'large' && !escalationNote && final.ranModel && shouldShadow(opts.config.review.shadowSample ?? 0)) {
+    // Only a review that reached a clean decision is compared: a failed post leaves
+    // hasFindings false even when the model found something.
+    const comparable = final.ranModel && final.terminal !== 'none' && final.postFailures === 0;
+    if (route.tier !== 'large' && !escalationNote && comparable && shouldShadow(opts.config.review.shadowSample ?? 0)) {
       if (!isNativeRunner(large)) {
         console.log(`[shadow] ${opts.repo}#${opts.prNumber}: skipped, the large tier is not a native runner`);
       } else {
