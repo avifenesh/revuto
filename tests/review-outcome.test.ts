@@ -17,7 +17,7 @@ import {
   stalledOnOutputCap,
   type ReviewOutcome,
 } from '../agents/common/src/run-agent.js';
-import { checkResultForOutcome, isReviewOutcomeSuccessful } from '../daemon/src/review-check.js';
+import { checkResultForError, checkResultForOutcome, isReviewOutcomeSuccessful, redactModels } from '../daemon/src/review-check.js';
 
 function outcome(over: Partial<ReviewOutcome> = {}): ReviewOutcome {
   return {
@@ -208,4 +208,30 @@ test('describeOutcome surfaces inspection, forcing, and the trace', () => {
   assert.match(line, /inspections=0/);
   assert.match(line, /forced=true/);
   assert.match(line, /trace=\/vault\/\.traces\/x\/t\.jsonl/);
+});
+
+test('a failed review check does not name the model behind it', () => {
+  const models = {
+    review: { name: 'claude-cli-opus-5-5', baseURL: 'claude-cli://local', model: 'global.anthropic.claude-opus-5-5[1m]', api: 'claude' as const },
+    curator: {
+      name: 'zai-glm-5.3', baseURL: 'https://api.z.ai/api/coding/paas/v4', model: 'glm-5.3',
+      fallbacks: [{ name: 'grok-code', baseURL: 'https://cli-chat-proxy.grok.com/v1', model: 'grok-4.7' }],
+    },
+    distill: { name: 'house', baseURL: 'http://10.0.0.5:8000/v1', model: 'house-reviewer-v2' },
+    embedder: { name: 'local', baseURL: 'http://127.0.0.1:8181/v1', model: 'bge-small-en-v1.5' },
+  };
+  const err = new Error([
+    'model global.anthropic.claude-opus-5-5[1m] refused the request (category=cyber)',
+    'all model fallbacks failed: house-reviewer-v2 @ http://10.0.0.5:8000/v1: 500 | grok-4.7: 429',
+    'POST https://api.z.ai/api/coding/paas/v4/chat/completions via cli-chat-proxy.grok.com',
+    'provider said: claude-sonnet-5-5 and openai.gpt-6-sol are unavailable',
+    'pull request head changed during review, local trace kept',
+  ].join('\n'));
+  const { summary } = checkResultForError(err, { models });
+  for (const leak of ['claude', 'opus', 'grok', 'glm', 'z.ai', 'house', '10.0.0.5', 'gpt', 'sonnet']) {
+    assert.ok(!summary.toLowerCase().includes(leak), `summary leaks ${leak}: ${summary}`);
+  }
+  assert.match(summary, /refused the request \(category=cyber\)/);
+  assert.match(summary, /pull request head changed during review, local trace kept/, 'plain words like "local" survive');
+  assert.equal(redactModels('nothing to hide here'), 'nothing to hide here');
 });

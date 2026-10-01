@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 
-import type { GithubAppConfig } from '../../agents/common/src/config.js';
+import type { GithubAppConfig, ModelSpec, ReviewerConfig } from '../../agents/common/src/config.js';
 import type { GithubAuth } from '../../agents/common/src/github-auth.js';
 import type { ReviewOutcome } from '../../agents/common/src/run-agent.js';
 import { signReviewBody } from '../../agents/common/src/tools/gh.js';
@@ -111,13 +111,58 @@ export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
   };
 }
 
-export function checkResultForError(err: unknown): CheckResult {
-  const message = (err instanceof Error ? err.message : String(err)).replaceAll('```', "'''").slice(0, 6000);
+export function checkResultForError(err: unknown, config?: Pick<ReviewerConfig, 'models'>): CheckResult {
+  const raw = err instanceof Error ? err.message : String(err);
+  const message = redactModels(raw, config).replaceAll('```', "'''").slice(0, 6000);
   return {
     conclusion: 'failure',
     title: 'Revuto review failed',
     summary: `Revuto could not complete this review.\n\n\`\`\`\n${message}\n\`\`\``,
   };
+}
+
+// Model ids as providers and the CLI print them: Bedrock prefixes, Claude, GPT and
+// o-series, Grok, GLM, Gemini. The configured specs are redacted on top of these.
+const MODEL_ID_PATTERN = /\b(?:(?:global|us|eu|apac)\.)?(?:anthropic\.|openai\.)?(?:claude|gpt|grok|glm|gemini|o\d)-[\w.:\-]*(?:\[\w+\])?/gi;
+
+/**
+ * Strip the model behind the review out of text that lands on a pull request.
+ * Which model runs under revuto is the operator's business, and provider errors
+ * name it (`model <id> refused`, endpoint URLs, fallback chains).
+ */
+export function redactModels(text: string, config?: Pick<ReviewerConfig, 'models'>): string {
+  const terms = new Set<string>();
+  const add = (spec: ModelSpec | null | undefined): void => {
+    if (!spec) return;
+    for (const term of [spec.model, spec.model.replace(/\[\w+\]$/, ''), spec.name, spec.baseURL, hostOf(spec.baseURL)]) {
+      if (term && term.trim().length >= 3) terms.add(term.trim());
+    }
+    for (const fallback of spec.fallbacks ?? []) add(fallback);
+  };
+  if (config) {
+    const { embedder: _embedder, ...reviewers } = config.models;
+    for (const spec of Object.values(reviewers)) add(spec);
+  }
+  let out = text;
+  // Longest first, so a full URL goes before its host and an id before its prefix.
+  for (const term of [...terms].sort((a, b) => b.length - a.length)) {
+    out = out.replace(new RegExp(`(?<![\\w-])${escapeRegExp(term)}(?![\\w-])`, 'g'), '<model>');
+  }
+  return out.replace(MODEL_ID_PATTERN, '<model>');
+}
+
+/** Host of an http(s) endpoint; native CLI markers like `claude-cli://local` have none worth redacting. */
+function hostOf(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.host : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function assertReviewedHead(target: ReviewCheckTarget, outcome: ReviewOutcome): void {
