@@ -15,6 +15,8 @@ import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEME
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
 import { getOctokit, type GithubAuth } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { toAiSdkTools, type ToolDef } from './tool-def.js';
 import { assembleCommonTools } from './tools/index.js';
@@ -286,6 +288,28 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     hasFindings: outcome.hasFindings || carried.hasFindings,
     postFailures: outcome.postFailures + carried.postFailures,
   });
+  // A sampled small or medium review also runs on the large tier, posting
+  // nothing, to measure what the cheaper tier misses. Never changes the outcome.
+  const finish = async (outcome: ReviewOutcome): Promise<ReviewOutcome> => {
+    const final = withCarried(outcome);
+    const large = opts.config.models.review;
+    if (route.tier !== 'large' && !escalationNote && final.ranModel && shouldShadow(opts.config.review.shadowSample ?? 0)) {
+      if (!isNativeRunner(large)) {
+        console.log(`[shadow] ${opts.repo}#${opts.prNumber}: skipped, the large tier is not a native runner`);
+      } else {
+        try {
+          const shadow = await runAgyReview({ config: withReviewModel(opts.config, large), ctx, octokit, token, skillMarkdown: skillMd,
+            startedAt: new Date(), signal, reviewedBy: modelLabel(large), dryRun: true });
+          const record = shadowRecord({ repo: opts.repo, prNumber: opts.prNumber, headSha: ctx.headSha, tier: route.tier, cheap: final, large: shadow });
+          writeShadowRecord(opts.config.vaultPath, record);
+          console.log(`[shadow] ${opts.repo}#${opts.prNumber}: ${route.tier} tier ${record.cheap.findings ? 'posted findings' : 'passed'}, large tier ${record.large.decision === 'post_review' ? `found ${record.large.comments.length}` : 'passed'}: ${record.agree ? 'agree' : 'DISAGREE'}`);
+        } catch (err) {
+          console.warn(`[shadow] ${opts.repo}#${opts.prNumber}: failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    return final;
+  };
   // One loop over passes: a cheap tier that escalates continues with the large tier,
   // native or HTTP.
   for (;;) {
@@ -293,7 +317,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     // fallback (CLI or HTTP) instead of failing it; any other error still fails.
     while (isNativeRunner(config.models.review)) {
       try {
-        return withCarried(await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy,
+        return await finish(await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy,
           allowEscalation: escalateTo !== undefined, ...(escalationNote ? { escalationNote } : {}) }));
       } catch (err) {
         if (err instanceof ReviewEscalation && escalateTo) {
@@ -475,7 +499,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     };
     const tracePath = trace.finish({ ...outcome, result: outcome.result.slice(0, 8000) });
 
-    return withCarried({ ...outcome, ...(tracePath ? { tracePath } : {}) });
+    return await finish({ ...outcome, ...(tracePath ? { tracePath } : {}) });
   }
 }
 
@@ -495,6 +519,45 @@ const POSTING_TOOLS = new Set(['post_review', 'post_issue_comment']);
  * Pull the terminal decision, any non-terminal findings, and how much the run
  * actually inspected out of a run's steps.
  */
+/** True for a sampled review; `share` is `review.shadowSample`. */
+export function shouldShadow(share: number, random: () => number = Math.random): boolean {
+  return share > 0 && random() < share;
+}
+
+export interface ShadowRecord {
+  readonly at: string;
+  readonly repo: string;
+  readonly prNumber: number;
+  readonly headSha: string;
+  readonly tier: string;
+  readonly cheap: { readonly model?: string; readonly terminal: string; readonly findings: boolean; readonly tokens: number };
+  readonly large: { readonly model?: string; readonly decision: string; readonly comments: ReadonlyArray<{ path: string; line: number }>; readonly tokens: number };
+  /** Both found something, or both passed. */
+  readonly agree: boolean;
+}
+
+/** Compare a cheap tier's outcome with the large tier's dry-run verdict. */
+export function shadowRecord(input: { repo: string; prNumber: number; headSha: string; tier: string; cheap: ReviewOutcome; large: ReviewOutcome }): ShadowRecord {
+  let verdict: { decision?: string; comments?: Array<{ path: string; line: number }> } = {};
+  try { verdict = JSON.parse(input.large.result); } catch { /* recorded as unknown below */ }
+  const decision = verdict.decision ?? input.large.terminal;
+  return {
+    at: new Date().toISOString(), repo: input.repo, prNumber: input.prNumber, headSha: input.headSha, tier: input.tier,
+    cheap: { model: input.cheap.model, terminal: input.cheap.terminal, findings: input.cheap.hasFindings, tokens: input.cheap.tokens },
+    large: { model: input.large.model, decision, comments: verdict.comments ?? [], tokens: input.large.tokens },
+    agree: input.cheap.hasFindings === (decision === 'post_review'),
+  };
+}
+
+/** Append to <vault>/.shadow/<YYYY-MM>.jsonl. */
+export function writeShadowRecord(vaultPath: string, record: ShadowRecord): string {
+  const dir = join(vaultPath, '.shadow');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${record.at.slice(0, 7)}.jsonl`);
+  appendFileSync(file, `${JSON.stringify(record)}\n`);
+  return file;
+}
+
 /** HTTP escalation: a terminal tool that posts nothing; the dispatch loop hands the PR to the large tier. */
 const ESCALATE_TOOL: ToolDef = {
   name: 'escalate_review',

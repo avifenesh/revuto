@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { agyReviewSchema, buildAgyReviewPrompt, NativeStepLimitError, normalizeClaudeEvents, probeAgy, renderEscalation, ReviewEscalation, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
-import { escalationReason } from '../agents/common/src/run-agent.js';
+import { escalationReason, shadowRecord, shouldShadow, writeShadowRecord } from '../agents/common/src/run-agent.js';
 import { CODEX_REVIEW_SCHEMA, codexEnvironment, codexReviewSchema, normalizeCodexEvents } from '../agents/common/src/codex-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import { ModelRefusalError } from '../agents/common/src/refusal.js';
@@ -287,4 +287,31 @@ test('an HTTP pass escalates only through a successful escalate_review call with
   assert.equal(escalationReason([{ toolResults: [{ toolName: 'escalate_review', input: { reason: 'x' }, output: 'ERROR: failed' }] }]), undefined);
   assert.equal(escalationReason([{ toolResults: [{ toolName: 'escalate_review', input: {}, output: '{"ok":true}' }] }]), undefined);
   assert.match(renderEscalation({ allow: true, via: 'tool' }), /call escalate_review with a reason/);
+});
+
+test('a shadow run returns the verdict and posts nothing; the record says whether the tiers agree', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-shadow-'));
+  const command = fakeCodex(dir);
+  const spec = { name: 'large', baseURL: 'codex://bedrock', api: 'codex' as const, model: 'openai.gpt-6.1-sol', command };
+  const config = { vaultPath: dir, models: { review: spec }, review: { maxSteps: 150 }, limits: { maxOutputTokens: {} } } as unknown as ReviewerConfig;
+  const octokit = { pulls: { createReview: async () => { throw new Error('a shadow run must not post'); } } };
+  try {
+    const shadow = await runAgyReview({ config, ctx: context(dir, 'with-findings'), octokit: octokit as never, token: async () => 'unused', skillMarkdown: '', startedAt: new Date(), dryRun: true });
+    assert.equal(shadow.terminal, 'post_review'); assert.equal(shadow.postFailures, 0);
+    const cheap = { terminal: 'skip_review' as const, hasFindings: false, result: '', headSha: 'h', steps: 3, tokens: 100, inspections: 2, toolErrors: 0, postFailures: 0, forcedTerminal: false, ranModel: true, model: 'small' };
+    const record = shadowRecord({ repo: 'o/r', prNumber: 7, headSha: 'h', tier: 'small', cheap, large: shadow });
+    assert.equal(record.agree, false, 'the small tier passed what the large tier flagged');
+    assert.deepEqual(record.large.comments, [{ path: 'src/file.ts', line: 3 }]);
+    assert.equal(record.cheap.tokens, 100);
+    assert.equal(shadowRecord({ repo: 'o/r', prNumber: 7, headSha: 'h', tier: 'small', cheap: { ...cheap, hasFindings: true }, large: shadow }).agree, true);
+    const file = writeShadowRecord(dir, record);
+    assert.match(file, /\.shadow\/\d{4}-\d{2}\.jsonl$/);
+    writeShadowRecord(dir, record);
+    assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 2, 'records append');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(shouldShadow(0, () => 0), false);
+  assert.equal(shouldShadow(0.05, () => 0.04), true);
+  assert.equal(shouldShadow(0.05, () => 0.05), false);
 });
