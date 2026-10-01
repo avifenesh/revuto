@@ -15,6 +15,7 @@ import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEME
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
 import { getOctokit, type GithubAuth } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
+import { z } from 'zod';
 import { toAiSdkTools, type ToolDef } from './tool-def.js';
 import { assembleCommonTools } from './tools/index.js';
 import { refusedEmptyReview } from './tools/gh.js';
@@ -277,178 +278,201 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   const carried = { tokens: 0, steps: 0 };
   const withCarried = (outcome: ReviewOutcome): ReviewOutcome => carried.tokens || carried.steps
     ? { ...outcome, tokens: outcome.tokens + carried.tokens, steps: outcome.steps + carried.steps } : outcome;
-  // Native CLI reviewers. A refusal moves the run to the next configured
-  // fallback (CLI or HTTP) instead of failing it; any other error still fails.
-  while (isNativeRunner(config.models.review)) {
-    try {
-      return withCarried(await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy,
-        allowEscalation: escalateTo !== undefined, ...(escalationNote ? { escalationNote } : {}) }));
-    } catch (err) {
-      if (err instanceof ReviewEscalation && escalateTo) {
-        console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} escalated to ${modelLabel(escalateTo)}: ${err.reason}`);
-        carried.tokens += err.tokens;
-        carried.steps += err.steps;
-        config = withReviewModel(config, escalateTo);
-        reviewedBy = modelLabel(escalateTo);
-        escalationNote = err.reason;
-        escalateTo = undefined;
-        continue;
+  // One loop over passes: a cheap tier that escalates continues with the large tier,
+  // native or HTTP.
+  for (;;) {
+    // Native CLI reviewers. A refusal moves the run to the next configured
+    // fallback (CLI or HTTP) instead of failing it; any other error still fails.
+    while (isNativeRunner(config.models.review)) {
+      try {
+        return withCarried(await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy,
+          allowEscalation: escalateTo !== undefined, ...(escalationNote ? { escalationNote } : {}) }));
+      } catch (err) {
+        if (err instanceof ReviewEscalation && escalateTo) {
+          console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} escalated to ${modelLabel(escalateTo)}: ${err.reason}`);
+          carried.tokens += err.tokens;
+          carried.steps += err.steps;
+          config = withReviewModel(config, escalateTo);
+          reviewedBy = modelLabel(escalateTo);
+          escalationNote = err.reason;
+          escalateTo = undefined;
+          continue;
+        }
+        const next = refusalFallback(config.models.review, err);
+        if (!next) throw err;
+        console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} refused (category=${(err as ModelRefusalError).category}); falling back to ${modelLabel(next)}`);
+        config = withReviewModel(config, next);
+        reviewedBy = modelLabel(next);
       }
-      const next = refusalFallback(config.models.review, err);
-      if (!next) throw err;
-      console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} refused (category=${(err as ModelRefusalError).category}); falling back to ${modelLabel(next)}`);
-      config = withReviewModel(config, next);
-      reviewedBy = modelLabel(next);
     }
-  }
-  let system = skillMd
-    ? `${REVIEWER_SYSTEM_PROMPT}\n\n---\n\n## Repository knowledge\n\n${skillMd}`
-    : REVIEWER_SYSTEM_PROMPT;
-  // Tool-shy models (GLM, etc.) tend to end with prose instead of a terminal tool — steer them.
-  if (needsToolUseEnforcement(config.models.review)) system += TOOL_USE_ENFORCEMENT;
+    let system = skillMd
+      ? `${REVIEWER_SYSTEM_PROMPT}\n\n---\n\n## Repository knowledge\n\n${skillMd}`
+      : REVIEWER_SYSTEM_PROMPT;
+    // Tool-shy models (GLM, etc.) tend to end with prose instead of a terminal tool — steer them.
+    if (needsToolUseEnforcement(config.models.review)) system += TOOL_USE_ENFORCEMENT;
 
-  const assemble = opts.assembleTools ?? defaultAssembleTools;
-  const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config });
-  const tools = toAiSdkTools(toolDefs);
+    const assemble = opts.assembleTools ?? defaultAssembleTools;
+    const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config });
+    // A cheap HTTP tier escalates through a tool that posts nothing.
+    const tools = toAiSdkTools(escalateTo ? [...toolDefs, ESCALATE_TOOL] : toolDefs);
 
-  const userMessage = [
-    renderPrOverview(ctx),
-    renderReReview(ctx, 'git'),
-    renderEscalation(escalationNote ? { note: escalationNote } : {}),
-    '',
-    '---',
-    '',
-    'The workspace is checked out at the PR head. When done, call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.',
-  ].join('\n');
+    const userMessage = [
+      renderPrOverview(ctx),
+      renderReReview(ctx, 'git'),
+      renderEscalation(escalationNote ? { note: escalationNote } : escalateTo ? { allow: true, via: 'tool' } : {}),
+      '',
+      '---',
+      '',
+      'The workspace is checked out at the PR head. When done, call exactly one of `post_review` or `skip_review`. Communicate only through tool calls.',
+    ].join('\n');
 
-  const model = buildChatModel(config.models.review);
-  const maxOutputTokens = reviewOutputTokens(config);
-  // Opened before the first call so a run that is killed mid-review still leaves
-  // every step it completed on disk.
-  const trace = startReviewTrace({
-    vaultPath: config.vaultPath,
-    repo: opts.repo,
-    prNumber: opts.prNumber,
-    headSha: ctx.headSha,
-    model: config.models.review.model,
-    startedAt,
-  });
-  const main = await generateText({
-    abortSignal: signal,
-    model,
-    system,
-    prompt: userMessage,
-    tools,
-    stopWhen: [stepCountIs(config.review.maxSteps), hasToolCall('post_review'), hasToolCall('skip_review')],
-    maxOutputTokens,
-    onStepFinish: (step) => trace.step('main', step),
-  });
-
-  let { terminal, result, hasFindings, inspections, toolErrors, postFailures } = summarizeReviewSteps(main.steps);
-  let tokens = tokensFrom(main.usage);
-  let stepCount = main.steps.length;
-  let forcedTerminal = false;
-  const passes: Array<{ readonly responseMessages: readonly ModelMessage[] }> = [main];
-  let transcript = reviewTranscript(userMessage, main);
-  let lastSteps: readonly StepLike[] = main.steps;
-
-  // The model ended without a terminal tool, so nothing was posted. Recovery is
-  // two stages, in this order on purpose:
-  //
-  //   1. Continue with the FULL tool set - up to CONTINUATION_ATTEMPTS times, since
-  //      a pass that dies on the per-turn output cap usually gets real work done
-  //      first and dies again on the next cap rather than on the decision.
-  //   2. Only if those also end without a decision, replay with the terminal tools
-  //      alone and toolChoice "required".
-  //
-  // Stage 2 first is what produced green checks with no review behind them: a model
-  // handed only post_review/skip_review reports it has nothing to inspect with and
-  // calls skip_review. A decision made there is flagged `forcedTerminal`, and
-  // `inspections` stays at whatever the earlier passes actually did.
-  for (let attempt = 1; terminal === 'none' && attempt <= CONTINUATION_ATTEMPTS; attempt++) {
-    const phase = attempt === 1 ? 'continuation' : `continuation-${attempt}`;
-    const continued = await generateText({
+    const model = buildChatModel(config.models.review);
+    const maxOutputTokens = reviewOutputTokens(config);
+    // Opened before the first call so a run that is killed mid-review still leaves
+    // every step it completed on disk.
+    const trace = startReviewTrace({
+      vaultPath: config.vaultPath,
+      repo: opts.repo,
+      prNumber: opts.prNumber,
+      headSha: ctx.headSha,
+      model: config.models.review.model,
+      startedAt,
+    });
+    const main = await generateText({
       abortSignal: signal,
       model,
       system,
-      messages: [...transcript, { role: 'user', content: continuationPrompt(stalledOnOutputCap(lastSteps)) }],
+      prompt: userMessage,
       tools,
-      stopWhen: [stepCountIs(CONTINUATION_MAX_STEPS), hasToolCall('post_review'), hasToolCall('skip_review')],
+      stopWhen: [stepCountIs(config.review.maxSteps), hasToolCall('post_review'), hasToolCall('skip_review'), hasToolCall(ESCALATE_TOOL.name)],
       maxOutputTokens,
-      onStepFinish: (step) => trace.step(phase, step),
+      onStepFinish: (step) => trace.step('main', step),
     });
-    const c = summarizeReviewSteps(continued.steps);
-    terminal = c.terminal;
-    result = c.result;
-    hasFindings ||= c.hasFindings;
-    inspections += c.inspections;
-    toolErrors += c.toolErrors;
-    postFailures += c.postFailures;
-    tokens += tokensFrom(continued.usage);
-    stepCount += continued.steps.length;
-    passes.push(continued);
-    transcript = reviewTranscript(userMessage, ...passes);
-    lastSteps = continued.steps;
+
+    let { terminal, result, hasFindings, inspections, toolErrors, postFailures } = summarizeReviewSteps(main.steps);
+    let tokens = tokensFrom(main.usage);
+    let stepCount = main.steps.length;
+    // An escalation ends this pass: nothing was posted, the large tier takes over.
+    const escalateNow = (steps: readonly StepLike[]): boolean => {
+      const reason = escalateTo ? escalationReason(steps) : undefined;
+      if (!reason || !escalateTo) return false;
+      trace.finish({ terminal: 'none', result: '', inspections, toolErrors, reason, error: `escalated: ${reason}` });
+      console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} escalated to ${modelLabel(escalateTo)}: ${reason}`);
+      carried.tokens += tokens;
+      carried.steps += stepCount;
+      config = withReviewModel(config, escalateTo);
+      reviewedBy = modelLabel(escalateTo);
+      escalationNote = reason;
+      escalateTo = undefined;
+      return true;
+    };
+    if (escalateNow(main.steps)) continue;
+    let escalatedMidway = false;
+    let forcedTerminal = false;
+    const passes: Array<{ readonly responseMessages: readonly ModelMessage[] }> = [main];
+    let transcript = reviewTranscript(userMessage, main);
+    let lastSteps: readonly StepLike[] = main.steps;
+
+    // The model ended without a terminal tool, so nothing was posted. Recovery is
+    // two stages, in this order on purpose:
+    //
+    //   1. Continue with the FULL tool set - up to CONTINUATION_ATTEMPTS times, since
+    //      a pass that dies on the per-turn output cap usually gets real work done
+    //      first and dies again on the next cap rather than on the decision.
+    //   2. Only if those also end without a decision, replay with the terminal tools
+    //      alone and toolChoice "required".
+    //
+    // Stage 2 first is what produced green checks with no review behind them: a model
+    // handed only post_review/skip_review reports it has nothing to inspect with and
+    // calls skip_review. A decision made there is flagged `forcedTerminal`, and
+    // `inspections` stays at whatever the earlier passes actually did.
+    for (let attempt = 1; terminal === 'none' && attempt <= CONTINUATION_ATTEMPTS; attempt++) {
+      const phase = attempt === 1 ? 'continuation' : `continuation-${attempt}`;
+      const continued = await generateText({
+        abortSignal: signal,
+        model,
+        system,
+        messages: [...transcript, { role: 'user', content: continuationPrompt(stalledOnOutputCap(lastSteps)) }],
+        tools,
+        stopWhen: [stepCountIs(CONTINUATION_MAX_STEPS), hasToolCall('post_review'), hasToolCall('skip_review'), hasToolCall(ESCALATE_TOOL.name)],
+        maxOutputTokens,
+        onStepFinish: (step) => trace.step(phase, step),
+      });
+      const c = summarizeReviewSteps(continued.steps);
+      terminal = c.terminal;
+      result = c.result;
+      hasFindings ||= c.hasFindings;
+      inspections += c.inspections;
+      toolErrors += c.toolErrors;
+      postFailures += c.postFailures;
+      tokens += tokensFrom(continued.usage);
+      stepCount += continued.steps.length;
+      passes.push(continued);
+      transcript = reviewTranscript(userMessage, ...passes);
+      lastSteps = continued.steps;
+      if (escalateNow(continued.steps)) { escalatedMidway = true; break; }
+    }
+    if (escalatedMidway) continue;
+
+    if (terminal === 'none') {
+      const forced = await generateText({
+        abortSignal: signal,
+        model,
+        system,
+        messages: [
+          ...transcript,
+          {
+            role: 'user',
+            content: [
+              'You ended without posting, which wastes the review. Call exactly one of `post_review` (with your findings) or `skip_review` (if nothing clears the bar) now — respond only with that tool call.',
+              `This run already made ${inspections} successful inspection tool call(s); their output is in this conversation. Base the call on it.`,
+              'You have no inspection tools in this turn, so do not claim you read nothing when the transcript above shows otherwise.',
+            ].join(' '),
+          },
+        ],
+        tools: { post_review: tools.post_review, skip_review: tools.skip_review },
+        // Claude on Converse rejects forced tool use; the adapter sends auto,
+        // names these two tools, and retries once. Responses keeps 'required'.
+        toolChoice: 'required',
+        stopWhen: [stepCountIs(2), hasToolCall('post_review'), hasToolCall('skip_review')],
+        maxOutputTokens,
+        onStepFinish: (step) => trace.step('forced', step),
+      });
+      const f = summarizeReviewSteps(forced.steps);
+      terminal = f.terminal;
+      result = f.result;
+      hasFindings ||= f.hasFindings;
+      toolErrors += f.toolErrors;
+      postFailures += f.postFailures;
+      tokens += tokensFrom(forced.usage);
+      stepCount += forced.steps.length;
+      forcedTerminal = terminal !== 'none';
+    }
+
+    const outcome: ReviewOutcome = {
+      terminal,
+      hasFindings,
+      result,
+      headSha: ctx.headSha,
+      steps: stepCount,
+      tokens,
+      inspections,
+      toolErrors,
+      postFailures,
+      forcedTerminal,
+      ranModel: true,
+      model: reviewedBy,
+    };
+    const tracePath = trace.finish({ ...outcome, result: outcome.result.slice(0, 8000) });
+
+    return withCarried({ ...outcome, ...(tracePath ? { tracePath } : {}) });
   }
-
-  if (terminal === 'none') {
-    const forced = await generateText({
-      abortSignal: signal,
-      model,
-      system,
-      messages: [
-        ...transcript,
-        {
-          role: 'user',
-          content: [
-            'You ended without posting, which wastes the review. Call exactly one of `post_review` (with your findings) or `skip_review` (if nothing clears the bar) now — respond only with that tool call.',
-            `This run already made ${inspections} successful inspection tool call(s); their output is in this conversation. Base the call on it.`,
-            'You have no inspection tools in this turn, so do not claim you read nothing when the transcript above shows otherwise.',
-          ].join(' '),
-        },
-      ],
-      tools: { post_review: tools.post_review, skip_review: tools.skip_review },
-      // Claude on Converse rejects forced tool use; the adapter sends auto,
-      // names these two tools, and retries once. Responses keeps 'required'.
-      toolChoice: 'required',
-      stopWhen: [stepCountIs(2), hasToolCall('post_review'), hasToolCall('skip_review')],
-      maxOutputTokens,
-      onStepFinish: (step) => trace.step('forced', step),
-    });
-    const f = summarizeReviewSteps(forced.steps);
-    terminal = f.terminal;
-    result = f.result;
-    hasFindings ||= f.hasFindings;
-    toolErrors += f.toolErrors;
-    postFailures += f.postFailures;
-    tokens += tokensFrom(forced.usage);
-    stepCount += forced.steps.length;
-    forcedTerminal = terminal !== 'none';
-  }
-
-  const outcome: ReviewOutcome = {
-    terminal,
-    hasFindings,
-    result,
-    headSha: ctx.headSha,
-    steps: stepCount,
-    tokens,
-    inspections,
-    toolErrors,
-    postFailures,
-    forcedTerminal,
-    ranModel: true,
-    model: reviewedBy,
-  };
-  const tracePath = trace.finish({ ...outcome, result: outcome.result.slice(0, 8000) });
-
-  return withCarried({ ...outcome, ...(tracePath ? { tracePath } : {}) });
 }
 
 export type StepLike = {
   finishReason?: string;
-  toolCalls?: Array<{ toolName?: string }>;
-  toolResults?: Array<{ toolName: string; output?: unknown; result?: unknown }>;
+  toolCalls?: Array<{ toolName?: string; input?: unknown }>;
+  toolResults?: Array<{ toolName: string; input?: unknown; output?: unknown; result?: unknown }>;
   content?: Array<{ type?: string }>;
 };
 
@@ -461,6 +485,28 @@ const POSTING_TOOLS = new Set(['post_review', 'post_issue_comment']);
  * Pull the terminal decision, any non-terminal findings, and how much the run
  * actually inspected out of a run's steps.
  */
+/** HTTP escalation: a terminal tool that posts nothing; the dispatch loop hands the PR to the large tier. */
+const ESCALATE_TOOL: ToolDef = {
+  name: 'escalate_review',
+  description: 'Hand this PR to the full reviewer when you cannot settle part of it with the evidence you can gather. Posts nothing. Give the reason: what needs the deeper look.',
+  inputSchema: z.object({ reason: z.string().min(1) }),
+  callback: async (input: { reason: string }) => JSON.stringify({ ok: true, escalated: true, reason: input.reason }),
+};
+
+/** The reason of a successful escalate_review call in these steps, if any. */
+export function escalationReason(steps: readonly StepLike[]): string | undefined {
+  for (const step of steps) {
+    for (const tr of step.toolResults ?? []) {
+      if (tr.toolName !== ESCALATE_TOOL.name) continue;
+      const payload = tr.output ?? tr.result;
+      if (isToolErrorOutput(payload)) continue;
+      const reason = (tr.input as { reason?: unknown } | undefined)?.reason;
+      if (typeof reason === 'string' && reason.trim()) return reason.trim();
+    }
+  }
+  return undefined;
+}
+
 export function summarizeReviewSteps(
   steps: readonly StepLike[],
 ): Pick<ReviewOutcome, 'terminal' | 'result' | 'hasFindings' | 'inspections' | 'toolErrors' | 'postFailures'> {

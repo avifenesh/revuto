@@ -10,7 +10,8 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { agyReviewSchema, buildAgyReviewPrompt, probeAgy, renderEscalation, ReviewEscalation, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
+import { agyReviewSchema, buildAgyReviewPrompt, NativeStepLimitError, normalizeClaudeEvents, probeAgy, renderEscalation, ReviewEscalation, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
+import { escalationReason } from '../agents/common/src/run-agent.js';
 import { CODEX_REVIEW_SCHEMA, codexEnvironment, codexReviewSchema, normalizeCodexEvents } from '../agents/common/src/codex-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import { ModelRefusalError } from '../agents/common/src/refusal.js';
@@ -248,4 +249,40 @@ test('the escalate option exists only where escalation is allowed, and the large
   const note = renderEscalation({ note: 'needs a look at the retry path' });
   assert.match(note, /## Escalated review\nA first-pass reviewer on a smaller tier handed this PR to you: needs a look at the retry path/);
   assert.doesNotMatch(buildAgyReviewPrompt(context('/ws'), '', 'codex'), /## Escalation/);
+});
+
+test('a Claude turn-limit stop keeps its subtype, its cost, and escalates on a cheap tier', async () => {
+  const [limit] = normalizeClaudeEvents({ type: 'result', subtype: 'error_max_turns', is_error: true, errors: [], usage: { input_tokens: 30, output_tokens: 5, cache_read_input_tokens: 100 } }, new Map());
+  const r = limit.result as { status: string; error: string; limit?: boolean; usage: { total_tokens: number } };
+  assert.equal(r.status, 'ERROR'); assert.equal(r.limit, true); assert.equal(r.error, 'error_max_turns: []'); assert.equal(r.usage.total_tokens, 135);
+  const [other] = normalizeClaudeEvents({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['boom'] }, new Map());
+  assert.equal((other.result as { limit?: boolean }).limit, undefined);
+
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-claude-limit-'));
+  const command = join(dir, 'claude-fake.mjs');
+  writeFileSync(command, `#!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+readFileSync(0, 'utf8');
+console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'mcp__revuto__read' }] } }));
+console.log(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: 'file' }] } }));
+console.log(JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, errors: [], usage: { input_tokens: 30, output_tokens: 5 } }));
+`);
+  chmodSync(command, 0o755);
+  const spec = { baseURL: 'claude-cli://local', api: 'claude' as const, auth: 'none' as const, command, model: 'global.anthropic.claude-opus-5-5[1m]' };
+  try {
+    await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'x' }), (err: unknown) => err instanceof NativeStepLimitError && err.tokens === 35 && err.steps > 0);
+    const config = { vaultPath: dir, models: { review: spec }, review: { maxSteps: 5 }, limits: { maxOutputTokens: {} } } as unknown as ReviewerConfig;
+    await assert.rejects(runAgyReview({ config, ctx: context(dir), octokit: {} as never, token: async () => 'unused', skillMarkdown: '', startedAt: new Date(), allowEscalation: true }),
+      (err: unknown) => err instanceof ReviewEscalation && err.reason === 'ran out of review steps' && err.tokens === 35);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an HTTP pass escalates only through a successful escalate_review call with a reason', () => {
+  assert.equal(escalationReason([{ toolResults: [{ toolName: 'read', input: {}, output: 'x' }] }]), undefined);
+  assert.equal(escalationReason([{ toolResults: [{ toolName: 'escalate_review', input: { reason: ' retry path ' }, output: '{"ok":true}' }] }]), 'retry path');
+  assert.equal(escalationReason([{ toolResults: [{ toolName: 'escalate_review', input: { reason: 'x' }, output: 'ERROR: failed' }] }]), undefined);
+  assert.equal(escalationReason([{ toolResults: [{ toolName: 'escalate_review', input: {}, output: '{"ok":true}' }] }]), undefined);
+  assert.match(renderEscalation({ allow: true, via: 'tool' }), /call escalate_review with a reason/);
 });

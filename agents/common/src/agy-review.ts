@@ -84,8 +84,13 @@ export class ReviewEscalation extends Error {
   }
 }
 
-/** A run stopped at its step or turn budget. */
-const STEP_LIMIT = /exceeded review\.maxSteps|error_max_turns/;
+/** A native run stopped at its step or turn budget, with what it had done by then. */
+export class NativeStepLimitError extends Error {
+  constructor(message: string, readonly steps: number, readonly tokens: number) {
+    super(message);
+    this.name = 'NativeStepLimitError';
+  }
+}
 
 const AgyComment = z.object({
   path: z.string(),
@@ -121,6 +126,8 @@ export interface AgyCliResult {
   readonly usage?: AgyUsage;
   /** Set when the model declined the request (Claude `stop_reason: "refusal"`). */
   readonly refusal?: { readonly category: string };
+  /** The run ended at its turn limit (Claude `error_max_turns`). */
+  readonly limit?: boolean;
 }
 
 interface AgyToolInfo {
@@ -326,7 +333,8 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
         const name = step.tool_name || info?.name || 'agy_tool';
         // Codex has no turn limit of its own, so revuto stops it at review.maxSteps tool calls.
         if (runner === 'codex' && ++toolCalls > maxSteps) {
-          stopWithError(new Error(`Codex CLI exceeded review.maxSteps (${maxSteps} tool calls)`));
+          // Codex reports usage only when a turn completes, so a stopped turn carries steps only.
+          stopWithError(new NativeStepLimitError(`Codex CLI exceeded review.maxSteps (${maxSteps} tool calls)`, stepCount, 0));
           return;
         }
         // Producing the verdict is not an inspection of repository evidence.
@@ -411,7 +419,8 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
         return;
       }
       if (result.status !== 'SUCCESS') {
-        finishError(new Error(`${label} run failed${result.error ? `: ${result.error}` : ''}`));
+        const message = `${label} run failed${result.error ? `: ${result.error}` : ''}`;
+        finishError(result.limit ? new NativeStepLimitError(message, stepCount, result.usage?.total_tokens ?? 0) : new Error(message));
         return;
       }
       settled = true;
@@ -502,8 +511,11 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
     }
   } catch (err) {
     trace.finish({ terminal: 'none', result: '', inspections: 0, toolErrors: 1, error: errorText(err) });
-    // A cheap tier that ran out of budget hands the PR up instead of failing it.
-    if (escalation.allow && STEP_LIMIT.test(errorText(err))) throw new ReviewEscalation('ran out of review steps', priorTokens, priorSteps);
+    // A cheap tier that ran out of budget hands the PR up instead of failing it,
+    // carrying what the stopped pass had used.
+    if (escalation.allow && err instanceof NativeStepLimitError) {
+      throw new ReviewEscalation('ran out of review steps', priorTokens + err.tokens, priorSteps + err.steps);
+    }
     throw err;
   }
 
@@ -586,14 +598,21 @@ export const UNINSPECTED_RETRY_NOTE = [
   'Before deciding, fetch the diff (for the Claude and Codex runners: the revuto pr_diff tool with mode=stat, then the patch), read the changed files, and for deleted or renamed files search the repository for references to their paths. Then return the structured result.',
 ].join('\n');
 
-/** What the prompt says about escalation: the option on a cheap tier, the first pass's note on the large one. */
-export function renderEscalation(escalation: { allow?: boolean; note?: string } = {}): string {
+/**
+ * What the prompt says about escalation: the option on a cheap tier, the first
+ * pass's note on the large one. Native runners escalate through the verdict's
+ * decision, HTTP runners through the escalate_review tool.
+ */
+export function renderEscalation(escalation: { allow?: boolean; note?: string; via?: 'decision' | 'tool' } = {}): string {
   if (escalation.note) {
     return ['', '## Escalated review', `A first-pass reviewer on a smaller tier handed this PR to you: ${escalation.note}`, 'Give that part a careful look, but review the whole change.'].join('\n');
   }
   if (!escalation.allow) return '';
+  const how = escalation.via === 'tool'
+    ? 'call escalate_review with a reason that says what needs the deeper look, instead of post_review or skip_review'
+    : 'set decision to escalate, say in reason what needs the deeper look, set body to an empty string and return no comments';
   return ['', '## Escalation',
-    'You are the first-pass reviewer on a smaller tier. If you cannot settle a part of this change with the evidence available to you (for example concurrency, security or data-loss behaviour you could not verify), set decision to escalate, say in reason what needs the deeper look, set body to an empty string and return no comments. The full reviewer then runs with your reason. Do not escalate a change you could review; escalation costs a second review.',
+    `You are the first-pass reviewer on a smaller tier. If you cannot settle a part of this change with the evidence available to you (for example concurrency, security or data-loss behaviour you could not verify), ${how}. The full reviewer then runs with your reason. Do not escalate a change you could review; escalation costs a second review.`,
   ].join('\n');
 }
 
@@ -722,11 +741,12 @@ export function normalizeClaudeEvents(record: Record<string, unknown>, tools: Ma
     const refusal = claudeRefusal(record);
     return [{ event: 'result', result: {
       ...(refusal ? { refusal } : {}),
+      ...(record.subtype === 'error_max_turns' ? { limit: true } : {}),
       status: record.subtype === 'success' && record.is_error !== true ? 'SUCCESS' : 'ERROR',
       conversation_id: record.session_id,
       response: record.result,
       error: record.is_error === true || record.subtype !== 'success'
-        ? JSON.stringify(record.errors ?? record.result ?? record.subtype) : undefined,
+        ? `${String(record.subtype ?? 'error')}: ${JSON.stringify(record.errors ?? record.result ?? null)}` : undefined,
       structured_output: record.structured_output,
       usage: { input_tokens: usage?.input_tokens ?? 0, output_tokens: usage?.output_tokens ?? 0,
         total_tokens: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0)
