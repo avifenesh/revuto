@@ -10,8 +10,6 @@ export interface CommonToolsOpts {
   readonly octokit: Octokit;
   readonly token: () => Promise<string>;
   readonly allowWrite?: boolean;
-  /** Model label for the signed footer of anything this run posts. */
-  readonly reviewedBy?: string;
 }
 
 /**
@@ -28,7 +26,7 @@ export async function assembleCommonTools(opts: CommonToolsOpts): Promise<readon
     allowWrite: opts.allowWrite ?? false,
   });
 
-  const ghDeps = { ctx: opts.ctx, octokit: opts.octokit, token: opts.token, reviewedBy: opts.reviewedBy };
+  const ghDeps = { ctx: opts.ctx, octokit: opts.octokit, token: opts.token };
 
   return [
     ...harness.tools,

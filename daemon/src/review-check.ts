@@ -16,8 +16,6 @@ export interface CheckResult {
   readonly conclusion: 'success' | 'failure';
   readonly title: string;
   readonly summary: string;
-  /** Label of the model that reviewed, carried into the clean approval's footer. */
-  readonly reviewedBy?: string;
 }
 
 export function isReviewOutcomeSuccessful(outcome: ReviewOutcome): boolean {
@@ -29,12 +27,6 @@ export function isReviewOutcomeSuccessful(outcome: ReviewOutcome): boolean {
 }
 
 export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
-  const result = checkResultForOutcomeBody(outcome);
-  if (!outcome.model) return result;
-  return { ...result, reviewedBy: outcome.model, summary: `${result.summary}\n\nReviewed by ${outcome.model}.` };
-}
-
-function checkResultForOutcomeBody(outcome: ReviewOutcome): CheckResult {
   if (outcome.hasFindings || outcome.terminal === 'post_review') {
     return {
       conclusion: 'failure',
@@ -183,7 +175,7 @@ export async function completeReviewCheck(
         pull_number: target.prNumber,
         commit_id: target.headSha,
         event: 'APPROVE',
-        body: signReviewBody('Revuto completed the review and found no evidence-backed concerns.', result.reviewedBy),
+        body: signReviewBody('Revuto completed the review and found no evidence-backed concerns.'),
       });
     } catch (err) {
       finalResult = checkResultForError(

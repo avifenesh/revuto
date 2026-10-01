@@ -299,8 +299,8 @@ Add `models.reviewSmall` (same shape as `models.review`, native Claude CLI allow
 and revuto routes a pull request to it when every changed file is documentation, or
 when the diff is at most `review.small.maxChangedLines` changed lines (additions plus
 deletions). Everything else, and every PR when `reviewSmall` is absent, runs on
-`models.review`. The signed footer of what gets posted and the check summary say
-`reviewed by <name>`, so the routing is visible on the PR.
+`models.review`. The route shows in the daemon log (`model <name> (small-PR
+reviewer): <reason>`). Nothing posted to GitHub names the model.
 
 ```jsonc
 "models": {
