@@ -126,7 +126,7 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
     console.error(`[webhook] ${event.repository.full_name}#${event.number} failed: ${err instanceof Error ? err.message : String(err)}`);
     if (auth && checkRunId !== undefined) {
       try {
-        await completeReviewCheck(auth, app, target, checkRunId, checkResultForError(err));
+        await completeReviewCheck(auth, app, target, checkRunId, checkResultForError(err, config));
       } catch (updateErr) {
         console.error(`[webhook] could not complete check ${checkRunId}: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`);
       }

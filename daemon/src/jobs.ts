@@ -237,7 +237,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
   } catch (err) {
     if (githubApp && managedCheckRunId !== undefined) {
       try {
-        await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, checkResultForError(err));
+        await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, checkResultForError(err, config));
       } catch (updateErr) {
         console.error(`[review] could not complete check ${managedCheckRunId}: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`);
       }

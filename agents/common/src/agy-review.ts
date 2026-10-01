@@ -365,7 +365,7 @@ export interface RunAgyReviewOptions {
   readonly token: () => Promise<string>;
   readonly skillMarkdown: string;
   readonly startedAt: Date;
-  /** Model label for the signed footer and the outcome; defaults to the spec's name or id. */
+  /** Model label for the outcome and the local logs; defaults to the spec's name or id. */
   readonly reviewedBy?: string;
 }
 
@@ -433,7 +433,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
   }
 
   const reviewedBy = opts.reviewedBy?.trim() || spec.name?.trim() || spec.model;
-  const deps = { ctx: opts.ctx, octokit: opts.octokit, token: opts.token, reviewedBy };
+  const deps = { ctx: opts.ctx, octokit: opts.octokit, token: opts.token };
   let terminal: ReviewOutcome['terminal'] = 'none';
   let hasFindings = false;
   let result = '';

@@ -108,20 +108,18 @@ test('docs-only and small diffs route to models.reviewSmall; large code diffs do
   assert.equal(withReviewModel(cfg, cfg.models.review), cfg);
 });
 
-test('the signed footer and the check summary name the model that reviewed', () => {
-  const signed = signReviewBody('finding', 'claude-cli-sonnet-5');
-  assert.match(signed, /^<!-- revuto-signed -->\n\*This is an auto review done by \[revuto\]\(https:\/\/github\.com\/avifenesh\/revuto\), reviewed by claude-cli-sonnet-5\.\*\n\n---\n\nfinding$/);
-  assert.equal(signReviewBody('finding'), '<!-- revuto-signed -->\n*This is an auto review done by [revuto](https://github.com/avifenesh/revuto).*\n\n---\n\nfinding');
-  assert.equal(signReviewBody(signed, 'other'), signed, 'already signed bodies are left alone');
+test('the signed footer and the check summary do not name the model that reviewed', () => {
+  const signed = signReviewBody('finding');
+  assert.equal(signed, '<!-- revuto-signed -->\n*This is an auto review done by [revuto](https://github.com/avifenesh/revuto).*\n\n---\n\nfinding');
+  assert.equal(signReviewBody(signed), signed, 'already signed bodies are left alone');
   const outcome: ReviewOutcome = {
     terminal: 'skip_review', hasFindings: false, result: 'clean', headSha: 'a'.repeat(40), steps: 3, tokens: 10,
     inspections: 4, toolErrors: 0, postFailures: 0, forcedTerminal: false, ranModel: true, model: 'claude-cli-sonnet-5',
   };
   const result = checkResultForOutcome(outcome);
   assert.equal(result.conclusion, 'success');
-  assert.equal(result.reviewedBy, 'claude-cli-sonnet-5');
-  assert.match(result.summary, /Reviewed by claude-cli-sonnet-5\.$/);
-  assert.equal(checkResultForOutcome({ ...outcome, model: undefined }).reviewedBy, undefined);
+  assert.doesNotMatch(result.summary, /claude-cli-sonnet-5|Reviewed by/);
+  assert.deepEqual(checkResultForOutcome({ ...outcome, model: undefined }), result);
 });
 
 test('config: ignoredRepos, reviewSmall and review.small load with validation and defaults', () => {

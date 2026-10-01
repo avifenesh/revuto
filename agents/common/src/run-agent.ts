@@ -34,8 +34,6 @@ export interface AssembleBaseOpts {
   readonly token: () => Promise<string>;
   readonly allowWrite: boolean;
   readonly config: ReviewerConfig;
-  /** Label of the model running this review, for the signed footer. */
-  readonly reviewedBy?: string;
 }
 
 export type AssembleTools = (opts: AssembleBaseOpts) => Promise<readonly ToolDef[]>;
@@ -255,7 +253,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   if (needsToolUseEnforcement(config.models.review)) system += TOOL_USE_ENFORCEMENT;
 
   const assemble = opts.assembleTools ?? defaultAssembleTools;
-  const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config, reviewedBy });
+  const toolDefs = await assemble({ ctx, octokit, token, allowWrite: config.review.allowWrite, config });
   const tools = toAiSdkTools(toolDefs);
 
   const userMessage = [
@@ -448,4 +446,4 @@ export function summarizeReviewSteps(
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>
-  assembleCommonTools({ ctx: opts.ctx, octokit: opts.octokit, token: opts.token, allowWrite: opts.allowWrite, reviewedBy: opts.reviewedBy });
+  assembleCommonTools({ ctx: opts.ctx, octokit: opts.octokit, token: opts.token, allowWrite: opts.allowWrite });

@@ -99,5 +99,4 @@ and reviewers, the fork repos are mostly agent-authored.
 
 `review.small` (#109) is the hand-written v0 of tier 1: docs-only or under 200 changed lines go
 to `models.reviewSmall`. The trained router replaces that gate and adds tiers 0 and 3; the
-"reviewed by <model>" footer and the daemon route log already give the visibility the shadow
-phase needs.
+daemon route log already gives the visibility the shadow phase needs.
