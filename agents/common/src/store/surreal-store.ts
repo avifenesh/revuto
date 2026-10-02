@@ -14,6 +14,7 @@ import {
   type SkillNote, type NewSkillNote, type SkillStatus,
 } from './store.js';
 import { MarkdownSkills, repoSlug } from './markdown-skills.js';
+import { createSurrealFetch, isSurrealTransportError, retrySurrealRead, surrealErrorMessage } from './surreal-transport.js';
 
 export interface SurrealConfig {
   readonly url: string;
@@ -95,7 +96,7 @@ function isRetryableSurreal(err: unknown): boolean {
 
 export class SurrealStore implements KnowledgeStore {
   readonly repo: string;
-  private readonly db = new Surreal();
+  private readonly db = new Surreal({ fetchImpl: createSurrealFetch() });
   private readonly skills: MarkdownSkills;
   private readonly cfg: SurrealConfig;
   private readonly database: string;
@@ -109,6 +110,20 @@ export class SurrealStore implements KnowledgeStore {
 
   /** Connect, ensure the per-repo namespace/database exist, and select them. */
   async connect(): Promise<void> {
+    // Authentication and IF NOT EXISTS definitions can be replayed. Close a
+    // failed SDK connection before retrying so its session state is reset.
+    await retrySurrealRead(async () => {
+      try {
+        await this.connectAndInitialize();
+      } catch (err) {
+        await this.db.close().catch(() => undefined);
+        if (!isSurrealTransportError(err)) throw err;
+        throw new Error(`SurrealDB connect ${this.repo} failed: ${surrealErrorMessage(err)}`, { cause: err });
+      }
+    });
+  }
+
+  private async connectAndInitialize(): Promise<void> {
     // Session state (auth + ns/db selection) must ride in the connect options:
     // the SDK silently reconnects dropped sockets and replays only what
     // connect() was given — manual signin()/use() calls are lost on reconnect,
@@ -138,7 +153,17 @@ export class SurrealStore implements KnowledgeStore {
     `);
   }
 
-  private async query(sql: string, vars?: Record<string, unknown>): Promise<unknown[]> {
+  private async query(sql: string, vars?: Record<string, unknown>, opts: { retryRead?: boolean } = {}): Promise<unknown[]> {
+    const execute = (): Promise<unknown[]> => this.queryWithConflictRetry(sql, vars);
+    try {
+      return await (opts.retryRead ? retrySurrealRead(execute) : execute());
+    } catch (err) {
+      if (!isSurrealTransportError(err)) throw err;
+      throw new Error(`SurrealDB query ${this.repo} failed: ${surrealErrorMessage(err)}`, { cause: err });
+    }
+  }
+
+  private async queryWithConflictRetry(sql: string, vars?: Record<string, unknown>): Promise<unknown[]> {
     const waits = [50, 150, 350, 750];
     for (let attempt = 0; ; attempt++) {
       try {
@@ -150,8 +175,8 @@ export class SurrealStore implements KnowledgeStore {
     }
   }
 
-  private async rows(sql: string, vars?: Record<string, unknown>): Promise<any[]> {
-    const res = await this.query(sql, vars);
+  private async rows(sql: string, vars?: Record<string, unknown>, opts: { retryRead?: boolean } = {}): Promise<any[]> {
+    const res = await this.query(sql, vars, opts);
     return (res[res.length - 1] as any[]) ?? [];
   }
 
@@ -159,12 +184,13 @@ export class SurrealStore implements KnowledgeStore {
     const rows = await this.rows(
       `SELECT * FROM concern WHERE area_bucket = $b ORDER BY reinforcement_count DESC, updated_at DESC LIMIT $limit`,
       { b: areaBucket, limit },
+      { retryRead: true },
     );
     return rows.map(mapConcern);
   }
 
   async getConcern(recordId: string): Promise<ConcernRecord | null> {
-    const rows = await this.rows(`SELECT * FROM concern WHERE record_id = $id LIMIT 1`, { id: recordId });
+    const rows = await this.rows(`SELECT * FROM concern WHERE record_id = $id LIMIT 1`, { id: recordId }, { retryRead: true });
     return rows[0] ? mapConcern(rows[0]) : null;
   }
 
@@ -209,7 +235,7 @@ export class SurrealStore implements KnowledgeStore {
   }
 
   async allConcerns(): Promise<ConcernRecord[]> {
-    return (await this.rows(`SELECT * FROM concern`)).map(mapConcern);
+    return (await this.rows(`SELECT * FROM concern`, undefined, { retryRead: true })).map(mapConcern);
   }
 
   async setDecayScore(recordId: string, score: number): Promise<void> {
@@ -221,6 +247,7 @@ export class SurrealStore implements KnowledgeStore {
       `SELECT *, vector::similarity::cosine(embedding, $q) AS score FROM concern
          WHERE embedding != NONE ORDER BY score DESC LIMIT $k`,
       { q: embedding, k },
+      { retryRead: true },
     );
     return rows.map((r) => ({ record: mapConcern(r), score: Number(r.score ?? 0) }));
   }
@@ -234,7 +261,7 @@ export class SurrealStore implements KnowledgeStore {
   async writeTextbook(body: string): Promise<void> { this.skills.writeTextbook(body); }
 
   async getSkillEmbedding(slug: string, textHash: string): Promise<number[] | null> {
-    const rows = await this.rows(`SELECT text_hash, embedding FROM type::record('skill_embedding', $slug)`, { slug });
+    const rows = await this.rows(`SELECT text_hash, embedding FROM type::record('skill_embedding', $slug)`, { slug }, { retryRead: true });
     const r = rows[0];
     return r && r.text_hash === textHash ? (r.embedding as number[]) : null;
   }
@@ -243,14 +270,14 @@ export class SurrealStore implements KnowledgeStore {
   }
 
   async getCursor(name: string): Promise<string | null> {
-    const rows = await this.rows(`SELECT val FROM type::record('cursor', $n)`, { n: name });
+    const rows = await this.rows(`SELECT val FROM type::record('cursor', $n)`, { n: name }, { retryRead: true });
     return rows[0]?.val ?? null;
   }
   async setCursor(name: string, value: string): Promise<void> {
     await this.rows(`UPSERT type::record('cursor', $n) SET val = $v, updated_at = $now`, { n: name, v: value, now: new Date().toISOString() });
   }
   async seen(key: string): Promise<boolean> {
-    const rows = await this.rows(`SELECT id FROM type::record('seen', $k)`, { k: key });
+    const rows = await this.rows(`SELECT id FROM type::record('seen', $k)`, { k: key }, { retryRead: true });
     return rows.length > 0;
   }
   async claim(key: string, leaseMs = DEFAULT_CLAIM_LEASE_MS): Promise<boolean> {
@@ -275,7 +302,7 @@ export class SurrealStore implements KnowledgeStore {
     return Number(rows[0]?.n ?? by);
   }
   async getCounter(key: string): Promise<number> {
-    const rows = await this.rows(`SELECT n FROM type::record('counter', $k)`, { k: key });
+    const rows = await this.rows(`SELECT n FROM type::record('counter', $k)`, { k: key }, { retryRead: true });
     return Number(rows[0]?.n ?? 0);
   }
 
