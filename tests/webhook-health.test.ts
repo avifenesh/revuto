@@ -203,7 +203,7 @@ test('a pending replay failure below an unchanged newest delivery is reconsidere
   await f.check();
   assert.deepEqual(f.redeliveries, [20]);
   f.payload(40, 'octo/demo', 1, 'head-1');
-  f.history([delivery(50, 202), delivery(40, 500, { guid: 'guid-20' }), delivery(20)]);
+  f.history([delivery(50, 202), delivery(40, 0, { guid: 'guid-20' }), delivery(20)]);
   await f.check();
   assert.deepEqual(f.redeliveries, [20, 40]);
 });
