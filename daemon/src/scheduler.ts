@@ -9,6 +9,7 @@ import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import { listReviewers, effectiveSchedules, type ReviewerSettings } from './reviewers.js';
 import { reviewRepo, learnRepo, decayRepo } from './jobs.js';
 import { runQueuedForRepo } from './repo-queue.js';
+import { startWebhookHealthMonitor } from './webhook-health.js';
 
 export { runQueuedForRepo } from './repo-queue.js';
 
@@ -75,6 +76,7 @@ export function scheduleReviewers(
 }
 
 export function startDaemon(config: ReviewerConfig): ScheduledTask[] {
+  startWebhookHealthMonitor(config);
   const reviewers = listReviewers(config);
   if (reviewers.length === 0) {
     console.warn('no reviewers registered — add one with `revuto init <owner/repo>` (or `revuto add`)');

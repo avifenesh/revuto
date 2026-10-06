@@ -169,6 +169,55 @@ cron review schedule enabled as recovery for delivery or machine outages. After
 the first successful App check appears, require `revuto-review` in each
 repository's branch rules.
 
+The daemon checks the App's recent GitHub webhook delivery results at startup
+and every three minutes. `github.app.webhookHealthIntervalMinutes` changes this
+interval. When the newest `github.app.webhookFailureThreshold` deliveries have
+all failed, it logs an `ALERT`. The default threshold is three: one transient
+failure does not reconfigure ingress, while three consecutive failures signal
+a sustained delivery problem. The threshold accepts 1 through 100, the size of
+the recent-delivery page.
+
+Optionally set `github.app.webhookRepairCommand` to an executable and its
+arguments, or an ordered sequence of those arrays. For the Funnel above:
+
+```json
+{
+  "webhookHealthIntervalMinutes": 3,
+  "webhookFailureThreshold": 3,
+  "webhookRepairCommand": [
+    ["tailscale", "funnel", "--https=8443", "off"],
+    ["tailscale", "funnel", "--bg", "--https=8443", "--set-path", "/github/webhook", "http://127.0.0.1:8787/github/webhook"]
+  ]
+}
+```
+
+Place these keys inside `github.app`. A single command can be written as
+`["/path/to/repair-program", "--argument"]`. Commands run as the daemon user,
+without a shell, in order, with a 30-second deadline per command. This bounds
+a stuck repair and leaves the next health poll available. Child output, command
+arguments, webhook payloads, and API error bodies are never logged by the
+monitor. Omit the command to keep alerting and catch-up without automatic repair.
+A successful repair runs once per newest failed delivery; a failed repair is
+retried at the next poll.
+
+After GitHub reports a successful delivery following a detected outage, the
+monitor scans delivery history and requests redelivery of the newest failed `pull_request`
+`opened`, `synchronize`, or `reopened` event matching each open PR's current
+head. It only covers registered repositories allowed by the App
+configuration, respects `ignoredRepos`, and skips events with a successful
+redelivery. If an accepted asynchronous redelivery subsequently fails, it can
+retry using that recovery evidence. Catch-up also runs after restarting a daemon
+whose ingress has already recovered. GitHub accepts redelivery asynchronously; the monitor waits
+for an actual successful delivery before treating ingress as recovered.
+
+The scheduled review pass also scans open PR heads for this App's queued check
+suites with zero runs older than five minutes, even if the PR's `updated_at`
+predates its review cursor. Five minutes gives normal webhook admission time
+to create a check before cron takes over. These reviews keep the usual draft,
+author, exact-head claim, concurrency, and review-budget rules.
+If a rescue is deferred by daily budgets or fails, the pass rewinds its cursor
+to keep that PR eligible even after the first attempt creates a check run.
+
 ## Providers
 
 Any OpenAI-compatible endpoint works; set it per role in `models`. Verify reachability

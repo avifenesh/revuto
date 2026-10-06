@@ -11,7 +11,7 @@ import { maybeEmbedder } from '../../agents/common/src/memory/embedder.js';
 import { runReview, unreviewedOutcome, describeOutcome, type ReviewOutcome } from '../../agents/common/src/run-agent.js';
 import { runCurator } from '../../agents/curator/src/run-curator.js';
 import { runDecay, type DecayStats } from '../../ops/src/decay.js';
-import { pollOpenPRs, pollFeedback } from './poller.js';
+import { pollReviewCandidates, pollFeedback } from './poller.js';
 import { readReviewer, writeReviewer, type ReviewerSettings } from './reviewers.js';
 import { historicalReviewRounds, reserveReviewRound } from './review-rounds.js';
 import { logIgnoredOnce, repoIgnored } from '../../agents/common/src/review-routing.js';
@@ -43,37 +43,59 @@ function githubAppForRepo(config: ReviewerConfig, repo: string) {
   return undefined;
 }
 
-export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean } = {}): Promise<ReviewJobResult> {
+export interface ReviewJobDependencies {
+  readonly githubAuth?: GithubAuth;
+  readonly openStore?: typeof openStore;
+  readonly reviewOnePr?: typeof reviewOnePr;
+}
+
+export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean } = {}, deps: ReviewJobDependencies = {}): Promise<ReviewJobResult> {
   if (repoIgnored(config.github.app?.ignoredRepos, settings.repo)) {
     logIgnoredOnce(settings.repo, undefined, 'review');
     return { reviewed: 0, skipped: 0 };
   }
-  return runQueuedForRepo(config, `_review-poll/${settings.repo}`, () => reviewRepoSnapshot(config, settings, opts));
+  return runQueuedForRepo(config, `_review-poll/${settings.repo}`, () => reviewRepoSnapshot(config, settings, opts, deps));
 }
 
-async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean }): Promise<ReviewJobResult> {
-  const { octokit } = getOctokit(config.github);
-  const store = await openStore(config, settings.repo);
+async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean }, deps: ReviewJobDependencies): Promise<ReviewJobResult> {
+  const app = githubAppForRepo(config, settings.repo);
+  const { octokit } = deps.githubAuth ?? (app
+    ? await getRepositoryInstallationOctokit(app, settings.repo) : getOctokit(config.github));
+  const store = await (deps.openStore ?? openStore)(config, settings.repo);
   try {
     const cursor = await store.getCursor('review');
-    if (!cursor && !opts.force) {
+    if (!cursor && !opts.force && !app) {
       await store.setCursor('review', nowIso());
       return { reviewed: 0, skipped: 0, initialized: true };
     }
     const pollStarted = nowIso();
-    const prs = await pollOpenPRs(octokit, settings.repo, cursor ?? undefined);
+    const initializing = !cursor && !opts.force;
+    const prs = await pollReviewCandidates(octokit, settings.repo, cursor ?? (initializing ? pollStarted : undefined), app);
     let skipped = 0;
     const eligible = prs.filter(pr => {
       if (pr.isDraft || (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author))) { skipped++; return false; }
       return true;
     });
-    const results = await Promise.allSettled(eligible.map(pr => reviewOnePr(config, settings.repo, pr.number, { expectedHeadSha: pr.headSha })));
+    const results = await Promise.allSettled(eligible.map(pr => (deps.reviewOnePr ?? reviewOnePr)(config, settings.repo, pr.number, { expectedHeadSha: pr.headSha })));
     const errors = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-    if (errors.length) throw new AggregateError(errors.map(r => r.reason), `${errors.length} review(s) failed for ${settings.repo}`);
     const outcomes = results.filter((r): r is PromiseFulfilledResult<ReviewOutcome> => r.status === 'fulfilled').map(r => r.value);
+    const retryPrs = eligible.filter((_pr, index) => {
+      const result = results[index];
+      return result.status === 'rejected' || result.value.result.startsWith('Daily ');
+    });
     // Updates arriving while the batch runs must remain visible to the next poll.
-    if (!outcomes.some(r => r.result.startsWith('Daily '))) await store.setCursor('review', pollStarted);
+    // A rescued head can predate the old cursor. If its first attempt creates
+    // a run and then fails, the empty-suite test no longer finds it. Rewind so
+    // normal delta discovery retries it under the usual exact-head claim.
+    if (retryPrs.length) {
+      const retrySince = Math.min(Date.parse(cursor ?? pollStarted), ...retryPrs.map((pr) => Date.parse(pr.updatedAt) - 1));
+      await store.setCursor('review', new Date(retrySince).toISOString());
+    } else {
+      await store.setCursor('review', pollStarted);
+    }
+    if (errors.length) throw new AggregateError(errors.map(r => r.reason), `${errors.length} review(s) failed for ${settings.repo}`);
     return { reviewed: outcomes.filter(r => r.ranModel).length, skipped: skipped + outcomes.filter(r => !r.ranModel).length,
+      ...(initializing ? { initialized: true } : {}),
       ...(outcomes.some(r => !r.ranModel && /limit/.test(r.result)) ? { limited: 'review-limit' } : {}) };
   } finally { await store.close(); }
 }

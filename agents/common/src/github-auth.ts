@@ -33,6 +33,27 @@ const appAuthCache = new Map<string, AppAuth>();
 const appLoginCache = new Map<string, string>();
 const installationIdCache = new Map<string, number>();
 
+/** Octokit forwards a fetch signal, but its current request adapter ignores timeout. */
+export function githubFetchWithDeadline(fetchImpl: typeof fetch = fetch, timeoutMs = 30_000): typeof fetch {
+  return async (input, init) => {
+    const response = await fetchImpl(input, {
+      ...init,
+      signal: AbortSignal.any([
+        AbortSignal.timeout(timeoutMs),
+        ...(init?.signal ? [init.signal] : []),
+      ]),
+    });
+    // Octokit swallows body-read errors as empty data. Buffer within the
+    // deadline so a body timeout reaches the caller as a request failure.
+    const body = response.body === null ? null : await response.arrayBuffer();
+    const buffered = new Response(body, {
+      status: response.status, statusText: response.statusText, headers: response.headers,
+    });
+    Object.defineProperty(buffered, 'url', { value: response.url });
+    return buffered;
+  };
+}
+
 export function getOctokit(opts: { tokenEnv: string }): GithubAuth {
   if (cached) return cached;
 
@@ -75,13 +96,24 @@ function getAppAuth(config: GithubAppConfig): AppAuth {
   return auth;
 }
 
+/** App-level webhook API client; the auth hook refreshes the App JWT per request. */
+export function getAppOctokit(config: GithubAppConfig): Octokit {
+  return new Octokit({
+    authStrategy: createAppAuth,
+    auth: { appId: config.appId, privateKey: readPrivateKey(config) },
+    request: { fetch: githubFetchWithDeadline() },
+    // Octokit request errors can contain signed headers and delivery payloads.
+    log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+  });
+}
+
 async function getAppBotLogin(config: GithubAppConfig): Promise<string> {
   const key = appCacheKey(config);
   const existing = appLoginCache.get(key);
   if (existing) return existing;
 
   const app = await getAppAuth(config)({ type: 'app' });
-  const octokit = new Octokit({ auth: app.token });
+  const octokit = new Octokit({ auth: app.token, request: { fetch: githubFetchWithDeadline() } });
   const { data } = await octokit.apps.getAuthenticated();
   if (!data) throw new Error('GitHub App metadata response was empty');
   const login = `${data.slug}[bot]`;
@@ -99,6 +131,7 @@ export async function getInstallationOctokit(config: GithubAppConfig, installati
   const octokit = new Octokit({
     authStrategy: createAppAuth,
     auth: { appId: config.appId, privateKey: readPrivateKey(config), installationId },
+    request: { fetch: githubFetchWithDeadline() },
   });
   return {
     octokit,
@@ -120,7 +153,7 @@ export async function getRepositoryInstallationOctokit(config: GithubAppConfig, 
   let installationId = installationIdCache.get(key);
   if (!installationId) {
     const app = await getAppAuth(config)({ type: 'app' });
-    const octokit = new Octokit({ auth: app.token });
+    const octokit = new Octokit({ auth: app.token, request: { fetch: githubFetchWithDeadline() } });
     const { data } = await octokit.apps.getRepoInstallation({ owner, repo: name });
     installationId = data.id;
     installationIdCache.set(key, installationId);

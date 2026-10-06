@@ -6,6 +6,7 @@
  *     the learn cursor, noise-filtered (→ learn).
  */
 import type { Octokit } from '@octokit/rest';
+import type { GithubAppConfig } from '../../agents/common/src/config.js';
 import { classifyCommentBody } from '../../agents/common/src/heuristics.js';
 import type { FeedbackEvent } from '../../agents/curator/src/run-curator.js';
 
@@ -67,6 +68,51 @@ export async function pollOpenPRs(octokit: Octokit, repo: string, sinceISO?: str
     if (stop || data.length < 100) break;
   }
   return out;
+}
+
+/** Five minutes allows normal webhook admission before cron treats a suite as lost. */
+export const STALLED_SUITE_AGE_MS = 5 * 60_000;
+
+/**
+ * App discovery scans all open heads, even when updated_at predates the cursor.
+ * A queued App suite with no runs is evidence of an event that never reached
+ * review admission. Ordinary discovery keeps its existing delta semantics.
+ */
+export async function pollReviewCandidates(
+  octokit: Octokit,
+  repo: string,
+  sinceISO?: string,
+  app?: GithubAppConfig,
+  now = Date.now(),
+): Promise<OpenPR[]> {
+  if (!app) return pollOpenPRs(octokit, repo, sinceISO);
+  const pulls = await pollOpenPRs(octokit, repo);
+  const since = sinceISO ? Date.parse(sinceISO) : 0;
+  const [owner, name] = repo.split('/');
+  const candidates: OpenPR[] = [];
+  for (const pull of pulls) {
+    if (pull.isDraft) continue;
+    if (Date.parse(pull.updatedAt) > since) {
+      candidates.push(pull);
+      continue;
+    }
+    const suites = await octokit.paginate(octokit.checks.listSuitesForRef, {
+      owner, repo: name, ref: pull.headSha, app_id: app.appId, per_page: 100,
+    });
+    for (const suite of suites) {
+      const createdAt = suite.created_at ? Date.parse(suite.created_at) : NaN;
+      if (suite.app?.id !== app.appId || suite.head_sha !== pull.headSha || suite.status !== 'queued'
+        || !Number.isFinite(createdAt) || now - createdAt < STALLED_SUITE_AGE_MS) continue;
+      const { data } = await octokit.checks.listForSuite({
+        owner, repo: name, check_suite_id: suite.id, filter: 'all', per_page: 1,
+      });
+      if (data.total_count === 0) {
+        candidates.push(pull);
+        break;
+      }
+    }
+  }
+  return candidates;
 }
 
 function prNumberFromUrl(url: string): number {

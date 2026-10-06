@@ -61,6 +61,12 @@ export interface GithubAppConfig {
    */
   readonly ignoredRepos?: readonly string[];
   readonly checkName: string;
+  /** Delivery health polling cadence; defaults to three minutes. */
+  readonly webhookHealthIntervalMinutes?: number;
+  /** Consecutive failed deliveries needed to trigger repair; defaults to three. */
+  readonly webhookFailureThreshold?: number;
+  /** One executable + argv, or a sequence of argv arrays. Never passed to a shell. */
+  readonly webhookRepairCommand?: readonly string[] | readonly (readonly string[])[];
 }
 
 /** When `models.reviewSmall` is set, which PRs it handles instead of `models.review`. */
@@ -415,6 +421,26 @@ export function loadConfig(path?: string): ReviewerConfig {
     const allowedOwners = app.allowedOwners ?? [];
     const ignoredRepos = app.ignoredRepos ?? [];
     const checkName = app.checkName ?? 'revuto-review';
+    const webhookHealthIntervalMinutes = app.webhookHealthIntervalMinutes ?? 3;
+    const webhookFailureThreshold = app.webhookFailureThreshold ?? 3;
+    const webhookRepairCommand = app.webhookRepairCommand;
+    // Node turns overflowing timer delays into 1 ms, which would hammer GitHub.
+    const maxTimerMinutes = Math.floor(2_147_483_647 / 60_000);
+    if (!Number.isSafeInteger(webhookHealthIntervalMinutes) || webhookHealthIntervalMinutes < 1 || webhookHealthIntervalMinutes > maxTimerMinutes) {
+      throw new Error(`config: github.app.webhookHealthIntervalMinutes must be an integer from 1 to ${maxTimerMinutes}`);
+    }
+    if (!Number.isSafeInteger(webhookFailureThreshold) || webhookFailureThreshold < 1 || webhookFailureThreshold > 100) {
+      throw new Error('config: github.app.webhookFailureThreshold must be an integer from 1 to 100');
+    }
+    if (webhookRepairCommand !== undefined) {
+      const validArgv = (argv: unknown): boolean => Array.isArray(argv) && argv.length > 0
+        && argv.every((arg) => typeof arg === 'string' && !arg.includes('\0'))
+        && typeof argv[0] === 'string' && argv[0].trim().length > 0;
+      if (!validArgv(webhookRepairCommand) && !(Array.isArray(webhookRepairCommand)
+        && webhookRepairCommand.length > 0 && webhookRepairCommand.every(validArgv))) {
+        throw new Error('config: github.app.webhookRepairCommand must be an argv array or a non-empty sequence of argv arrays');
+      }
+    }
     if (typeof webhookSecretEnv !== 'string' || !webhookSecretEnv.trim()) {
       throw new Error('config: github.app.webhookSecretEnv must be a non-empty string');
     }
@@ -446,6 +472,9 @@ export function loadConfig(path?: string): ReviewerConfig {
       allowedOwners,
       ignoredRepos: ignoredRepos.map((entry: string) => entry.trim()),
       checkName,
+      webhookHealthIntervalMinutes,
+      webhookFailureThreshold,
+      ...(webhookRepairCommand !== undefined ? { webhookRepairCommand } : {}),
     };
   }
   const models = {
