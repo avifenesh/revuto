@@ -192,6 +192,34 @@ test('an asynchronous replay failure retries after recovery without needing a ne
   assert.deepEqual(f.redeliveries, [20, 10, 10]);
 });
 
+test('a pending replay failure below an unchanged newest delivery is reconsidered across history pages', async () => {
+  const f = fixture();
+  f.recent([delivery(50, 202)]);
+  f.history([delivery(50, 202), delivery(20)]);
+  f.payload(20, 'octo/demo', 1, 'head-1');
+  await f.check();
+  assert.deepEqual(f.redeliveries, [20]);
+  f.history([delivery(50, 202), delivery(40, 0, { status: 'Pending', guid: 'guid-20' }), delivery(20)]);
+  await f.check();
+  assert.deepEqual(f.redeliveries, [20]);
+  f.payload(40, 'octo/demo', 1, 'head-1');
+  f.history([delivery(50, 202), delivery(40, 500, { guid: 'guid-20' }), delivery(20)]);
+  await f.check();
+  assert.deepEqual(f.redeliveries, [20, 40]);
+});
+
+test('a newer successful delivery with the same timestamp as the outage establishes recovery', async () => {
+  const f = fixture();
+  const timestamp = new Date(1000).toISOString();
+  const failures = [delivery(1, 500, { delivered_at: timestamp }), delivery(3, 500, { delivered_at: timestamp }), delivery(2, 500, { delivered_at: timestamp })];
+  f.recent(failures);
+  await f.check();
+  f.recent([delivery(4, 202, { delivered_at: timestamp }), ...failures]);
+  f.payload(3, 'octo/demo', 1, 'head-1');
+  await f.check();
+  assert.deepEqual(f.redeliveries, [3]);
+});
+
 test('a slow health check never overlaps another tick and no-App configurations are inert', async () => {
   const f = fixture();
   let release!: () => void;

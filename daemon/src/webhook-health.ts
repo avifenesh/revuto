@@ -9,7 +9,8 @@ type Delivery = Awaited<ReturnType<Octokit['apps']['listWebhookDeliveries']>>['d
 const succeeded = (delivery: Delivery): boolean => delivery.status_code >= 200 && delivery.status_code < 300;
 const failed = (delivery: Delivery): boolean => !/^pending$/i.test(delivery.status)
   && (delivery.status_code === 0 || delivery.status_code >= 300);
-const order = (a: Delivery, b: Delivery): number => Date.parse(b.delivered_at) - Date.parse(a.delivered_at) || b.id - a.id;
+const order = (a: Delivery, b: Delivery): number => Date.parse(b.delivered_at) - Date.parse(a.delivered_at)
+  || (b.id > a.id ? 1 : b.id < a.id ? -1 : 0);
 const attemptKey = (delivery: Delivery): string => `${delivery.id}:${delivery.delivered_at}`;
 const REVIEW_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
 
@@ -53,7 +54,7 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
   let client: Octokit | undefined;
   let lastRepairDelivery: number | undefined;
   let lastScannedDelivery: string | undefined;
-  let recoveryAfter: number | undefined;
+  let recoveryAfter: Delivery | undefined;
 
   return async () => {
     if (!app || busy) return;
@@ -66,7 +67,7 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
       if (!newest) return;
       const threshold = app.webhookFailureThreshold ?? 3;
       if (recent.length >= threshold && recent.slice(0, threshold).every(failed)) {
-        recoveryAfter = Date.parse(newest.delivered_at);
+        recoveryAfter = newest;
         log(`ALERT: newest ${threshold} App webhook deliveries failed; latest delivery=${newest.id}`);
         if (app.webhookRepairCommand && lastRepairDelivery !== newest.id) {
           const command = app.webhookRepairCommand;
@@ -81,11 +82,13 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
       // A success after the detected outage demonstrates recovery. Keep this
       // evidence when one asynchronous replay later fails, so it can retry
       // without depending on an unrelated new successful event.
-      const success = recent.find(succeeded);
-      const scanKey = `${attemptKey(newest)}:${newest.status_code}`;
-      if (!success || (recoveryAfter !== undefined && Date.parse(success.delivered_at) <= recoveryAfter)
-        || lastScannedDelivery === scanKey) return;
       const deliveries = (await client.paginate(client.apps.listWebhookDeliveries, { per_page: 100 })).sort(order);
+      const success = deliveries.find(succeeded);
+      if (!success || (recoveryAfter !== undefined && order(success, recoveryAfter) >= 0)) return;
+      // A pending replay can change below an unchanged newest delivery, even
+      // on a later page. Cache the entire retained history's attempt states.
+      const scanKey = deliveries.map((delivery) => `${attemptKey(delivery)}:${delivery.status_code}:${delivery.status}`).join('|');
+      if (lastScannedDelivery === scanKey) return;
       const retainedAttempts = new Set(deliveries.map(attemptKey));
       for (const key of attempted) if (!retainedAttempts.has(key)) attempted.delete(key);
       const successfulGuids = new Set(deliveries.filter(succeeded).map((delivery) => delivery.guid));
