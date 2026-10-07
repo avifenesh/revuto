@@ -67,6 +67,8 @@ export interface GithubAppConfig {
   readonly webhookFailureThreshold?: number;
   /** One executable + argv, or a sequence of argv arrays. Never passed to a shell. */
   readonly webhookRepairCommand?: readonly string[] | readonly (readonly string[])[];
+  /** Extra environment variable names passed to repair, in addition to PATH and HOME. */
+  readonly webhookRepairEnvAllowlist?: readonly string[];
 }
 
 /** When `models.reviewSmall` is set, which PRs it handles instead of `models.review`. */
@@ -424,6 +426,10 @@ export function loadConfig(path?: string): ReviewerConfig {
     const webhookHealthIntervalMinutes = app.webhookHealthIntervalMinutes ?? 3;
     const webhookFailureThreshold = app.webhookFailureThreshold ?? 3;
     const webhookRepairCommand = app.webhookRepairCommand;
+    const webhookRepairEnvAllowlist = app.webhookRepairEnvAllowlist ?? [];
+    if (!Array.isArray(webhookRepairEnvAllowlist) || webhookRepairEnvAllowlist.some((name: unknown) => typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))) {
+      throw new Error('config: github.app.webhookRepairEnvAllowlist must be an array of environment variable names');
+    }
     // Node turns overflowing timer delays into 1 ms, which would hammer GitHub.
     const maxTimerMinutes = Math.floor(2_147_483_647 / 60_000);
     if (!Number.isSafeInteger(webhookHealthIntervalMinutes) || webhookHealthIntervalMinutes < 1 || webhookHealthIntervalMinutes > maxTimerMinutes) {
@@ -474,6 +480,7 @@ export function loadConfig(path?: string): ReviewerConfig {
       checkName,
       webhookHealthIntervalMinutes,
       webhookFailureThreshold,
+      webhookRepairEnvAllowlist,
       ...(webhookRepairCommand !== undefined ? { webhookRepairCommand } : {}),
     };
   }

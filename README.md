@@ -171,11 +171,12 @@ repository's branch rules.
 
 The daemon checks the App's recent GitHub webhook delivery results at startup
 and every three minutes. `github.app.webhookHealthIntervalMinutes` changes this
-interval. When the newest `github.app.webhookFailureThreshold` deliveries have
-all failed, it logs an `ALERT`. The default threshold is three: one transient
-failure does not reconfigure ingress, while three consecutive failures signal
-a sustained delivery problem. The threshold accepts 1 through 100, the size of
-the recent-delivery page.
+interval. Every observed failed delivery logs an `ALERT` once per attempt state.
+Repair runs only when the newest `github.app.webhookFailureThreshold` deliveries
+all failed with status 0 or 5xx. Authentication failures, redirects and other
+client errors still alert but do not reconfigure ingress. The default threshold
+is three: one transient failure does not trigger repair. The threshold accepts
+1 through 100, the size of the recent-delivery page.
 
 Optionally set `github.app.webhookRepairCommand` to an executable and its
 arguments, or an ordered sequence of those arrays. For the Funnel above:
@@ -184,6 +185,7 @@ arguments, or an ordered sequence of those arrays. For the Funnel above:
 {
   "webhookHealthIntervalMinutes": 3,
   "webhookFailureThreshold": 3,
+  "webhookRepairEnvAllowlist": [],
   "webhookRepairCommand": [
     ["tailscale", "funnel", "--https=8443", "off"],
     ["tailscale", "funnel", "--bg", "--https=8443", "--set-path", "/github/webhook", "http://127.0.0.1:8787/github/webhook"]
@@ -194,7 +196,10 @@ arguments, or an ordered sequence of those arrays. For the Funnel above:
 Place these keys inside `github.app`. A single command can be written as
 `["/path/to/repair-program", "--argument"]`. Commands run as the daemon user,
 without a shell, in order, with a 30-second deadline per command. This bounds
-a stuck repair and leaves the next health poll available. Child output, command
+a stuck repair and leaves the next health poll available. The child receives
+only `PATH`, `HOME`, and environment variable names explicitly listed in
+`github.app.webhookRepairEnvAllowlist`. The allowlist defaults to empty.
+Child output, command
 arguments, webhook payloads, and API error bodies are never logged by the
 monitor. Omit the command to keep alerting and catch-up without automatic repair.
 A successful repair runs once per newest failed delivery; a failed repair is
@@ -202,13 +207,28 @@ retried at the next poll.
 
 After GitHub reports a successful delivery following a detected outage, the
 monitor scans delivery history and requests redelivery of the newest failed `pull_request`
-`opened`, `synchronize`, or `reopened` event matching each open PR's current
+`opened`, `synchronize`, `reopened`, or `ready_for_review` event matching each open PR's current
 head. It only covers registered repositories allowed by the App
-configuration, respects `ignoredRepos`, and skips events with a successful
-redelivery. If an accepted asynchronous redelivery subsequently fails, it can
+configuration, respects `ignoredRepos`, skips draft payloads, and skips events
+with a successful redelivery. Delivery IDs remain exact decimal strings,
+including IDs above JavaScript's safe integer range.
+If an accepted asynchronous redelivery subsequently fails, it can
 retry using that recovery evidence. Catch-up also runs after restarting a daemon
 whose ingress has already recovered. GitHub accepts redelivery asynchronously; the monitor waits
 for an actual successful delivery before treating ingress as recovered.
+
+The first scan reads retained delivery history. Later scans stop at the prior
+scan boundary; progress stays behind outstanding replays so pending outcomes
+remain visible. Failed-delivery routing fields are cached by exact delivery ID,
+and repeated attempts of the same GUID reuse those fields. Resolved GUIDs need
+no detail fetch. Only repositories with eligible candidates have their open
+PRs listed. An installation lookup returning 404 logs once and is skipped,
+with scan progress saved. New candidate deliveries can revalidate a prior
+installation miss. App metadata and PR lookup 404s remain retryable;
+an unavailable delivery detail is retired without blocking
+other candidates. Routing caches expire with GitHub's three-day delivery
+window. Recovery evidence is kept independently of the incremental scan
+window so a pending replay can still retry after older metadata is pruned.
 
 The scheduled review pass also scans open PR heads for this App's queued check
 suites with zero runs older than five minutes, even if the PR's `updated_at`

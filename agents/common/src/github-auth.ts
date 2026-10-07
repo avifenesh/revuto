@@ -33,6 +33,12 @@ const appAuthCache = new Map<string, AppAuth>();
 const appLoginCache = new Map<string, string>();
 const installationIdCache = new Map<string, number>();
 
+/** Only the repository installation endpoint can establish this condition. */
+export class RepositoryNotInstalledError extends Error {
+  readonly status = 404;
+  constructor() { super('GitHub App is not installed for this repository'); }
+}
+
 /** Octokit forwards a fetch signal, but its current request adapter ignores timeout. */
 export function githubFetchWithDeadline(fetchImpl: typeof fetch = fetch, timeoutMs = 30_000): typeof fetch {
   return async (input, init) => {
@@ -45,7 +51,21 @@ export function githubFetchWithDeadline(fetchImpl: typeof fetch = fetch, timeout
     });
     // Octokit swallows body-read errors as empty data. Buffer within the
     // deadline so a body timeout reaches the caller as a request failure.
-    const body = response.body === null ? null : await response.arrayBuffer();
+    let body: ArrayBuffer | string | null = response.body === null ? null : await response.arrayBuffer();
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+    if (body !== null && response.status >= 200 && response.status < 300
+      && /\/app\/hook\/deliveries(?:\/\d+)?$/.test(url.pathname)) {
+      // Reading the original numeric token avoids losing int64 delivery IDs
+      // before Octokit's response decoder sees them. Requires Node >= 22.
+      const parsed = JSON.parse(new TextDecoder().decode(body), (key: string, value: unknown, context?: { source?: string }) => {
+        if (key === 'id' && typeof value === 'number') {
+          if (!context?.source || !/^\d+$/.test(context.source)) throw new Error('invalid webhook delivery ID');
+          return context.source;
+        }
+        return value;
+      });
+      body = JSON.stringify(parsed);
+    }
     const buffered = new Response(body, {
       status: response.status, statusText: response.statusText, headers: response.headers,
     });
@@ -154,8 +174,13 @@ export async function getRepositoryInstallationOctokit(config: GithubAppConfig, 
   if (!installationId) {
     const app = await getAppAuth(config)({ type: 'app' });
     const octokit = new Octokit({ auth: app.token, request: { fetch: githubFetchWithDeadline() } });
-    const { data } = await octokit.apps.getRepoInstallation({ owner, repo: name });
-    installationId = data.id;
+    try {
+      const { data } = await octokit.apps.getRepoInstallation({ owner, repo: name });
+      installationId = data.id;
+    } catch (err) {
+      if ((err as { status?: number })?.status === 404) throw new RepositoryNotInstalledError();
+      throw err;
+    }
     installationIdCache.set(key, installationId);
   }
   return getInstallationOctokit(config, installationId);
