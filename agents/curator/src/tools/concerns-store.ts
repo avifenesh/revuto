@@ -37,6 +37,19 @@ export function buildConcernsStoreTools(deps: ConcernsStoreDeps) {
     embedder
       ? { embedding: await embedOne(embedder, concernEmbeddingText(subject, concern)), embeddingModel: embedder.id }
       : {};
+  /**
+   * embedConcern that never fails the write: an embedder outage (say the local
+   * server on :8181 is down) yields no embedding plus a note for the result.
+   * The record stays untagged, so `npm run reembed-concerns` embeds it later.
+   */
+  const embedConcernOrNote = async (subject: string, concern: string, action: string) => {
+    try {
+      return { embedded: await embedConcern(subject, concern), note: undefined };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { embedded: {}, note: `embedder failed (${msg}); ${action} without an embedding, \`npm run reembed-concerns\` will embed it` };
+    }
+  };
 
   const listConcerns = tool({
     name: 'list_concerns',
@@ -84,9 +97,9 @@ export function buildConcernsStoreTools(deps: ConcernsStoreDeps) {
 `Create a new concern record. Use only when no existing record describes the same concern: check list_concerns for the bucket and find_similar_concerns across buckets first. Do not create on every feedback event. reinforcement_count starts at 1. \`context\` is the extra-code "why" the reviewer cannot get from code alone; empty string if none.`,
     inputSchema: z.object({ area_bucket: z.string(), record: concernShape }),
     callback: async (input) => {
-      const embedded = await embedConcern(input.record.subject, input.record.concern);
+      const { embedded, note } = await embedConcernOrNote(input.record.subject, input.record.concern, 'created');
       const rec = await store.createConcern({ areaBucket: input.area_bucket, ...input.record, ...embedded });
-      return JSON.stringify({ ok: true, record_id: rec.recordId, reinforcement_count: rec.reinforcementCount });
+      return JSON.stringify({ ok: true, record_id: rec.recordId, reinforcement_count: rec.reinforcementCount, ...(note ? { note } : {}) });
     },
   });
 
@@ -114,15 +127,7 @@ export function buildConcernsStoreTools(deps: ConcernsStoreDeps) {
       const notFound = `ERROR merge_concerns: target/source not found or identical`;
       if (input.target_record_id === input.source_record_id) return notFound;
       if (!(await store.getConcern(input.target_record_id)) || !(await store.getConcern(input.source_record_id))) return notFound;
-      // An embedder outage must not block a merge: merge without a vector (the
-      // record drops out of similarity search until re-embedded) and say so.
-      let embedded = {};
-      let note: string | undefined;
-      try {
-        embedded = await embedConcern(input.merged.subject, input.merged.concern);
-      } catch (err) {
-        note = `embedder failed (${err instanceof Error ? err.message : String(err)}); merged without an embedding`;
-      }
+      const { embedded, note } = await embedConcernOrNote(input.merged.subject, input.merged.concern, 'merged');
       const rec = await store.mergeConcerns(input.target_record_id, input.source_record_id, { ...input.merged, ...embedded });
       return rec
         ? JSON.stringify({ ok: true, record: rec, combined_reinforcement: rec.reinforcementCount, ...(note ? { note } : {}) })

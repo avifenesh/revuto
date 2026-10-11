@@ -6,7 +6,7 @@
  *   - an old SQLite file gains the embedding_model column on open,
  *   - merge_concerns re-embeds the merged record instead of clearing it,
  *   - find_similar_concerns searches every bucket,
- *   - an embedder outage neither blocks a merge nor throws out of find_similar,
+ *   - an embedder outage blocks neither a create nor a merge, and does not throw out of find_similar,
  *   - the skill-embedding cache misses when the embedder changes.
  *
  * Run: npm test
@@ -163,6 +163,21 @@ test('the skill-embedding cache misses when the embedder changes', withVault(asy
     const b = fakeEmbedder('model-b', 4);
     await selectSkills(store, b, ['src/net/client.ts']);
     assert.equal(b.texts.filter(isSkillText).length, 1, 'new model re-embeds the skill');
+  } finally { await store.close(); }
+}));
+
+test('create_concern still creates when the embedder is down, untagged for reembed-concerns', withVault(async (vault) => {
+  const store = new SqliteStore(vault, REPO);
+  try {
+    const tools = buildConcernsStoreTools({ store, embedder: downEmbedder });
+    const out = await call(tools, 'create_concern', {
+      area_bucket: 'src', record: { area: ['src/**'], subject: 'retry cap', concern: 'cap retries', context: '' },
+    });
+    assert.equal(out.ok, true);
+    assert.equal(out.reinforcement_count, 1);
+    assert.match(out.note, /embedder failed .*ECONNREFUSED.*npm run reembed-concerns/);
+    assert.equal((await store.getConcern(out.record_id))?.subject, 'retry cap');
+    assert.deepEqual((await store.untaggedConcerns()).map((r) => r.recordId), [out.record_id]);
   } finally { await store.close(); }
 }));
 
