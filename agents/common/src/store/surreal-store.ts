@@ -263,6 +263,23 @@ export class SurrealStore implements KnowledgeStore {
     return rows.map((r) => ({ record: mapConcern(r), score: Number(r.score ?? 0) }));
   }
 
+  async untaggedConcerns(): Promise<ConcernRecord[]> {
+    const rows = await this.rows(
+      `SELECT * FROM concern WHERE embedding_model = NONE OR embedding_model = NULL`, undefined, { retryRead: true },
+    );
+    return rows.map(mapConcern);
+  }
+
+  async setConcernEmbedding(rec: Pick<ConcernRecord, 'recordId' | 'subject' | 'concern'>, embedding: number[], model: string): Promise<boolean> {
+    const rows = await this.rows(
+      `UPDATE concern SET embedding = $e, embedding_model = $model
+         WHERE record_id = $id AND (embedding_model = NONE OR embedding_model = NULL)
+           AND subject = $subject AND concern = $concern RETURN AFTER`,
+      { e: embedding, model, id: rec.recordId, subject: rec.subject, concern: rec.concern },
+    );
+    return rows.length > 0;
+  }
+
   // skills — markdown
   async listSkills(statuses?: SkillStatus[]): Promise<SkillNote[]> { return this.skills.listSkills(statuses); }
   async readSkill(slug: string): Promise<SkillNote | null> { return this.skills.readSkill(slug); }

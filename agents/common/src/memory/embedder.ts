@@ -16,6 +16,11 @@ export interface Embedder {
   embed(texts: string[]): Promise<number[][]>;
 }
 
+/** The text a concern record is embedded from. Queries embed the same shape. */
+export function concernEmbeddingText(subject: string, concern: string): string {
+  return `${subject}\n${concern}`;
+}
+
 export async function embedOne(embedder: Embedder, text: string): Promise<number[]> {
   const [v] = await embedder.embed([text]);
   return v;

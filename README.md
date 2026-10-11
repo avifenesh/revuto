@@ -530,6 +530,22 @@ the tag existed are still compared when their vector length matches the query; c
 embedded by a different model drop out of similarity search until they are re-embedded
 (a merge re-embeds its target).
 
+`model` in `models.embedder` is the embedding identity. A local server such as
+llama-server ignores the requested model name, so revuto cannot tell when the weights
+behind the endpoint change. Change `model` whenever the served embedding model changes,
+or old and new vectors get compared as if they came from one model.
+
+To tag the untagged concerns (legacy vectors, and records stored while no embedder
+was configured or reachable), re-embed them once with the configured embedder:
+
+```bash
+npm run reembed-concerns                  # every registered repo
+npm run reembed-concerns -- owner/repo    # just these repos
+```
+
+It works on both store backends and is safe to re-run: tagged records are skipped, and
+a record changed by a concurrent merge is left alone.
+
 ## Storage backend
 
 Skills are always Obsidian markdown. The structured memory (concerns, embeddings,

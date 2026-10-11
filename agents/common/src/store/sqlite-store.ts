@@ -153,6 +153,18 @@ export class SqliteStore implements KnowledgeStore {
       .slice(0, k);
   }
 
+  async untaggedConcerns(): Promise<ConcernRecord[]> {
+    return (this.db.prepare(`SELECT * FROM concerns WHERE embedding_model IS NULL`).all() as ConcernRow[]).map(rowToRecord);
+  }
+
+  async setConcernEmbedding(rec: Pick<ConcernRecord, 'recordId' | 'subject' | 'concern'>, embedding: number[], model: string): Promise<boolean> {
+    const info = this.db.prepare(
+      `UPDATE concerns SET embedding = ?, embedding_model = ?
+         WHERE record_id = ? AND embedding_model IS NULL AND subject = ? AND concern = ?`,
+    ).run(toBlob(embedding), model, rec.recordId, rec.subject, rec.concern);
+    return info.changes > 0;
+  }
+
   // skills — delegate to markdown
   async listSkills(statuses?: SkillStatus[]): Promise<SkillNote[]> { return this.skills.listSkills(statuses); }
   async readSkill(slug: string): Promise<SkillNote | null> { return this.skills.readSkill(slug); }

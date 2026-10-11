@@ -41,7 +41,8 @@ Graduation: \`search_skill_authoring\`, \`submit_skill\`. Terminal: \`curator_do
    searches every bucket, so it catches a matching record filed elsewhere. Its
    scores only rank candidates: READ the returned records and judge overlap
    yourself. Always call it before \`create_concern\`; if it reports similarity
-   unavailable, the bucket listings are all you have.
+   unavailable (no embedder, or an ERROR while the embedder is down), the bucket
+   listings are all you have.
 5. **Pick one:** bump (reinforces an existing record), merge (two records are
    the same concern), create (genuinely new), drop (noise / not actionable),
    noop (real but evidence too weak this cycle — the next event can create it).

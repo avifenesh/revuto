@@ -6,6 +6,7 @@
  *   - an old SQLite file gains the embedding_model column on open,
  *   - merge_concerns re-embeds the merged record instead of clearing it,
  *   - find_similar_concerns searches every bucket,
+ *   - an embedder outage neither blocks a merge nor throws out of find_similar,
  *   - the skill-embedding cache misses when the embedder changes.
  *
  * Run: npm test
@@ -22,6 +23,7 @@ import type { Embedder } from '../agents/common/src/memory/embedder.js';
 import { selectSkills } from '../agents/common/src/skills/select.js';
 import { buildConcernsStoreTools } from '../agents/curator/src/tools/concerns-store.js';
 import type { ToolDef } from '../agents/common/src/tool-def.js';
+import { isToolErrorOutput } from '../agents/common/src/trace.js';
 
 const REPO = 'octo/widgets';
 
@@ -48,6 +50,12 @@ function fakeEmbedder(id: string, dim: number): Embedder & { texts: string[] } {
     },
   };
 }
+
+/** The local embedding server is down. */
+const downEmbedder: Embedder = {
+  id: 'down',
+  async embed() { throw new Error('connect ECONNREFUSED 127.0.0.1:8181'); },
+};
 
 const concern = (subject: string, extra: Partial<Parameters<SqliteStore['createConcern']>[0]> = {}) =>
   ({ areaBucket: 'src', area: ['src/**'], subject, concern: 'c', context: '', ...extra });
@@ -155,5 +163,35 @@ test('the skill-embedding cache misses when the embedder changes', withVault(asy
     const b = fakeEmbedder('model-b', 4);
     await selectSkills(store, b, ['src/net/client.ts']);
     assert.equal(b.texts.filter(isSkillText).length, 1, 'new model re-embeds the skill');
+  } finally { await store.close(); }
+}));
+
+test('merge_concerns still merges when the embedder is down, and checks the records before embedding', withVault(async (vault) => {
+  const store = new SqliteStore(vault, REPO);
+  try {
+    const tools = buildConcernsStoreTools({ store, embedder: downEmbedder });
+    const t = await store.createConcern(concern('retry cap'));
+    const s = await store.createConcern(concern('backoff', { areaBucket: 'lib' }));
+    const merged = { area: ['src/**'], subject: 'reconnect policy', concern: 'cap retries', context: '' };
+
+    const missing = await byName(tools, 'merge_concerns').callback({ target_record_id: t.recordId, source_record_id: 'nope', merged });
+    assert.equal(missing, 'ERROR merge_concerns: target/source not found or identical');
+
+    const out = await call(tools, 'merge_concerns', { target_record_id: t.recordId, source_record_id: s.recordId, merged });
+    assert.equal(out.ok, true);
+    assert.equal(out.combined_reinforcement, 2);
+    assert.match(out.note, /embedder failed .*ECONNREFUSED/);
+    assert.equal(await store.getConcern(s.recordId), null, 'source deleted');
+    assert.equal((await store.getConcern(t.recordId))?.subject, 'reconnect policy');
+  } finally { await store.close(); }
+}));
+
+test('find_similar_concerns reports an embedder outage as an ERROR result instead of throwing', withVault(async (vault) => {
+  const store = new SqliteStore(vault, REPO);
+  try {
+    const tools = buildConcernsStoreTools({ store, embedder: downEmbedder });
+    const out = await byName(tools, 'find_similar_concerns').callback({ subject: 'x', concern: 'y' });
+    assert.equal(isToolErrorOutput(out), true);
+    assert.match(out as string, /similarity unavailable, embedder failed: connect ECONNREFUSED/);
   } finally { await store.close(); }
 }));

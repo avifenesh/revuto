@@ -60,6 +60,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test": "tsx --test tests/*.test.ts",
     "dev": "tsx daemon/src/cli.ts",
+    "reembed-concerns": "tsx scripts/reembed-concerns.ts",
     "dashboard:dev": "npm --prefix dashboard run dev --",
     "dashboard:build": "npm --prefix dashboard run build",
     "dashboard:check": "npm --prefix dashboard run check",

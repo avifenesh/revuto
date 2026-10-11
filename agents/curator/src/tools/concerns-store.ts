@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../../../common/src/tool-def.js';
 import type { KnowledgeStore } from '../../../common/src/store/store.js';
-import { type Embedder, embedOne } from '../../../common/src/memory/embedder.js';
+import { type Embedder, concernEmbeddingText, embedOne } from '../../../common/src/memory/embedder.js';
 
 /**
  * Curator concerns-store tools, backed by the per-repo KnowledgeStore.
@@ -32,12 +32,10 @@ const SIMILAR_LIMIT = 5;
 export function buildConcernsStoreTools(deps: ConcernsStoreDeps) {
   const { store, embedder } = deps;
 
-  /** The text a record is embedded from; queries embed the same shape. */
-  const concernText = (subject: string, concern: string) => `${subject}\n${concern}`;
   /** Embedding of a record's subject + concern, or none without an embedder. */
   const embedConcern = async (subject: string, concern: string) =>
     embedder
-      ? { embedding: await embedOne(embedder, concernText(subject, concern)), embeddingModel: embedder.id }
+      ? { embedding: await embedOne(embedder, concernEmbeddingText(subject, concern)), embeddingModel: embedder.id }
       : {};
 
   const listConcerns = tool({
@@ -61,7 +59,12 @@ export function buildConcernsStoreTools(deps: ConcernsStoreDeps) {
       if (!embedder) {
         return JSON.stringify({ ok: true, records: [], note: 'similarity unavailable: no embedder configured; use list_concerns per bucket' });
       }
-      const query = await embedOne(embedder, concernText(input.subject, input.concern));
+      let query: number[];
+      try {
+        query = await embedOne(embedder, concernEmbeddingText(input.subject, input.concern));
+      } catch (err) {
+        return `ERROR find_similar_concerns: similarity unavailable, embedder failed: ${err instanceof Error ? err.message : String(err)}. Use list_concerns per bucket.`;
+      }
       const hits = await store.nearestConcerns(query, SIMILAR_LIMIT, embedder.id);
       return JSON.stringify({ ok: true, records: hits.map((h) => ({ ...h.record, score: h.score })) });
     },
@@ -108,11 +111,22 @@ export function buildConcernsStoreTools(deps: ConcernsStoreDeps) {
       merged: concernShape,
     }),
     callback: async (input) => {
-      const embedded = await embedConcern(input.merged.subject, input.merged.concern);
+      const notFound = `ERROR merge_concerns: target/source not found or identical`;
+      if (input.target_record_id === input.source_record_id) return notFound;
+      if (!(await store.getConcern(input.target_record_id)) || !(await store.getConcern(input.source_record_id))) return notFound;
+      // An embedder outage must not block a merge: merge without a vector (the
+      // record drops out of similarity search until re-embedded) and say so.
+      let embedded = {};
+      let note: string | undefined;
+      try {
+        embedded = await embedConcern(input.merged.subject, input.merged.concern);
+      } catch (err) {
+        note = `embedder failed (${err instanceof Error ? err.message : String(err)}); merged without an embedding`;
+      }
       const rec = await store.mergeConcerns(input.target_record_id, input.source_record_id, { ...input.merged, ...embedded });
       return rec
-        ? JSON.stringify({ ok: true, record: rec, combined_reinforcement: rec.reinforcementCount })
-        : `ERROR merge_concerns: target/source not found or identical`;
+        ? JSON.stringify({ ok: true, record: rec, combined_reinforcement: rec.reinforcementCount, ...(note ? { note } : {}) })
+        : notFound;
     },
   });
 

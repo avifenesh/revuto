@@ -98,6 +98,14 @@ export interface KnowledgeStore {
    * their vector has the query's length.
    */
   nearestConcerns(embedding: number[], k: number, model: string): Promise<Array<{ record: ConcernRecord; score: number }>>;
+  /** Records whose embedding has no model tag: legacy vectors and records stored without one. */
+  untaggedConcerns(): Promise<ConcernRecord[]>;
+  /**
+   * Store an embedding made by `model` for `rec`, only if the record is still
+   * untagged and still has `rec`'s subject + concern, so a concurrent merge is
+   * never overwritten with a vector of the old text. Returns whether it wrote.
+   */
+  setConcernEmbedding(rec: Pick<ConcernRecord, 'recordId' | 'subject' | 'concern'>, embedding: number[], model: string): Promise<boolean>;
 
   // --- skills (markdown notes) -------------------------------------------
   listSkills(statuses?: SkillStatus[]): Promise<SkillNote[]>;
