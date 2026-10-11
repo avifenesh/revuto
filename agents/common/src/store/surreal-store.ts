@@ -201,7 +201,8 @@ export class SurrealStore implements KnowledgeStore {
       data: {
         record_id: id, area_bucket: rec.areaBucket, area: rec.area, subject: rec.subject,
         concern: rec.concern, context: rec.context, reinforcement_count: 1, decay_score: 1.0,
-        embedding: rec.embedding ?? null, created_at: now, updated_at: now,
+        embedding: rec.embedding ?? null, embedding_model: rec.embedding ? rec.embeddingModel ?? null : null,
+        created_at: now, updated_at: now,
       },
     });
     return (await this.getConcern(id))!;
@@ -223,8 +224,13 @@ export class SurrealStore implements KnowledgeStore {
     const combined = target.reinforcementCount + source.reinforcementCount;
     await this.rows(
       `UPDATE concern SET area = $area, subject = $subject, concern = $concern, context = $context,
-         reinforcement_count = $count, decay_score = 1.0, embedding = NONE, updated_at = $now WHERE record_id = $id`,
-      { area: merged.area, subject: merged.subject, concern: merged.concern, context: merged.context, count: combined, now: new Date().toISOString(), id: targetId },
+         reinforcement_count = $count, decay_score = 1.0, embedding = $embedding, embedding_model = $model,
+         updated_at = $now WHERE record_id = $id`,
+      {
+        area: merged.area, subject: merged.subject, concern: merged.concern, context: merged.context, count: combined,
+        embedding: merged.embedding ?? null, model: merged.embedding ? merged.embeddingModel ?? null : null,
+        now: new Date().toISOString(), id: targetId,
+      },
     );
     await this.rows(`DELETE concern WHERE record_id = $id`, { id: sourceId });
     return this.getConcern(targetId);
@@ -242,14 +248,36 @@ export class SurrealStore implements KnowledgeStore {
     await this.rows(`UPDATE concern SET decay_score = $s WHERE record_id = $id`, { s: score, id: recordId });
   }
 
-  async nearestConcerns(embedding: number[], k: number): Promise<Array<{ record: ConcernRecord; score: number }>> {
+  async nearestConcerns(embedding: number[], k: number, model: string): Promise<Array<{ record: ConcernRecord; score: number }>> {
+    // Same model, or a legacy untagged vector of the query's length. Missing
+    // embeddings are stored as NULL by createConcern and NONE by older merges.
     const rows = await this.rows(
       `SELECT *, vector::similarity::cosine(embedding, $q) AS score FROM concern
-         WHERE embedding != NONE ORDER BY score DESC LIMIT $k`,
-      { q: embedding, k },
+         WHERE embedding != NONE AND embedding != NULL
+           AND (embedding_model = $model
+             OR ((embedding_model = NONE OR embedding_model = NULL) AND array::len(embedding) = $dim))
+         ORDER BY score DESC LIMIT $k`,
+      { q: embedding, k, model, dim: embedding.length },
       { retryRead: true },
     );
     return rows.map((r) => ({ record: mapConcern(r), score: Number(r.score ?? 0) }));
+  }
+
+  async untaggedConcerns(): Promise<ConcernRecord[]> {
+    const rows = await this.rows(
+      `SELECT * FROM concern WHERE embedding_model = NONE OR embedding_model = NULL`, undefined, { retryRead: true },
+    );
+    return rows.map(mapConcern);
+  }
+
+  async setConcernEmbedding(rec: Pick<ConcernRecord, 'recordId' | 'subject' | 'concern'>, embedding: number[], model: string): Promise<boolean> {
+    const rows = await this.rows(
+      `UPDATE concern SET embedding = $e, embedding_model = $model
+         WHERE record_id = $id AND (embedding_model = NONE OR embedding_model = NULL)
+           AND subject = $subject AND concern = $concern RETURN AFTER`,
+      { e: embedding, model, id: rec.recordId, subject: rec.subject, concern: rec.concern },
+    );
+    return rows.length > 0;
   }
 
   // skills — markdown

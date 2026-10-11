@@ -29,7 +29,7 @@ function fromBlob(b: Buffer): number[] {
 interface ConcernRow {
   record_id: string; area_bucket: string; area_json: string; subject: string;
   concern: string; context: string; reinforcement_count: number; decay_score: number;
-  embedding: Buffer | null; created_at: string; updated_at: string;
+  embedding: Buffer | null; embedding_model: string | null; created_at: string; updated_at: string;
 }
 function rowToRecord(r: ConcernRow): ConcernRecord {
   return {
@@ -58,7 +58,7 @@ export class SqliteStore implements KnowledgeStore {
         record_id TEXT PRIMARY KEY, area_bucket TEXT NOT NULL, area_json TEXT NOT NULL,
         subject TEXT NOT NULL, concern TEXT NOT NULL, context TEXT NOT NULL DEFAULT '',
         reinforcement_count INTEGER NOT NULL DEFAULT 1, decay_score REAL NOT NULL DEFAULT 1.0,
-        embedding BLOB, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        embedding BLOB, embedding_model TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_concerns_bucket ON concerns(area_bucket);
       CREATE TABLE IF NOT EXISTS cursors (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -69,6 +69,15 @@ export class SqliteStore implements KnowledgeStore {
       CREATE TABLE IF NOT EXISTS skill_embeddings (slug TEXT PRIMARY KEY, text_hash TEXT NOT NULL, embedding BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS counters (key TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0);
     `);
+    // Files created before concern embeddings carried a model id lack the
+    // column. Check and add under one write lock so two processes opening the
+    // same old file cannot both try the ALTER.
+    this.db.transaction(() => {
+      const cols = this.db.prepare(`PRAGMA table_info(concerns)`).all() as { name: string }[];
+      if (!cols.some((c) => c.name === 'embedding_model')) {
+        this.db.exec(`ALTER TABLE concerns ADD COLUMN embedding_model TEXT`);
+      }
+    }).immediate();
   }
 
   async listConcerns(areaBucket: string, limit = 20): Promise<ConcernRecord[]> {
@@ -88,10 +97,10 @@ export class SqliteStore implements KnowledgeStore {
     const now = new Date().toISOString();
     this.db.prepare(
       `INSERT INTO concerns (record_id, area_bucket, area_json, subject, concern, context,
-         reinforcement_count, decay_score, embedding, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, 1.0, ?, ?, ?)`,
+         reinforcement_count, decay_score, embedding, embedding_model, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, 1.0, ?, ?, ?, ?)`,
     ).run(id, rec.areaBucket, JSON.stringify(rec.area), rec.subject, rec.concern, rec.context,
-      rec.embedding ? toBlob(rec.embedding) : null, now, now);
+      rec.embedding ? toBlob(rec.embedding) : null, rec.embedding ? rec.embeddingModel ?? null : null, now, now);
     return (await this.getConcern(id))!;
   }
 
@@ -112,8 +121,9 @@ export class SqliteStore implements KnowledgeStore {
     this.db.transaction(() => {
       this.db.prepare(
         `UPDATE concerns SET area_json = ?, subject = ?, concern = ?, context = ?,
-           reinforcement_count = ?, decay_score = 1.0, embedding = NULL, updated_at = ? WHERE record_id = ?`,
-      ).run(JSON.stringify(merged.area), merged.subject, merged.concern, merged.context, combined, now, targetId);
+           reinforcement_count = ?, decay_score = 1.0, embedding = ?, embedding_model = ?, updated_at = ? WHERE record_id = ?`,
+      ).run(JSON.stringify(merged.area), merged.subject, merged.concern, merged.context, combined,
+        merged.embedding ? toBlob(merged.embedding) : null, merged.embedding ? merged.embeddingModel ?? null : null, now, targetId);
       this.db.prepare(`DELETE FROM concerns WHERE record_id = ?`).run(sourceId);
     })();
     return this.getConcern(targetId);
@@ -131,12 +141,28 @@ export class SqliteStore implements KnowledgeStore {
     this.db.prepare(`UPDATE concerns SET decay_score = ? WHERE record_id = ?`).run(score, recordId);
   }
 
-  async nearestConcerns(embedding: number[], k: number): Promise<Array<{ record: ConcernRecord; score: number }>> {
-    const rows = this.db.prepare(`SELECT * FROM concerns WHERE embedding IS NOT NULL`).all() as ConcernRow[];
+  async nearestConcerns(embedding: number[], k: number, model: string): Promise<Array<{ record: ConcernRecord; score: number }>> {
+    // Same model, or a legacy untagged vector of the query's length (float32 = 4 bytes).
+    const rows = this.db.prepare(
+      `SELECT * FROM concerns WHERE embedding IS NOT NULL
+         AND (embedding_model = ? OR (embedding_model IS NULL AND length(embedding) = ?))`,
+    ).all(model, embedding.length * 4) as ConcernRow[];
     return rows
       .map((r) => ({ record: rowToRecord(r), score: cosine(embedding, fromBlob(r.embedding!)) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, k);
+  }
+
+  async untaggedConcerns(): Promise<ConcernRecord[]> {
+    return (this.db.prepare(`SELECT * FROM concerns WHERE embedding_model IS NULL`).all() as ConcernRow[]).map(rowToRecord);
+  }
+
+  async setConcernEmbedding(rec: Pick<ConcernRecord, 'recordId' | 'subject' | 'concern'>, embedding: number[], model: string): Promise<boolean> {
+    const info = this.db.prepare(
+      `UPDATE concerns SET embedding = ?, embedding_model = ?
+         WHERE record_id = ? AND embedding_model IS NULL AND subject = ? AND concern = ?`,
+    ).run(toBlob(embedding), model, rec.recordId, rec.subject, rec.concern);
+    return info.changes > 0;
   }
 
   // skills — delegate to markdown

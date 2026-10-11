@@ -6,7 +6,7 @@ import type { ToolDef } from '../../../common/src/tool-def.js';
 
 /**
  * Curator tool surface (local, vault-graduated form):
- *   - 6 concerns-store CRUD tools (per-repo SQLite, optional embedding on create)
+ *   - 7 concerns-store tools (CRUD + find_similar_concerns; optional embedding on create/merge)
  *   - list_skills            — Phase 2: see accumulated topic skills (create-vs-revise)
  *   - search_skill_authoring — Phase 2: pull the skill-writing guidance
  *   - submit_skill           — graduate to a skill note in the vault

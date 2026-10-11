@@ -6,8 +6,19 @@ import type { ReviewerConfig } from '../config.js';
 import { createOpenAICompatEmbedder } from './openai-embedder.js';
 
 export interface Embedder {
+  /**
+   * Identity of the embedding model. Vectors from different models are not
+   * comparable (they can differ in dimension too), so stored embeddings carry
+   * this id and lookups only compare vectors with the same one.
+   */
+  readonly id: string;
   /** Embed a batch of texts into vectors. */
   embed(texts: string[]): Promise<number[][]>;
+}
+
+/** The text a concern record is embedded from. Queries embed the same shape. */
+export function concernEmbeddingText(subject: string, concern: string): string {
+  return `${subject}\n${concern}`;
 }
 
 export async function embedOne(embedder: Embedder, text: string): Promise<number[]> {
