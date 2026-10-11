@@ -203,12 +203,25 @@ export async function createReviewCheck(
   return data.id;
 }
 
+/**
+ * GitHub can answer 404 when a check run created a second earlier is updated
+ * (read-after-write lag). Seen on 3 of 231 zero-step reviews, each completed
+ * about one second after creation; the run existed when read back later.
+ */
+const CHECK_UPDATE_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
+
+export interface CompleteReviewCheckOptions {
+  /** Waits before each retry of a check update that returned 404. */
+  readonly updateRetryDelaysMs?: readonly number[];
+}
+
 export async function completeReviewCheck(
   auth: GithubAuth,
   app: GithubAppConfig,
   target: ReviewCheckTarget,
   checkRunId: number,
   result: CheckResult,
+  options: CompleteReviewCheckOptions = {},
 ): Promise<void> {
   const [owner, repo] = ownerAndRepo(target);
   let finalResult = result;
@@ -228,15 +241,24 @@ export async function completeReviewCheck(
       );
     }
   }
-  await auth.octokit.checks.update({
-    owner,
-    repo,
-    check_run_id: checkRunId,
-    name: app.checkName,
-    status: 'completed',
-    conclusion: finalResult.conclusion,
-    completed_at: new Date().toISOString(),
-    details_url: target.detailsUrl,
-    output: { title: finalResult.title, summary: finalResult.summary },
-  });
+  const delays = options.updateRetryDelaysMs ?? CHECK_UPDATE_RETRY_DELAYS_MS;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await auth.octokit.checks.update({
+        owner,
+        repo,
+        check_run_id: checkRunId,
+        name: app.checkName,
+        status: 'completed',
+        conclusion: finalResult.conclusion,
+        completed_at: new Date().toISOString(),
+        details_url: target.detailsUrl,
+        output: { title: finalResult.title, summary: finalResult.summary },
+      });
+      return;
+    } catch (err) {
+      if ((err as { status?: number } | null)?.status !== 404 || attempt >= delays.length) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
+  }
 }
