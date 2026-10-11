@@ -172,6 +172,8 @@ repository's branch rules.
 The daemon checks the App's recent GitHub webhook delivery results at startup
 and every three minutes. `github.app.webhookHealthIntervalMinutes` changes this
 interval. Every observed failed delivery logs an `ALERT` once per attempt state.
+The alerted attempts are kept in `<vault>/.state/webhook-health.json` for
+GitHub's three-day delivery window, so a daemon restart does not repeat them.
 Repair runs only when the newest `github.app.webhookFailureThreshold` deliveries
 all failed with status 0 or 5xx. Authentication failures, redirects and other
 client errors still alert but do not reconfigure ingress. The default threshold
@@ -199,6 +201,9 @@ without a shell, in order, with a 30-second deadline per command. This bounds
 a stuck repair and leaves the next health poll available. The child receives
 only `PATH`, `HOME`, and environment variable names explicitly listed in
 `github.app.webhookRepairEnvAllowlist`. The allowlist defaults to empty.
+A systemd unit's `PATH` often omits `/snap/bin`, where the Tailscale snap
+installs its CLI; use an absolute path such as `/snap/bin/tailscale` there.
+A command that cannot start is logged by its position in the sequence.
 Child output, command
 arguments, webhook payloads, and API error bodies are never logged by the
 monitor. Omit the command to keep alerting and catch-up without automatic repair.

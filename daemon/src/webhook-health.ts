@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { Octokit } from '@octokit/rest';
 import type { GithubAppConfig, ReviewerConfig } from '../../agents/common/src/config.js';
 import { getAppOctokit, getRepositoryInstallationOctokit, RepositoryNotInstalledError, type GithubAuth } from '../../agents/common/src/github-auth.js';
@@ -26,6 +29,58 @@ const REVIEW_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 'ready_for_
 // https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/redelivering-webhooks
 const DELIVERY_RETENTION_MS = 3 * 24 * 60 * 60_000;
 
+/**
+ * Failure alerts already logged, keyed by delivery ID plus a hash of the
+ * attempt time, status code and status text, with the attempt time. Persisted
+ * so a daemon restart does not re-alert the same three days of history. The
+ * status text can carry the ingress URL, so only its hash is stored.
+ */
+function loadAlertedFailures(path: string | undefined, cutoff: number): { alerted: Map<string, number>; stale: boolean } {
+  const alerted = new Map<string, number>();
+  if (!path) return { alerted, stale: false };
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return { alerted, stale: false };
+  }
+  let entries = 0;
+  try {
+    const data = JSON.parse(raw) as { version?: unknown; alerted?: unknown };
+    if (data.version === 1 && typeof data.alerted === 'object' && data.alerted !== null) {
+      for (const [key, time] of Object.entries(data.alerted as Record<string, unknown>)) {
+        entries++;
+        if (/^\d+:/.test(key) && typeof time === 'number' && Number.isFinite(time) && time >= cutoff) alerted.set(key, time);
+      }
+    }
+  } catch { /* a corrupt state file only costs repeated alerts */ }
+  // Rewrite a file that held expired or invalid entries.
+  return { alerted, stale: entries !== alerted.size };
+}
+
+function saveAlertedFailures(path: string, alerted: ReadonlyMap<string, number>): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temp, `${JSON.stringify({ version: 1, alerted: Object.fromEntries(alerted) })}\n`, { mode: 0o600 });
+    renameSync(temp, path);
+  } catch (err) {
+    try { unlinkSync(temp); } catch { /* the write never created it */ }
+    throw err;
+  }
+}
+
+/** Delivery ID stays readable; the attempt and its GitHub status text are hashed. */
+function failureKey(delivery: Delivery): string {
+  const attempt = `${delivery.delivered_at}:${delivery.status_code}:${delivery.status}`;
+  return `${delivery.id}:${createHash('sha256').update(attempt).digest('hex').slice(0, 16)}`;
+}
+
+/** Where a daemon keeps webhook-health state between restarts. */
+export function webhookHealthStatePath(config: Pick<ReviewerConfig, 'vaultPath'>): string | undefined {
+  return config.vaultPath ? join(config.vaultPath, '.state', 'webhook-health.json') : undefined;
+}
+
 async function deliveryPage(client: Octokit, cursor?: string): Promise<{ deliveries: Delivery[]; next?: string }> {
   const response = await client.apps.listWebhookDeliveries({ per_page: 100, ...(cursor ? { cursor } : {}) });
   const deliveries = response.data as unknown as Delivery[];
@@ -45,8 +100,17 @@ export interface WebhookHealthDependencies {
   readonly repair?: (argv: readonly string[], envAllowlist: readonly string[]) => Promise<void>;
   readonly log?: (message: string) => void;
   readonly now?: () => number;
+  /** Alert state file; defaults to `<vault>/.state/webhook-health.json`. `null` disables persistence. */
+  readonly statePath?: string | null;
   /** Counts only, for checking retention without exposing cached delivery data. */
   readonly onCacheStats?: (stats: { readonly attempts: number; readonly failures: number }) => void;
+}
+
+/** Carries only a fixed reason, so it is safe to log. */
+export class WebhookRepairError extends Error {
+  constructor(readonly reason: 'start' | 'exit') {
+    super(reason === 'start' ? 'webhook repair could not start' : 'webhook repair failed or timed out');
+  }
 }
 
 /** Output, argv, environment and exception text must never reach the logs. */
@@ -64,11 +128,11 @@ export function runWebhookRepair(argv: readonly string[], timeoutMs = 30_000, en
         else child.kill('SIGKILL');
       } catch { /* the process group already exited */ }
     }, timeoutMs);
-    child.once('error', () => { clearTimeout(timer); reject(new Error('webhook repair could not start')); });
+    child.once('error', () => { clearTimeout(timer); reject(new WebhookRepairError('start')); });
     child.once('close', (code) => {
       clearTimeout(timer);
       if (code === 0) resolve();
-      else reject(new Error('webhook repair failed or timed out'));
+      else reject(new WebhookRepairError('exit'));
     });
   });
 }
@@ -85,7 +149,11 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
   const handledHeads = new Map<string, string>();
   const awaiting = new Set<string>();
   const successfulGuids = new Set<string>();
-  const reportedFailures = new Map<string, number>();
+  const statePath = deps.statePath === null ? undefined : deps.statePath ?? webhookHealthStatePath(config);
+  const restored = loadAlertedFailures(statePath, (deps.now ?? Date.now)() - DELIVERY_RETENTION_MS);
+  const reportedFailures = restored.alerted;
+  let alertsChanged = restored.stale;
+  let reportedPersistFailure = false;
   const known = new Map<string, Delivery>();
   const payloads = new Map<string, PullRequestDelivery | null>();
   const guidPayloads = new Map<string, PullRequestDelivery | null>();
@@ -99,6 +167,17 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
   let lastScan: Delivery | undefined;
   let recoveryAfter: Delivery | undefined;
   let recoveryEvidence: Delivery | undefined;
+  const persistAlerts = () => {
+    if (!statePath || !alertsChanged) return;
+    try {
+      saveAlertedFailures(statePath, reportedFailures);
+      alertsChanged = false;
+      reportedPersistFailure = false;
+    } catch {
+      if (!reportedPersistFailure) log('could not save alert state; a restart may repeat failure alerts');
+      reportedPersistFailure = true;
+    }
+  };
   const markHandled = (delivery: Delivery) => handled.set(attemptKey(delivery), Date.parse(delivery.delivered_at));
 
   const expire = () => {
@@ -113,10 +192,14 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
     const guids = new Set([...cacheRecords.values()].map((record) => record.guid));
     for (const guid of guidPayloads.keys()) if (!guids.has(guid)) guidPayloads.delete(guid);
     for (const set of [awaiting, successfulGuids]) for (const guid of set) if (!guids.has(guid)) set.delete(guid);
-    for (const set of [attempted, handled, reportedFailures]) {
+    for (const set of [attempted, handled]) {
       for (const [key, time] of set) {
         if (time < cutoff || !cacheRecords.has(key.split(':', 1)[0])) set.delete(key);
       }
+    }
+    // Alerts restored from disk have no cache record yet, so they expire by time alone.
+    for (const [key, time] of reportedFailures) {
+      if (time < cutoff) { reportedFailures.delete(key); alertsChanged = true; }
     }
     for (const [head, guid] of handledHeads) if (!guids.has(guid)) handledHeads.delete(head);
     if (recoveryEvidence && Date.parse(recoveryEvidence.delivered_at) < cutoff) recoveryEvidence = undefined;
@@ -139,9 +222,10 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
         const payload = guidPayloads.get(delivery.guid);
         if (payload) handledHeads.set(`${payload.repo}#${payload.number}@${payload.head}`, delivery.guid);
       }
-      const failureKey = `${attemptKey(delivery)}:${delivery.status_code}:${delivery.status}`;
-      if (failed(delivery) && !reportedFailures.has(failureKey)) {
-        reportedFailures.set(failureKey, time);
+      const alertKey = failureKey(delivery);
+      if (failed(delivery) && !reportedFailures.has(alertKey)) {
+        reportedFailures.set(alertKey, time);
+        alertsChanged = true;
         log(`ALERT: App webhook delivery=${delivery.id} failed (status=${delivery.status_code})`);
       }
     }
@@ -200,10 +284,19 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
           const command = app.webhookRepairCommand;
           const commands: readonly (readonly string[])[] = typeof command[0] === 'string'
             ? [command as readonly string[]] : command as readonly (readonly string[])[];
-          for (const argv of commands) {
+          for (const [index, argv] of commands.entries()) {
             const allowlist = app.webhookRepairEnvAllowlist ?? [];
-            if (deps.repair) await deps.repair(argv, allowlist);
-            else await runWebhookRepair(argv, 30_000, allowlist);
+            try {
+              if (deps.repair) await deps.repair(argv, allowlist);
+              else await runWebhookRepair(argv, 30_000, allowlist);
+            } catch (err) {
+              // Name the step, never its argv or output.
+              const reason = err instanceof WebhookRepairError && err.reason === 'start'
+                ? 'could not start (use an absolute executable path; the daemon PATH may not include it)'
+                : 'failed or timed out';
+              log(`repair command ${index + 1} of ${commands.length} ${reason}; will retry on the next poll`);
+              return;
+            }
           }
           lastRepairDelivery = newest.id;
           log('repair completed; waiting for a successful GitHub delivery before catch-up');
@@ -324,6 +417,7 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
       // API error objects may embed credentials, request headers or payloads.
       log('health check, repair or catch-up failed; will retry on the next poll');
     } finally {
+      persistAlerts();
       busy = false;
       deps.onCacheStats?.({ attempts: attempted.size, failures: reportedFailures.size });
     }
