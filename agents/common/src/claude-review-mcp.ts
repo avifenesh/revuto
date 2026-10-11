@@ -2,7 +2,8 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve, relative, isAbsolute, delimiter, join, sep } from 'node:path';
-import { readdir, realpath, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -11,8 +12,9 @@ import { buildHarnessTools } from './tools/harness.js';
 import { isToolErrorOutput } from './trace.js';
 import type { ToolDef } from './tool-def.js';
 import { reReviewPaths } from './incremental.js';
+import { rgScopeFlags } from './rg-scope.js';
 
-const EXCLUDED = ['.git/**', '.env*', '.aws/**', 'id_rsa*', '*.pem', '*.key', 'node_modules/**'];
+const EXCLUDED = ['.git', '.git/**', '.env*', '.aws/**', 'id_rsa*', '*.pem', '*.key', 'node_modules/**'];
 function sensitive(path: string): boolean {
   return path.split(/[\\/]/).some(p => ['.git', '.aws', 'node_modules'].includes(p)
     || p.startsWith('.env') || p.startsWith('id_rsa') || p.endsWith('.pem') || p.endsWith('.key'));
@@ -28,16 +30,8 @@ async function guardedPath(root: string, path = '.'): Promise<string> {
   return actual;
 }
 
-/**
- * rg flags that confine ignore rules to the workspace. Without them a stray
- * `.ignore`/`.rgignore` in any parent directory, a parent `.git` that makes a
- * parent the repo root (so its `.gitignore` applies), or the machine's global
- * gitignore can silently hide workspace files. `--no-require-git` keeps the
- * workspace's own `.gitignore` files in force whether or not rg finds its `.git`.
- */
-const SEARCH_SCOPE_FLAGS = ['--no-ignore-parent', '--no-require-git', '--no-ignore-global'];
-
-const globLiteral = (name: string) => name.replace(/[\\*?[\]{} ]/g, '\\$&');
+// Every whitespace character goes in a class: rg trims config-file lines.
+const globLiteral = (name: string) => name.replace(/[\\*?[\]{}]/g, '\\$&').replace(/\s/g, '[$&]');
 
 /**
  * Where rg starts and which globs keep it inside `target`. A directory search
@@ -45,7 +39,6 @@ const globLiteral = (name: string) => name.replace(/[\\*?[\]{} ]/g, '\\$&');
  * apply exactly as in a whole-workspace search; `--no-ignore-parent` would drop
  * them if rg started in the subdirectory. Siblings along the way are pruned with
  * negated globs, which, unlike a whitelist glob, leave ignore rules intact.
- * A path inside an ignored directory therefore finds nothing, as from the root.
  */
 async function searchTarget(root: string, target: string): Promise<{ path: string; globs: string[] }> {
   if (target === root || !(await stat(target)).isDirectory()) return { path: target, globs: [] };
@@ -58,14 +51,30 @@ async function searchTarget(root: string, target: string): Promise<{ path: strin
   return { path: root, globs };
 }
 
+/**
+ * Run rg with its globs in a per-call config file: a wide directory yields tens
+ * of thousands of sibling globs, too many for argv (E2BIG). Config arguments
+ * precede argv, so every glob goes in the file to keep rg's last-glob-wins order.
+ * A config line cannot hold a newline; such globs stay on argv.
+ */
+async function rgPage(root: string, args: string[], globs: string[], tail: string[], offset: number, limit: number): Promise<string> {
+  if (globs.some(g => g.includes('\n'))) return commandPage('rg', root, [...args, ...globs.flatMap(g => ['--glob', g]), '--', ...tail], offset, limit);
+  const dir = await mkdtemp(join(tmpdir(), 'revuto-rg-'));
+  try {
+    const config = join(dir, 'globs.rc');
+    await writeFile(config, globs.map(g => `--glob=${g}\n`).join(''));
+    return await commandPage('rg', root, [...args, '--', ...tail], offset, limit, { RIPGREP_CONFIG_PATH: config });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
 /** Drain a fixed inspection command with bounded retained memory. */
-function commandPage(command: 'git' | 'rg', root: string, args: string[], offset: number, limit: number): Promise<string> {
+function commandPage(command: 'git' | 'rg', root: string, args: string[], offset: number, limit: number, extraEnv: Record<string, string> = {}): Promise<string> {
   return new Promise((resolvePage, reject) => {
     // npm prepends node_modules/.bin, where ripgrep's WASI shim can exit before
     // flushing large pipe output. Inspection requires the native system tools.
     const path = process.env.PATH?.split(delimiter).filter(p => !/(^|[/\\])node_modules([/\\]|$)/.test(p)).join(delimiter);
     const child = spawn(command, args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { PATH: path, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+      env: { PATH: path, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', ...extraEnv } });
     let total = 0, page = '', stderr = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${command} inspection timed out`)); }, 60_000);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
@@ -95,11 +104,12 @@ const IMMUTABLE_RANGE = /^[a-f0-9]{40}\.\.[a-f0-9]{40}$/;
  */
 export async function claudeInspectionTools(workspaceRoot: string, diffRange?: string, sinceRange?: string): Promise<readonly ToolDef[]> {
   workspaceRoot = await realpath(workspaceRoot);
+  const scopeFlags = rgScopeFlags(workspaceRoot);
   const bundle = await buildHarnessTools({ workspaceRoot, allowWrite: false });
   const tools = bundle.tools.filter(t => ['read', 'grep', 'glob'].includes(t.name)).map(tool => ({
     ...tool,
     ...(tool.name === 'read' ? {} : {
-      description: `${tool.name === 'grep' ? 'Search contents with ripgrep regex (or fixed_strings). Files over 5 MB are skipped; matching lines over 2000 columns are omitted by rg.' : 'Find paths with ripgrep glob syntax: slash-free globs match basenames at any depth.'} Results are sorted by path, respect ignore files and exclude sensitive paths. Returns {offset,next_offset,total_characters,text}. Offsets and limits are CHARACTER counts, not lines or matches. Keep paging with next_offset until null before claiming a complete result.`,
+      description: `${tool.name === 'grep' ? 'Search contents with ripgrep regex (or fixed_strings). Files over 5 MB are skipped; matching lines over 2000 columns are omitted by rg.' : 'Find paths with ripgrep glob syntax.'} Slash-free globs match basenames at any depth; a glob containing / is relative to the workspace root, not to path. Results are sorted by path, respect ignore files and exclude sensitive paths. Returns {offset,next_offset,total_characters,text}. Offsets and limits are CHARACTER counts, not lines or matches. Keep paging with next_offset until null before claiming a complete result.`,
       inputSchema: z.object({ pattern: z.string(), path: z.string().optional(),
         offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(12000).optional(),
         ...(tool.name === 'grep' ? { glob: z.string().optional(), type: z.string().optional(),
@@ -114,10 +124,11 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
         if (tool.name === 'read') return await tool.callback({ ...input, path });
         // The harness directory search checks its root, but not every matched
         // child's sensitive path. Enforce exclusions in the search itself.
-        const args: string[] = tool.name === 'glob' ? ['--files', '--glob', input.pattern] : ['--line-number', '--max-columns', '2000', '--max-filesize', '5M'];
-        args.push('--sort', 'path', '--hidden', ...SEARCH_SCOPE_FLAGS);
+        const args: string[] = tool.name === 'glob' ? ['--files'] : ['--line-number', '--max-columns', '2000', '--max-filesize', '5M'];
+        args.push('--sort', 'path', '--hidden', ...scopeFlags);
+        const globs: string[] = tool.name === 'glob' ? [input.pattern] : [];
         if (tool.name === 'grep') {
-          if (input.glob) args.push('--glob', input.glob);
+          if (input.glob) globs.push(input.glob);
           if (input.type) args.push('--type', input.type);
           if (input.fixed_strings) args.push('--fixed-strings');
           if (input.case_insensitive) args.push('--ignore-case');
@@ -127,11 +138,20 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
           if (input.context !== undefined) args.push('--context', String(input.context));
         }
         // Last globs win in rg: keep the mandatory exclusions after user filters.
-        for (const excluded of EXCLUDED) args.push('--glob', `!**/${excluded}`);
-        const target = await searchTarget(workspaceRoot, path);
-        for (const glob of target.globs) args.push('--glob', glob);
-        args.push('--', ...(tool.name === 'grep' ? [input.pattern] : []), target.path);
-        return await commandPage('rg', workspaceRoot, args, input.offset ?? 0, input.limit ?? 10000);
+        for (const excluded of EXCLUDED) globs.push(`!**/${excluded}`);
+        const pattern = tool.name === 'grep' ? [input.pattern] : [];
+        const offset = input.offset ?? 0, limit = input.limit ?? 10000;
+        let target = await searchTarget(workspaceRoot, path);
+        // A sibling name with a newline cannot be pruned in a config line.
+        if (target.globs.some(g => g.includes('\n'))) target = { path, globs: [] };
+        const page = await rgPage(workspaceRoot, args, [...globs, ...target.globs], [...pattern, target.path], offset, limit);
+        if (target.path === path || JSON.parse(page).total_characters > 0) return page;
+        // Nothing under the workspace's ignore rules. The model named this
+        // directory (possibly ignored but committed, such as dist/ or vendor/),
+        // so search it directly rather than answer with a silent empty result.
+        const direct = JSON.parse(await rgPage(workspaceRoot, args, globs, [...pattern, path], offset, limit));
+        if (direct.total_characters === 0) return page;
+        return JSON.stringify({ ...direct, note: `No results under the workspace ignore rules; this result searched ${relative(workspaceRoot, path)} directly, ignoring rules from directories above it.` });
       } catch (error) { return `ERROR: ${error instanceof Error ? error.message : String(error)}`; }
     },
   }));

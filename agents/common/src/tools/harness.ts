@@ -20,6 +20,7 @@ import {
 } from '@agent-sh/harness-core';
 import { createSpawnLspClient, loadManifest, type LspManifest } from '@agent-sh/harness-tools/lsp';
 import { adaptHarnessTool } from './adapter.js';
+import { rgScopeConfigPath } from '../rg-scope.js';
 import type { ToolDef } from '../tool-def.js';
 
 export interface HarnessToolsBundle {
@@ -99,6 +100,10 @@ export async function buildHarnessTools(opts: { workspaceRoot: string; allowWrit
     permissions: bashPermissions,
     maxOutputBytes: 512_000,
     defaultTimeoutMs: 180_000,
+    // The session env replaces process.env. Model-run rg reads the scope config,
+    // so ignore files above the workspace cannot hide its files.
+    env: { ...Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined)),
+      RIPGREP_CONFIG_PATH: rgScopeConfigPath(opts.workspaceRoot) },
   };
 
   // LSP: .lsp.json at the workspace root registers clangd for .c/.h files.

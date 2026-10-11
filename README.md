@@ -352,7 +352,10 @@ JSON, schema validation, restricted mode, and all built-in tools disabled.
 An isolated MCP server exposes workspace-guarded read/grep/glob tools and the
 fixed PR diff, excluding sensitive paths. Search honors the workspace's own
 ignore files only: ignore files and `.git` directories above the workspace and
-the global gitignore do not apply. It exposes no shell, arbitrary Git,
+the global gitignore do not apply. A directory the workspace's rules hide is
+searched directly when the scoped search finds nothing, and the result says so.
+Shells given to open-model and AGY reviewers set `RIPGREP_CONFIG_PATH` to the
+same scope (`agents/common/rg/`). It exposes no shell, arbitrary Git,
 LSP, write, or network tools. Bare mode disables automatically loaded hooks,
 plugins and project memory; Revuto supplies the PR and repository knowledge.
 Valid effort values are `low`, `medium`, `high`, `xhigh`, and `max`.
