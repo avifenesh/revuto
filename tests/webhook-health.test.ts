@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -706,4 +706,38 @@ test('a repair command that cannot start is named in the log without its argv', 
   await f.check();
   assert.ok(f.logs.includes('repair command 1 of 2 could not start (use an absolute executable path; the daemon PATH may not include it); will retry on the next poll'));
   assert.doesNotMatch(f.logs.join('\n'), /tailscale|funnel/);
+});
+
+test('the alert state file stores no GitHub status text', async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? homedir(), 'revuto-webhook-state-'));
+  try {
+    const statePath = join(dir, 'webhook-health.json');
+    const f = fixture({ statePath });
+    const status = 'Post "https://host.example.ts.net:8443/github/webhook": EOF';
+    f.recent([delivery(3, 500, { status }), delivery(2, 500, { status }), delivery(1, 500, { status })]);
+    await f.check();
+    const raw = readFileSync(statePath, 'utf8');
+    assert.doesNotMatch(raw, /ts\.net|github\/webhook|EOF|1970/);
+    assert.deepEqual(Object.keys(JSON.parse(raw).alerted).map((key) => key.split(':')[0]).sort(), ['1', '2', '3']);
+    const restarted = fixture({ statePath });
+    restarted.recent([delivery(3, 500, { status }), delivery(2, 500, { status }), delivery(1, 500, { status })]);
+    await restarted.check();
+    assert.equal(restarted.logs.filter((line) => line.startsWith('ALERT: App webhook delivery=')).length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a failed alert state save leaves no temp file behind', async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? homedir(), 'revuto-webhook-state-'));
+  try {
+    const statePath = join(dir, 'webhook-health.json');
+    mkdirSync(statePath);
+    const f = fixture({ statePath });
+    await f.check();
+    assert.ok(f.logs.includes('could not save alert state; a restart may repeat failure alerts'));
+    assert.deepEqual(readdirSync(dir), ['webhook-health.json']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

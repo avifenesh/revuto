@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Octokit } from '@octokit/rest';
 import type { GithubAppConfig, ReviewerConfig } from '../../agents/common/src/config.js';
@@ -29,9 +30,10 @@ const REVIEW_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 'ready_for_
 const DELIVERY_RETENTION_MS = 3 * 24 * 60 * 60_000;
 
 /**
- * Failure alerts already logged, keyed by delivery attempt and status, with the
- * attempt time. Persisted so a daemon restart does not re-alert the same
- * three days of history. Holds delivery IDs and timestamps only.
+ * Failure alerts already logged, keyed by delivery ID plus a hash of the
+ * attempt time, status code and status text, with the attempt time. Persisted
+ * so a daemon restart does not re-alert the same three days of history. The
+ * status text can carry the ingress URL, so only its hash is stored.
  */
 function loadAlertedFailures(path: string | undefined, cutoff: number): { alerted: Map<string, number>; stale: boolean } {
   const alerted = new Map<string, number>();
@@ -59,8 +61,19 @@ function loadAlertedFailures(path: string | undefined, cutoff: number): { alerte
 function saveAlertedFailures(path: string, alerted: ReadonlyMap<string, number>): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify({ version: 1, alerted: Object.fromEntries(alerted) })}\n`, { mode: 0o600 });
-  renameSync(temp, path);
+  try {
+    writeFileSync(temp, `${JSON.stringify({ version: 1, alerted: Object.fromEntries(alerted) })}\n`, { mode: 0o600 });
+    renameSync(temp, path);
+  } catch (err) {
+    try { unlinkSync(temp); } catch { /* the write never created it */ }
+    throw err;
+  }
+}
+
+/** Delivery ID stays readable; the attempt and its GitHub status text are hashed. */
+function failureKey(delivery: Delivery): string {
+  const attempt = `${delivery.delivered_at}:${delivery.status_code}:${delivery.status}`;
+  return `${delivery.id}:${createHash('sha256').update(attempt).digest('hex').slice(0, 16)}`;
 }
 
 /** Where a daemon keeps webhook-health state between restarts. */
@@ -209,9 +222,9 @@ export function createWebhookHealthCheck(config: ReviewerConfig, deps: WebhookHe
         const payload = guidPayloads.get(delivery.guid);
         if (payload) handledHeads.set(`${payload.repo}#${payload.number}@${payload.head}`, delivery.guid);
       }
-      const failureKey = `${attemptKey(delivery)}:${delivery.status_code}:${delivery.status}`;
-      if (failed(delivery) && !reportedFailures.has(failureKey)) {
-        reportedFailures.set(failureKey, time);
+      const alertKey = failureKey(delivery);
+      if (failed(delivery) && !reportedFailures.has(alertKey)) {
+        reportedFailures.set(alertKey, time);
         alertsChanged = true;
         log(`ALERT: App webhook delivery=${delivery.id} failed (status=${delivery.status_code})`);
       }
