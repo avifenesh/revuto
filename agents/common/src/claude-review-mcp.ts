@@ -1,8 +1,8 @@
 /** The only tool surface exposed to Claude: guarded reads and a fixed PR diff. */
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolve, relative, isAbsolute, delimiter } from 'node:path';
-import { realpath } from 'node:fs/promises';
+import { resolve, relative, isAbsolute, delimiter, join, sep } from 'node:path';
+import { readdir, realpath, stat } from 'node:fs/promises';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -26,6 +26,36 @@ async function guardedPath(root: string, path = '.'): Promise<string> {
     if (rel === '..' || rel.startsWith('../') || isAbsolute(rel) || sensitive(rel)) throw new Error('Path is outside the allowed inspection surface');
   }
   return actual;
+}
+
+/**
+ * rg flags that confine ignore rules to the workspace. Without them a stray
+ * `.ignore`/`.rgignore` in any parent directory, a parent `.git` that makes a
+ * parent the repo root (so its `.gitignore` applies), or the machine's global
+ * gitignore can silently hide workspace files. `--no-require-git` keeps the
+ * workspace's own `.gitignore` files in force whether or not rg finds its `.git`.
+ */
+const SEARCH_SCOPE_FLAGS = ['--no-ignore-parent', '--no-require-git', '--no-ignore-global'];
+
+const globLiteral = (name: string) => name.replace(/[\\*?[\]{} ]/g, '\\$&');
+
+/**
+ * Where rg starts and which globs keep it inside `target`. A directory search
+ * starts at the workspace root so the root's (and every level's) ignore files
+ * apply exactly as in a whole-workspace search; `--no-ignore-parent` would drop
+ * them if rg started in the subdirectory. Siblings along the way are pruned with
+ * negated globs, which, unlike a whitelist glob, leave ignore rules intact.
+ * A path inside an ignored directory therefore finds nothing, as from the root.
+ */
+async function searchTarget(root: string, target: string): Promise<{ path: string; globs: string[] }> {
+  if (target === root || !(await stat(target)).isDirectory()) return { path: target, globs: [] };
+  const globs: string[] = [];
+  let prefix = '';
+  for (const part of relative(root, target).split(sep)) {
+    for (const entry of await readdir(join(root, prefix))) if (entry !== part) globs.push(`!/${globLiteral(prefix + entry)}`);
+    prefix += `${part}/`;
+  }
+  return { path: root, globs };
 }
 
 /** Drain a fixed inspection command with bounded retained memory. */
@@ -85,7 +115,7 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
         // The harness directory search checks its root, but not every matched
         // child's sensitive path. Enforce exclusions in the search itself.
         const args: string[] = tool.name === 'glob' ? ['--files', '--glob', input.pattern] : ['--line-number', '--max-columns', '2000', '--max-filesize', '5M'];
-        args.push('--sort', 'path', '--hidden');
+        args.push('--sort', 'path', '--hidden', ...SEARCH_SCOPE_FLAGS);
         if (tool.name === 'grep') {
           if (input.glob) args.push('--glob', input.glob);
           if (input.type) args.push('--type', input.type);
@@ -98,7 +128,9 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
         }
         // Last globs win in rg: keep the mandatory exclusions after user filters.
         for (const excluded of EXCLUDED) args.push('--glob', `!**/${excluded}`);
-        args.push('--', ...(tool.name === 'grep' ? [input.pattern] : []), path);
+        const target = await searchTarget(workspaceRoot, path);
+        for (const glob of target.globs) args.push('--glob', glob);
+        args.push('--', ...(tool.name === 'grep' ? [input.pattern] : []), target.path);
         return await commandPage('rg', workspaceRoot, args, input.offset ?? 0, input.limit ?? 10000);
       } catch (error) { return `ERROR: ${error instanceof Error ? error.message : String(error)}`; }
     },
