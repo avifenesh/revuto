@@ -30,6 +30,7 @@
   "files": [
     "dist",
     "agent-knowledge/skill-writing-best-practices.md",
+    "agents/common/rg",
     "dashboard/package.json",
     "dashboard/package-lock.json",
     "dashboard/svelte.config.js",

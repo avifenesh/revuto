@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { killReviewChild } from './review-worktree.js';
 import { claudeEnvironment } from './claude-env.js';
+import { rgScopeConfigPath } from './rg-scope.js';
 import { z } from 'zod';
 import type { Octokit } from '@octokit/rest';
 
@@ -255,7 +256,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   if (runner === 'agy' && opts.spec.permissionMode === 'bypass') args.push('--dangerously-skip-permissions');
   const env = claude
     ? { ...claudeEnvironment(), CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) }
-    : runner === 'codex' ? codexEnvironment(codex!.codexHome) : { ...process.env, AGY_CLI_HIDE_LOGO: 'true' };
+    : runner === 'codex' ? codexEnvironment(codex!.codexHome) : { ...process.env, AGY_CLI_HIDE_LOGO: 'true', RIPGREP_CONFIG_PATH: rgScopeConfigPath(opts.cwd) };
   const promptOnStdin = runner !== 'agy';
 
   return new Promise((resolve, reject) => {
