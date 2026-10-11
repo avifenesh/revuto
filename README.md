@@ -523,6 +523,13 @@ with `--embedding`, CLS pooling, CPU-only (`-ngl 0`), on port 8181 (clear of the
 server's 8080). The `embedder` role may be `null` — dedup + skill selection then fall back
 to LLM-judge / area-glob.
 
+Stored embeddings are tagged with the embedder's `model` id. Similarity search only
+compares vectors from the same model, and the skill-embedding cache is keyed by it, so
+switching `embedder` is safe: skills re-embed on the next review. Concerns stored before
+the tag existed are still compared when their vector length matches the query; concerns
+embedded by a different model drop out of similarity search until they are re-embedded
+(a merge re-embeds its target).
+
 ## Storage backend
 
 Skills are always Obsidian markdown. The structured memory (concerns, embeddings,

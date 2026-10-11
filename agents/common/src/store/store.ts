@@ -41,6 +41,8 @@ export interface NewConcern {
   readonly context: string;
   /** Optional embedding of subject+concern for similarity dedup. */
   readonly embedding?: number[];
+  /** Embedder id that produced `embedding` (see Embedder.id). */
+  readonly embeddingModel?: string;
 }
 
 export interface MergedConcernFields {
@@ -48,6 +50,10 @@ export interface MergedConcernFields {
   readonly subject: string;
   readonly concern: string;
   readonly context: string;
+  /** Embedding of the merged subject+concern. Absent clears the target's embedding. */
+  readonly embedding?: number[];
+  /** Embedder id that produced `embedding`. */
+  readonly embeddingModel?: string;
 }
 
 export type SkillStatus = 'draft' | 'active';
@@ -86,8 +92,12 @@ export interface KnowledgeStore {
   deleteConcern(recordId: string): Promise<void>;
   allConcerns(): Promise<ConcernRecord[]>;
   setDecayScore(recordId: string, score: number): Promise<void>;
-  /** k nearest by cosine over stored embeddings (only records that have one). */
-  nearestConcerns(embedding: number[], k: number): Promise<Array<{ record: ConcernRecord; score: number }>>;
+  /**
+   * k nearest by cosine over stored embeddings made by embedder `model`.
+   * Records stored before embeddings carried a model id are compared only when
+   * their vector has the query's length.
+   */
+  nearestConcerns(embedding: number[], k: number, model: string): Promise<Array<{ record: ConcernRecord; score: number }>>;
 
   // --- skills (markdown notes) -------------------------------------------
   listSkills(statuses?: SkillStatus[]): Promise<SkillNote[]>;
@@ -96,7 +106,7 @@ export interface KnowledgeStore {
   setSkillStatus(slug: string, status: SkillStatus): Promise<boolean>;
   readTextbook(): Promise<string | null>;
   writeTextbook(body: string): Promise<void>;
-  /** Cached embedding for a skill, keyed by a content hash for invalidation. */
+  /** Cached embedding for a skill, keyed by a hash of its text and the embedder id. */
   getSkillEmbedding(slug: string, textHash: string): Promise<number[] | null>;
   setSkillEmbedding(slug: string, textHash: string, embedding: number[]): Promise<void>;
 

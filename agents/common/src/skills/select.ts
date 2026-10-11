@@ -64,7 +64,7 @@ async function selectByEmbedding(
   const need: { skill: SkillNote; hash: string; text: string }[] = [];
   const cached = new Map<string, number[]>();
   for (const s of skills) {
-    const hash = skillTextHash(s.name, s.description, s.area);
+    const hash = skillTextHash(s.name, s.description, s.area, embedder.id);
     const hit = await store.getSkillEmbedding(s.slug, hash);
     if (hit) cached.set(s.slug, hit);
     else need.push({ skill: s, hash, text: `${s.name}\n${s.description}\n${s.area.join(' ')}` });

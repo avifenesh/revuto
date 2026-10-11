@@ -78,9 +78,12 @@ export class MarkdownSkills {
   }
 }
 
-/** Hash a skill's selection-relevant text (name+description+area) for embedding cache keys. */
-export function skillTextHash(name: string, description: string, area: string[]): string {
-  return createHash('sha1').update(`${name}\n${description}\n${area.join(',')}`).digest('hex');
+/**
+ * Embedding cache key for a skill: its selection-relevant text (name+description+area)
+ * plus the embedder id, so switching embedding models invalidates the cache.
+ */
+export function skillTextHash(name: string, description: string, area: string[], embedderId: string): string {
+  return createHash('sha1').update(`${embedderId}\n${name}\n${description}\n${area.join(',')}`).digest('hex');
 }
 
 export function repoSlug(repo: string): string {

@@ -4,7 +4,8 @@
  *
  *   npx tsx scripts/smoke/surreal.ts
  *
- * Exercises: concerns CRUD, native vector cosine nearestConcerns, cursors,
+ * Exercises: concerns CRUD, native vector cosine nearestConcerns (model-aware,
+ * legacy untagged fallback, merge re-embedding), cursors,
  * idempotency, graduation (markdown skill in vault), decay.
  */
 import assert from 'node:assert/strict';
@@ -31,14 +32,30 @@ const config: ReviewerConfig = {
 const store = await openStore(config, `octo/surreal-${Date.now()}`);
 
 // concerns + native vector cosine
-const a = await store.createConcern({ areaBucket: 'src', area: ['src/net/**'], subject: 'reconnect backoff', concern: 'cap retries', context: '', embedding: [1, 0, 0, 0, 0, 0, 0, 0] });
-await store.createConcern({ areaBucket: 'src', area: ['src/io/**'], subject: 'buffer flush', concern: 'flush before close', context: '', embedding: [0, 1, 0, 0, 0, 0, 0, 0] });
+const a = await store.createConcern({ areaBucket: 'src', area: ['src/net/**'], subject: 'reconnect backoff', concern: 'cap retries', context: '', embedding: [1, 0, 0, 0, 0, 0, 0, 0], embeddingModel: 'fake' });
+const b = await store.createConcern({ areaBucket: 'src', area: ['src/io/**'], subject: 'buffer flush', concern: 'flush before close', context: '', embedding: [0, 1, 0, 0, 0, 0, 0, 0], embeddingModel: 'fake' });
 assert.equal((await store.listConcerns('src')).length, 2, 'two concerns in bucket');
 
-const near = await store.nearestConcerns([1, 0, 0, 0, 0, 0, 0, 0], 1);
+const near = await store.nearestConcerns([1, 0, 0, 0, 0, 0, 0, 0], 1, 'fake');
 assert.equal(near.length, 1, 'nearest returns one');
 assert.equal(near[0].record.recordId, a.recordId, 'cosine picks the matching concern');
 assert.ok(near[0].score > 0.99, `cosine ~1 for identical vector (got ${near[0].score})`);
+
+// model-aware: other models and legacy vectors of another length are skipped,
+// legacy untagged vectors of the query's length and records without one are safe
+const legacy = await store.createConcern({ areaBucket: 'lib', area: ['lib/**'], subject: 'legacy', concern: 'untagged', context: '', embedding: [0, 0, 1, 0, 0, 0, 0, 0] });
+await store.createConcern({ areaBucket: 'lib', area: ['lib/**'], subject: 'legacy short', concern: 'untagged 4-dim', context: '', embedding: [1, 0, 0, 0] });
+await store.createConcern({ areaBucket: 'lib', area: ['lib/**'], subject: 'other model', concern: 'same dim', context: '', embedding: [1, 0, 0, 0, 0, 0, 0, 0], embeddingModel: 'other' });
+await store.createConcern({ areaBucket: 'lib', area: ['lib/**'], subject: 'no vector', concern: 'none', context: '' });
+const all = await store.nearestConcerns([1, 0, 0, 0, 0, 0, 0, 0], 10, 'fake');
+assert.deepEqual(new Set(all.map((h) => h.record.recordId)), new Set([a.recordId, b.recordId, legacy.recordId]), 'same model + same-length legacy only');
+
+// merge keeps the target searchable
+const m1 = await store.createConcern({ areaBucket: 'lib', area: ['lib/**'], subject: 'm1', concern: 'x', context: '', embedding: [0, 0, 0, 1, 0, 0, 0, 0], embeddingModel: 'fake' });
+const m2 = await store.createConcern({ areaBucket: 'lib', area: ['lib/**'], subject: 'm2', concern: 'x', context: '', embedding: [0, 0, 0, 0, 1, 0, 0, 0], embeddingModel: 'fake' });
+await store.mergeConcerns(m1.recordId, m2.recordId, { area: ['lib/**'], subject: 'm', concern: 'x', context: '', embedding: [0, 0, 0, 0, 0, 1, 0, 0], embeddingModel: 'fake' });
+const mergedNear = await store.nearestConcerns([0, 0, 0, 0, 0, 1, 0, 0], 1, 'fake');
+assert.equal(mergedNear[0]?.record.recordId, m1.recordId, 'merged record found by its new embedding');
 
 // bump
 const bumped = await store.bumpConcern(a.recordId);
