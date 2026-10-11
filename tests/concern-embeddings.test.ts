@@ -7,14 +7,16 @@
  *   - merge_concerns re-embeds the merged record instead of clearing it,
  *   - find_similar_concerns searches every bucket,
  *   - an embedder outage blocks neither a create nor a merge, and does not throw out of find_similar,
- *   - the skill-embedding cache misses when the embedder changes.
+ *   - the skill-embedding cache misses when the embedder changes,
+ *   - reembed-concerns rejects a malformed repo arg before touching a store.
  *
  * Run: npm test
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -209,4 +211,20 @@ test('find_similar_concerns reports an embedder outage as an ERROR result instea
     assert.equal(isToolErrorOutput(out), true);
     assert.match(out as string, /similarity unavailable, embedder failed: connect ECONNREFUSED/);
   } finally { await store.close(); }
+}));
+
+test('reembed-concerns rejects a malformed repo arg before opening any store', withVault(async (vault) => {
+  const m = { baseURL: 'http://127.0.0.1:9/v1', model: 'm' };
+  const file = join(vault, 'revuto.config.json');
+  writeFileSync(file, JSON.stringify({
+    vaultPath: vault, github: { tokenEnv: 'GH_TOKEN' },
+    models: { review: m, curator: m, distill: m, embedder: { ...m, model: 'emb' } },
+    store: { backend: 'sqlite' },
+  }));
+  const run = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/reembed-concerns.ts', 'octo/widgets/extra'], {
+    cwd: process.cwd(), env: { ...process.env, REVUTO_CONFIG: file }, encoding: 'utf8',
+  });
+  assert.notEqual(run.status, 0);
+  assert.match(run.stderr, /not an owner\/repo slug: octo\/widgets\/extra/);
+  assert.equal(existsSync(join(vault, 'memory', 'octo__widgets.sqlite')), false, 'octo/widgets store was not opened');
 }));

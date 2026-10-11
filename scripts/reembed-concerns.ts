@@ -10,7 +10,7 @@ import { maybeEmbedder } from '../agents/common/src/memory/embedder.js';
 import { reembedUntaggedConcerns } from '../agents/common/src/memory/reembed.js';
 import { openStore } from '../agents/common/src/store/open.js';
 import type { KnowledgeStore } from '../agents/common/src/store/store.js';
-import { listReviewers } from '../daemon/src/reviewers.js';
+import { isRepositorySlug, listReviewers } from '../daemon/src/reviewers.js';
 
 const config = loadConfig();
 const embedder = maybeEmbedder(config);
@@ -20,6 +20,13 @@ if (!embedder) {
 }
 
 const repos = process.argv.slice(2);
+// Stores key on the first two path parts, so `owner/repo/extra` would open and
+// rewrite owner/repo. Reject bad args before any store is touched.
+const invalid = repos.filter((r) => !isRepositorySlug(r));
+if (invalid.length) {
+  console.error(`reembed-concerns: not an owner/repo slug: ${invalid.join(', ')}`);
+  process.exit(1);
+}
 const targets = repos.length ? repos : listReviewers(config).map((r) => r.repo);
 let failed = false;
 for (const repo of targets) {
