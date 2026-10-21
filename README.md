@@ -486,6 +486,39 @@ A reserved attempt counts even if the run errors; a new push, daemon restart, or
 and the check stays failed with a manual-review explanation. Reaching the cap
 never approves or merges a PR. The separate `maxSteps` limit bounds a single run.
 
+#### Final review after the cap
+
+An orchestrator that runs a PR through many revisions usually ends past the cap,
+so the head that merges was never reviewed. `revuto review <owner/repo> <pr> --final`
+asks for one review of the current head after the cap:
+
+- Past the cap it allows exactly one review per head SHA, reserved under
+  `final-review:<pr>:<headSha>` before the model runs and never refunded, like
+  rounds. A second `--final` at the same head is refused with the reason; a new head
+  gets its own.
+- Below the cap it is a normal round and spends it.
+- The daily review and token limits still apply. A refusal there spends nothing.
+- A head the daemon already refused at the cap is marked done; `--final` takes its
+  own claim on that head, so the marker does not block it. A head still under the
+  cap that was already reviewed stays reviewed.
+- The posted review summary, the check title and the App approval say
+  "Revuto final review (round cap reached)". Pass and fail work as for any review.
+
+`revuto review` exits with a code an orchestrator can act on:
+
+| code | meaning |
+|---|---|
+| 0 | the review ran and passed |
+| 1 | the review ran and failed (no decision, a failed post, a skip without inspection) or an error |
+| 2 | the review ran and posted blocking concerns |
+| 3 | refused or not run (round cap, final review already used, daily limit, draft, head already reviewed) |
+
+When the orchestrator has finished its own rounds:
+
+```bash
+revuto review owner/repo 123 --final
+```
+
 Reviews use up to `review.maxConcurrent` slots globally (default 4) and
 `review.maxConcurrentPerRepo` per repository (default 2), with one active run per
 PR. These limits cover the daemon, webhooks and manual CLI processes. Waiting
@@ -618,7 +651,8 @@ revuto list                          # list registered reviewers (shows PAUSED)
 
 # run a job now
 revuto trigger <owner/repo> [job]    # run review|learn|decay now (default: review)
-revuto review <owner/repo> <pr>      # review one specific PR now
+revuto review <owner/repo> <pr>      # review one specific PR now (exit 0 passed, 2 concerns, 3 not run, 1 failed)
+revuto review <owner/repo> <pr> --final  # one review of the current head after review.maxRounds
 revuto learn <owner/repo>            # run one learn pass now
 revuto decay <owner/repo>            # run decay now
 revuto approve <owner/repo> <slug>   # activate a draft skill

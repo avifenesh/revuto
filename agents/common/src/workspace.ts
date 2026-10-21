@@ -64,6 +64,8 @@ export interface PrContext {
   readonly diffRefSpec: string; // "<mergeBaseSha>..<headSha>"
   /** Set on a re-review: what changed since revuto's last reviewed head. */
   readonly incremental?: IncrementalReview;
+  /** Bold heading the posting tool puts on top of the review summary (the final review past the round cap). */
+  readonly reviewHeading?: string;
 }
 
 function run(cmd: string, args: readonly string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
