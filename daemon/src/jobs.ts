@@ -13,7 +13,15 @@ import { runCurator } from '../../agents/curator/src/run-curator.js';
 import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollReviewCandidates, pollFeedback } from './poller.js';
 import { readReviewer, writeReviewer, type ReviewerSettings } from './reviewers.js';
-import { counterKey, FINAL_REVIEW_HEADING, historicalReviewRounds, reserveReviewBudget, roundCapReached } from './review-rounds.js';
+import {
+  counterKey,
+  FINAL_REVIEW_HEADING,
+  finalReviewUsed,
+  finalReviewUsedReason,
+  historicalReviewRounds,
+  reserveReviewBudget,
+  roundCapReached,
+} from './review-rounds.js';
 import { logIgnoredOnce, repoIgnored } from '../../agents/common/src/review-routing.js';
 import { runQueuedReview } from './review-queue.js';
 import { runQueuedForRepo } from './repo-queue.js';
@@ -162,6 +170,8 @@ export interface ReviewOnePrOptions {
   readonly expectedHeadSha?: string;
   /** Called after this exact PR head is claimed and before the model run begins. */
   readonly onClaimed?: (headSha: string) => Promise<void>;
+  /** The model run; replaceable in tests. */
+  readonly runReview?: typeof runReview;
 }
 
 export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber: number, opts: ReviewOnePrOptions = {}): Promise<ReviewOutcome> {
@@ -225,10 +235,17 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
   // saw it, the round cap refused it, and the head was marked done. Past the cap a
   // --final takes its own claim on that head, so the done marker does not block it.
   // A head that is mid-review, or one still under the cap, is refused as before.
+  // Whichever claim a final review ran under, `<key>:final` is marked done after it.
+  const finalKey = `${key}:final`;
   let claimKey = key;
   let finalRun = false;
   const labelled = (result: CheckResult): CheckResult => finalRun ? finalReviewCheckResult(result) : result;
   try {
+    // A duplicate --final is refused before any claim or check run, so it cannot
+    // replace the check the final review already completed on this head.
+    if (opts.final && await finalReviewUsed(store, prNumber, pr.head.sha)) {
+      return unreviewedOutcome(finalReviewUsedReason(prNumber, pr.head.sha), pr.head.sha);
+    }
     if (!opts.force && !(await store.claim(key))) {
       const capped = opts.final && await store.seen(key)
         && await runQueuedForRepo(config, `_review-budget/${repo}`, () => roundCapReached(store, prNumber, maxRounds, historical));
@@ -238,7 +255,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
           pr.head.sha,
         );
       }
-      claimKey = `${key}:final`;
+      claimKey = finalKey;
       if (!(await store.claim(claimKey))) {
         return unreviewedOutcome(
           `PR #${prNumber} already had its final review at ${pr.head.sha.slice(0, 7)}, or one is running now. A final review runs once per head; push a new head to request another. This is not an approval.`,
@@ -265,7 +282,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
     finalRun = round.allowed && round.final;
     if (finalRun) console.log(`[review] ${key}: ${round.reason}`);
     const ran = round.allowed
-      ? await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth,
+      ? await (opts.runReview ?? runReview)({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth,
           reviewerLogins: [auth.login, readReviewer(config, repo)?.botLogin].filter((l): l is string => !!l),
           ...(finalRun ? { reviewHeading: FINAL_REVIEW_HEADING } : {}) })
       : unreviewedOutcome(round.reason, pr.head.sha);
@@ -278,6 +295,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
     }
     if (round.daily) await store.unclaim(claimKey);
     else await store.mark(claimKey);
+    if (finalRun && claimKey !== finalKey) await store.mark(finalKey);
     if (githubApp && managedCheckRunId !== undefined) {
       try {
         await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, labelled(checkResultForOutcome(outcome)),
@@ -295,7 +313,9 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
         console.error(`[review] could not complete check ${managedCheckRunId}: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`);
       }
     }
-    if (!opts.force) await store.unclaim(claimKey);                                                 // release the claim so a transient failure can be retried
+    // A final review that failed still spent this head's final reservation.
+    if (finalRun) await store.mark(finalKey);
+    if (!opts.force) await store.unclaim(claimKey);                                             // release the claim so a transient failure can be retried
     throw err;
   } finally {
     await store.close();

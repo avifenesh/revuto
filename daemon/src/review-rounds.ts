@@ -73,13 +73,22 @@ export async function reserveFinalReview(store: CounterStore, prNumber: number, 
   historical: () => Promise<number>): Promise<Omit<ReviewReservation, 'daily'>> {
   const round = await reserveReviewRound(store, prNumber, limit, historical);
   if (round.allowed) return { ...round, final: false };
-  const used = await store.incrCounter(`final-review:${prNumber}:${headSha}`);
-  const short = headSha.slice(0, 7);
+  const used = await store.incrCounter(finalReviewKey(prNumber, headSha));
   return used === 1
     ? { allowed: true, round: round.round, final: true,
-        reason: `Final review of PR #${prNumber} at ${short}, requested after the ${limit}-round review limit` }
-    : { allowed: false, round: round.round, final: true,
-        reason: `PR #${prNumber} already had its final review at ${short}. A final review runs once per head after the ${limit}-round limit; push a new head to request another. This is not an approval.` };
+        reason: `Final review of PR #${prNumber} at ${headSha.slice(0, 7)}, requested after the ${limit}-round review limit` }
+    : { allowed: false, round: round.round, final: true, reason: finalReviewUsedReason(prNumber, headSha) };
+}
+
+const finalReviewKey = (prNumber: number, headSha: string): string => `final-review:${prNumber}:${headSha}`;
+
+/** True once this head's final review was reserved (it runs, ran, or failed; it is never refunded). */
+export async function finalReviewUsed(store: Pick<KnowledgeStore, 'getCounter'>, prNumber: number, headSha: string): Promise<boolean> {
+  return (await store.getCounter(finalReviewKey(prNumber, headSha))) > 0;
+}
+
+export function finalReviewUsedReason(prNumber: number, headSha: string): string {
+  return `PR #${prNumber} already had its final review at ${headSha.slice(0, 7)}. A final review runs once per head after the round limit; push a new head to request another. This is not an approval.`;
 }
 
 export interface ReviewBudgetRequest {

@@ -134,8 +134,7 @@ test('--final reaches past the done marker of a capped head, and only there', as
     assert.match(daemon.result, /2-round review limit/);
     assert.match((await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth })).result, /already reviewed or is currently being reviewed/);
 
-    // The head's final review was already spent: --final gets past the done marker
-    // to the final-review reservation, which refuses it clearly.
+    // The head's final review was already spent: --final is refused with the reason.
     const store = await openStore(cfg, 'a/repo');
     try { await store.incrCounter(`final-review:7:${HEAD_A}`); } finally { await store.close(); }
     const final = await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, final: true });
@@ -156,4 +155,72 @@ test('--final reaches past the done marker of a capped head, and only there', as
     const result = await reviewOnePr(cfgBelow, 'a/repo', 7, { githubAuth: auth, final: true });
     assert.match(result.result, /already reviewed or is currently being reviewed/);
   } finally { rmSync(below, { recursive: true, force: true }); }
+});
+
+/** A GitHub App repo past its 2-round cap, with fake check runs and a fake model run. */
+function appHarness(root: string) {
+  const cfg = { vaultPath: root, review: { workspaceDir: join(root, 'workspaces'), maxConcurrent: 4, maxConcurrentPerRepo: 2, maxRounds: 2 },
+    github: { tokenEnv: 'TEST_UNUSED', app: { checkName: 'revuto-review', allowedOwners: [], ignoredRepos: [] } },
+    models: { embedder: null }, limits: { dailyReviews: 0, dailyTokens: 0 }, store: { backend: 'sqlite' } } as unknown as ReviewerConfig;
+  const created: number[] = [];
+  const updates: Array<{ conclusion: string; title: string }> = [];
+  const approvals: string[] = [];
+  const auth = { login: 'reviewer', token: async () => 'unused', octokit: {
+    pulls: {
+      get: async () => ({ data: { head: { sha: HEAD_A }, state: 'open', draft: false, html_url: 'https://example.test/pr' } }),
+      listReviews: () => {},
+      createReview: async (input: { body: string }) => { approvals.push(input.body); return { data: {} }; },
+    },
+    checks: {
+      create: async () => { created.push(created.length + 1); return { data: { id: created.length } }; },
+      update: async (input: { output: { title: string }; conclusion: string }) => { updates.push({ conclusion: input.conclusion, title: input.output.title }); return { data: {} }; },
+    },
+    paginate: async () => [1, 2].map((id) => ({ id, submitted_at: 'now', user: { login: 'reviewer' }, body: '<!-- revuto-signed -->' })),
+  } } as unknown as GithubAuth;
+  const headings: Array<string | undefined> = [];
+  const runReview = async (o: { headSha?: string; reviewHeading?: string }): Promise<ReviewOutcome> => {
+    headings.push(o.reviewHeading);
+    return { ...unreviewedOutcome('', o.headSha!), ranModel: true, inspections: 3, steps: 4 };
+  };
+  return { cfg, auth, created, updates, approvals, headings, runReview: runReview as never };
+}
+
+test('A fresh head past the cap: --final passes, a second --final is refused with exit 3 and creates no check', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'final-review-app-'));
+  const h = appHarness(root);
+  try {
+    const first = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview: h.runReview });
+    assert.equal(first.finalReview, true);
+    assert.equal(reviewExitCode(first), REVIEW_EXIT.passed);
+    assert.deepEqual(h.headings, [FINAL_REVIEW_HEADING]);
+    assert.equal(h.created.length, 1);
+    assert.deepEqual(h.updates, [{ conclusion: 'success', title: `${FINAL_REVIEW_HEADING}: review passed` }]);
+    assert.match(h.approvals[0] ?? '', /\*\*Revuto final review \(round cap reached\)\*\*/);
+
+    const second = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview: h.runReview });
+    assert.equal(second.ranModel, false);
+    assert.match(second.result, /already had its final review at aaaaaaa/);
+    assert.equal(reviewExitCode(second), REVIEW_EXIT.notRun);
+    assert.equal(h.created.length, 1, 'no new check run replaces the passing one');
+    assert.equal(h.updates.length, 1);
+    assert.equal(h.headings.length, 1, 'the model did not run again');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('A head the daemon refused at the cap: --final runs once under its own claim, then is refused without a check', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'final-review-capped-'));
+  const h = appHarness(root);
+  try {
+    const daemon = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, runReview: h.runReview });
+    assert.match(daemon.result, /2-round review limit/);
+    assert.equal(h.created.length, 1);
+    const final = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview: h.runReview });
+    assert.equal(reviewExitCode(final), REVIEW_EXIT.passed);
+    assert.equal(h.created.length, 2);
+    assert.equal(h.updates.at(-1)?.title, `${FINAL_REVIEW_HEADING}: review passed`);
+    const again = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview: h.runReview });
+    assert.equal(reviewExitCode(again), REVIEW_EXIT.notRun);
+    assert.equal(h.created.length, 2);
+    assert.equal(h.headings.length, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
