@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import type { GithubAuth } from '../agents/common/src/github-auth.js';
 import { unreviewedOutcome, type ReviewOutcome } from '../agents/common/src/run-agent.js';
+import { withReviewWorktree } from '../agents/common/src/review-worktree.js';
 import { openStore } from '../agents/common/src/store/open.js';
 import { withReviewHeading } from '../agents/common/src/tools/gh.js';
 import { reviewOnePr } from '../daemon/src/jobs.js';
@@ -276,4 +277,34 @@ test('A final review that posted a decision and then failed still spends the hea
     assert.match(again.result, /already had its final review at aaaaaaa/);
     assert.equal(h.headings.length, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('A final review whose verdict posted and whose worktree cleanup then failed still spends the head', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'final-review-cleanup-'));
+  const h = appHarness(root);
+  let locked = '';
+  // The real worktree wrapper around a run that posts concerns, then leaves a directory
+  // the cleanup cannot remove, so removing the worktree fails after the verdict.
+  const runReview = (async (o: { headSha?: string; reviewHeading?: string }) => withReviewWorktree(h.cfg, 'a/repo', 7, async (workspace) => {
+    h.headings.push(o.reviewHeading);
+    locked = join(workspace, 'locked');
+    mkdirSync(locked);
+    writeFileSync(join(locked, 'file'), 'x');
+    chmodSync(locked, 0o500);
+    return { ...unreviewedOutcome('', o.headSha!), ranModel: true, inspections: 3, steps: 4, terminal: 'post_review', hasFindings: true } satisfies ReviewOutcome;
+  })) as never;
+  try {
+    const first = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview });
+    assert.equal(first.finalReview, true);
+    assert.equal(reviewExitCode(first), REVIEW_EXIT.concerns);
+    assert.equal(h.updates.at(-1)?.title, `${FINAL_REVIEW_HEADING}: found review concerns`);
+
+    const again = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview });
+    assert.equal(again.ranModel, false);
+    assert.match(again.result, /already had its final review at aaaaaaa/);
+    assert.equal(h.headings.length, 1, 'the model did not run a second final review');
+  } finally {
+    if (locked) chmodSync(locked, 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
