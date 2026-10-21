@@ -4,7 +4,7 @@
  *   revuto daemon                 start the scheduler (review/learn/decay per repo)
  *   revuto add <owner/repo>       register a repo (minimal; `init` adds onboarding)
  *   revuto list                   list registered reviewers
- *   revuto review <owner/repo> <pr>   review one PR now
+ *   revuto review <owner/repo> <pr> [--force] [--final]   review one PR now
  *   revuto learn <owner/repo>     run one learn pass now
  *   revuto decay <owner/repo>     run decay now
  *   revuto approve <owner/repo> <skill-slug>   activate a draft skill
@@ -35,7 +35,7 @@ import { runDoctor, doctorOk } from './doctor.js';
 import { isJob } from './types.js';
 import { applyModelOverrides, extractModelOverrideArgs, modelOverrideUsage } from './model-overrides.js';
 import { reconcileStaleReviewChecks } from './check-reconciliation.js';
-import { isReviewOutcomeSuccessful } from './review-check.js';
+import { REVIEW_EXIT, reviewExitCode } from './review-check.js';
 
 function usage(): void {
   console.log(`revuto <command>
@@ -51,7 +51,13 @@ function usage(): void {
   cron <owner/repo> <job> <expr>  set a per-repo cron for review|learn|decay ("clear" to reset to default)
   trigger <owner/repo> [job]      run review|learn|decay now (default: review)
   list                            list registered reviewers
-  review <owner/repo> <pr> [--force] review one specific PR now
+  review <owner/repo> <pr> [--force] [--final]
+                                  review one specific PR now; --final allows one review
+                                  of the current head after review.maxRounds is used up
+                                  (once per head SHA; below the cap it is a normal round)
+                                  exit: 0 passed, 2 blocking concerns, 3 refused or not run
+                                  (round cap, final already used, daily limit, draft,
+                                  head already reviewed), 1 review failed or error
   learn <owner/repo>              run one learn pass now
   decay <owner/repo>              run decay now
   approve <owner/repo> <slug>     activate a draft skill
@@ -151,15 +157,20 @@ async function main(): Promise<void> {
       break;
     }
     case 'review': {
-      const repo = args[0]; const pr = parseInt(args[1] ?? '', 10);
-      if (!repo?.includes('/') || !Number.isFinite(pr)) throw new Error('usage: revuto review <owner/repo> <pr>');
+      const [repo, prArg] = args.filter((a) => !a.startsWith('--'));
+      const pr = parseInt(prArg ?? '', 10);
+      if (!repo?.includes('/') || !Number.isFinite(pr)) throw new Error('usage: revuto review <owner/repo> <pr> [--force] [--final]');
       const cfg = config();
-      const outcome = await reviewOnePr(cfg, repo, pr, { force: args.includes('--force') });
+      const outcome = await reviewOnePr(cfg, repo, pr, { force: args.includes('--force'), final: args.includes('--final') });
       console.log(JSON.stringify(outcome, null, 2));
-      if (!isReviewOutcomeSuccessful(outcome)) {
-        const reason = !outcome.ranModel
-          ? `review not run (${outcome.result})`
-          : outcome.terminal === 'none'
+      const code = reviewExitCode(outcome);
+      process.exitCode = code;
+      if (code === REVIEW_EXIT.concerns) {
+        console.error(`revuto review found blocking concerns on ${repo}#${pr}`);
+      } else if (code === REVIEW_EXIT.notRun) {
+        console.error(`revuto review not run: ${outcome.result}`);
+      } else if (code === REVIEW_EXIT.failed) {
+        const reason = outcome.terminal === 'none'
           ? 'review ended without a terminal decision'
           : outcome.postFailures > 0
           ? `posting calls failed (${outcome.postFailures})`
@@ -169,7 +180,6 @@ async function main(): Promise<void> {
           ? 'skipped by forced terminal-only pass'
           : 'review failed';
         console.error(`revuto review failed: ${reason}`);
-        process.exitCode = 1;
       }
       break;
     }

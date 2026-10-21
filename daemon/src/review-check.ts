@@ -3,7 +3,8 @@ import { basename } from 'node:path';
 import type { GithubAppConfig, ModelSpec, ReviewerConfig } from '../../agents/common/src/config.js';
 import type { GithubAuth } from '../../agents/common/src/github-auth.js';
 import type { ReviewOutcome } from '../../agents/common/src/run-agent.js';
-import { signReviewBody } from '../../agents/common/src/tools/gh.js';
+import { signReviewBody, withReviewHeading } from '../../agents/common/src/tools/gh.js';
+import { FINAL_REVIEW_HEADING } from './review-rounds.js';
 
 export interface ReviewCheckTarget {
   readonly repo: string;
@@ -24,6 +25,30 @@ export function isReviewOutcomeSuccessful(outcome: ReviewOutcome): boolean {
   if (outcome.postFailures > 0) return false;
   if (outcome.terminal === 'skip_review' && (outcome.inspections === 0 || outcome.forcedTerminal)) return false;
   return true;
+}
+
+/**
+ * Exit codes of `revuto review`, so an orchestrator can act on the result:
+ * the review passed, it posted blocking concerns, it was refused or not run
+ * (round cap, final review already used, daily limit, draft, head already
+ * claimed), or it ran and failed (no decision, failed post, uninspected skip,
+ * or an error).
+ */
+export const REVIEW_EXIT = { passed: 0, failed: 1, concerns: 2, notRun: 3 } as const;
+
+export function reviewExitCode(outcome: ReviewOutcome): number {
+  if (!outcome.ranModel) return REVIEW_EXIT.notRun;
+  if (!isReviewOutcomeSuccessful(outcome)) return REVIEW_EXIT.failed;
+  return checkResultForOutcome(outcome).conclusion === 'success' ? REVIEW_EXIT.passed : REVIEW_EXIT.concerns;
+}
+
+/** Mark a check result as the final review requested after the round cap. */
+export function finalReviewCheckResult(result: CheckResult): CheckResult {
+  return {
+    ...result,
+    title: `${FINAL_REVIEW_HEADING}: ${result.title.replace(/^Revuto /, '')}`,
+    summary: `This is the one final review of this head, requested after the round cap was reached.\n\n${result.summary}`,
+  };
 }
 
 export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
@@ -213,6 +238,8 @@ const CHECK_UPDATE_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
 export interface CompleteReviewCheckOptions {
   /** Waits before each retry of a check update that returned 404. */
   readonly updateRetryDelaysMs?: readonly number[];
+  /** Bold heading on the clean approval body (the final review past the round cap). */
+  readonly reviewHeading?: string;
 }
 
 export async function completeReviewCheck(
@@ -233,7 +260,7 @@ export async function completeReviewCheck(
         pull_number: target.prNumber,
         commit_id: target.headSha,
         event: 'APPROVE',
-        body: signReviewBody('Revuto completed the review and found no evidence-backed concerns.'),
+        body: signReviewBody(withReviewHeading('Revuto completed the review and found no evidence-backed concerns.', options.reviewHeading)),
       });
     } catch (err) {
       finalResult = checkResultForError(

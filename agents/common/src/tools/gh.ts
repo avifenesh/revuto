@@ -89,6 +89,13 @@ export function signReviewBody(body: string): string {
   return body.trim() ? `${SIGNATURE}\n\n---\n\n${body}` : SIGNATURE;
 }
 
+/** Put `heading` in bold on top of a review summary; the body is unchanged without one. */
+export function withReviewHeading(body: string, heading?: string): string {
+  const title = heading?.trim();
+  if (!title) return body;
+  return body.trim() ? `**${title}**\n\n${body}` : `**${title}**`;
+}
+
 interface InlineComment {
   path: string;
   line: number;
@@ -195,7 +202,7 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
           pull_number: deps.ctx.prNumber,
           commit_id: deps.ctx.headSha,
           event: 'COMMENT',
-          body: signReviewBody(input.body),
+          body: signReviewBody(withReviewHeading(input.body, deps.ctx.reviewHeading)),
           comments: (input.comments as InlineComment[]).map((c) => ({ ...c, body: signReviewBody(c.body) })),
         });
         return JSON.stringify({

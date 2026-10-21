@@ -9,6 +9,8 @@ const execFileAsync = promisify(execFile);
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 const REVIEW_TARGET_RE = /^([\w.-]+\/[\w.-]+)#(\d+)$/;
 const LONG_JOB_TIMEOUT_MS = 660_000;
+/** `revuto review` exit code for a review that posted blocking concerns (daemon/src/review-check.ts REVIEW_EXIT). */
+const REVIEW_EXIT_CONCERNS = 2;
 
 export interface DashboardActionResult {
   ok: boolean;
@@ -127,7 +129,14 @@ export async function runDashboardAction(action: string, target?: string): Promi
       case 'review': {
         const match = target?.match(REVIEW_TARGET_RE);
         if (!match) return fail('target must be owner/repo#123');
-        return ok(await revutoCli(['review', match[1], String(Number(match[2]))]));
+        try {
+          return ok(await revutoCli(['review', match[1], String(Number(match[2]))]));
+        } catch (err) {
+          // Exit 2 is a finished review that posted blocking concerns, not a failed action.
+          const run = err as { code?: unknown; stdout?: unknown };
+          if (run.code === REVIEW_EXIT_CONCERNS && typeof run.stdout === 'string') return ok(run.stdout);
+          throw err;
+        }
       }
 
       default:

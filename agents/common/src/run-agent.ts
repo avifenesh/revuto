@@ -60,6 +60,8 @@ export interface RunReviewOptions {
    * reviewed for a re-review. Defaults to the auth's login, then the token's user.
    */
   readonly reviewerLogins?: readonly string[];
+  /** Bold heading put on top of the posted review summary (the final review past the round cap). */
+  readonly reviewHeading?: string;
 }
 
 export interface ReviewOutcome {
@@ -97,6 +99,8 @@ export interface ReviewOutcome {
   readonly model?: string;
   /** JSONL trace of the run, when one could be written. */
   readonly tracePath?: string;
+  /** True for the one review a head gets after the round cap (`revuto review --final`). */
+  readonly finalReview?: boolean;
 }
 
 /**
@@ -249,7 +253,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   if (!owner || !name) throw new Error(`bad repo: ${opts.repo}`);
   const resolvedToken = await token();
   const reviewerLogins = config.review.incremental === false ? [] : await reviewerLoginsFor(opts, auth);
-  const ctx = await runQueuedForRepo(config, `_review-cache/${opts.repo}`, () => prepareWorkspace(
+  const prepared = await runQueuedForRepo(config, `_review-cache/${opts.repo}`, () => prepareWorkspace(
     { repo: opts.repo, pr_number: opts.prNumber, headSha: opts.headSha },
     octokit,
     // Clone/fetch run here at the top of the review, so one resolve is enough;
@@ -258,6 +262,8 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     workspaceRoot,
     { cacheRoot, signal, incremental: config.review.incremental !== false, reviewerLogins },
   ));
+  // The posting tools read the heading from the context, on every runner path.
+  const ctx: PrContext = opts.reviewHeading ? { ...prepared, reviewHeading: opts.reviewHeading } : prepared;
 
   // Small, medium and large PRs go to their tier's model when one is configured.
   // From here on `config.models.review` IS the routed model, for every code path below.

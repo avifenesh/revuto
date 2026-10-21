@@ -13,7 +13,7 @@ import { runCurator } from '../../agents/curator/src/run-curator.js';
 import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollReviewCandidates, pollFeedback } from './poller.js';
 import { readReviewer, writeReviewer, type ReviewerSettings } from './reviewers.js';
-import { historicalReviewRounds, reserveReviewRound } from './review-rounds.js';
+import { counterKey, FINAL_REVIEW_HEADING, historicalReviewRounds, reserveReviewBudget, roundCapReached } from './review-rounds.js';
 import { logIgnoredOnce, repoIgnored } from '../../agents/common/src/review-routing.js';
 import { runQueuedReview } from './review-queue.js';
 import { runQueuedForRepo } from './repo-queue.js';
@@ -23,6 +23,8 @@ import {
   checkResultForOutcome,
   completeReviewCheck,
   createReviewCheck,
+  finalReviewCheckResult,
+  type CheckResult,
   type ReviewCheckTarget,
 } from './review-check.js';
 
@@ -32,7 +34,6 @@ export interface ReviewJobResult { reviewed: number; skipped: number; initialize
 export interface LearnJobResult { curated: number; seen: number; initialized?: boolean; limited?: string; }
 
 const dayKey = (): string => new Date().toISOString().slice(0, 10);
-const counterKey = (name: 'reviews' | 'learn' | 'tokens', day: string): string => `${name}:${day}`;
 
 function githubAppForRepo(config: ReviewerConfig, repo: string) {
   const app = config.github.app;
@@ -148,6 +149,12 @@ export async function decayRepo(config: ReviewerConfig, repo: string): Promise<D
 /** On-demand single-PR review (CLI `revuto review <repo> <pr>`). */
 export interface ReviewOnePrOptions {
   readonly force?: boolean;
+  /**
+   * `revuto review --final`: once the round cap is reached, allow exactly one more
+   * review of the current head (reserved under `final-review:<pr>:<headSha>`).
+   * Below the cap it is a normal round. Daily limits still apply.
+   */
+  readonly final?: boolean;
   readonly githubAuth?: GithubAuth;
   /** Skip instead of auto-registering when the reviewer note is absent. */
   readonly registeredOnly?: boolean;
@@ -212,12 +219,32 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
     detailsUrl: pr.html_url,
   };
   let managedCheckRunId: number | undefined;
+  const maxRounds = config.review.maxRounds ?? 3;
+  const historical = () => historicalReviewRounds(auth, repo, prNumber, readReviewer(config, repo)?.botLogin);
+  // The head a --final review is asked for was usually handled already: the daemon
+  // saw it, the round cap refused it, and the head was marked done. Past the cap a
+  // --final takes its own claim on that head, so the done marker does not block it.
+  // A head that is mid-review, or one still under the cap, is refused as before.
+  let claimKey = key;
+  let finalRun = false;
+  const labelled = (result: CheckResult): CheckResult => finalRun ? finalReviewCheckResult(result) : result;
   try {
     if (!opts.force && !(await store.claim(key))) {
-      return unreviewedOutcome(
-        `#${prNumber} at ${pr.head.sha} was already reviewed or is currently being reviewed`,
-        pr.head.sha,
-      );
+      const capped = opts.final && await store.seen(key)
+        && await runQueuedForRepo(config, `_review-budget/${repo}`, () => roundCapReached(store, prNumber, maxRounds, historical));
+      if (!capped) {
+        return unreviewedOutcome(
+          `#${prNumber} at ${pr.head.sha} was already reviewed or is currently being reviewed`,
+          pr.head.sha,
+        );
+      }
+      claimKey = `${key}:final`;
+      if (!(await store.claim(claimKey))) {
+        return unreviewedOutcome(
+          `PR #${prNumber} already had its final review at ${pr.head.sha.slice(0, 7)}, or one is running now. A final review runs once per head; push a new head to request another. This is not an approval.`,
+          pr.head.sha,
+        );
+      }
     }
     if (opts.onClaimed) {
       await opts.onClaimed(pr.head.sha);
@@ -225,33 +252,36 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
       managedCheckRunId = await createReviewCheck(auth, githubApp, managedTarget);
     }
     const day = dayKey();
-    const round = await runQueuedForRepo(config, `_review-budget/${repo}`, async () => {
-      if (config.limits.dailyReviews && await store.getCounter(counterKey('reviews', day)) >= config.limits.dailyReviews) {
-        return { allowed: false, reason: 'Daily review limit reached' };
-      }
-      if (config.limits.dailyTokens && await store.getCounter(counterKey('tokens', day)) >= config.limits.dailyTokens) {
-        return { allowed: false, reason: 'Daily token limit reached' };
-      }
-      const reserved = await reserveReviewRound(store, prNumber, config.review.maxRounds ?? 3,
-        () => historicalReviewRounds(auth, repo, prNumber, readReviewer(config, repo)?.botLogin));
-      if (reserved.allowed && config.limits.dailyReviews) await store.incrCounter(counterKey('reviews', day));
-      return reserved;
-    });
-    const outcome = round.allowed
+    const round = await runQueuedForRepo(config, `_review-budget/${repo}`, () => reserveReviewBudget(store, {
+      prNumber,
+      headSha: pr.head.sha,
+      maxRounds,
+      final: opts.final === true,
+      day,
+      dailyReviews: config.limits.dailyReviews,
+      dailyTokens: config.limits.dailyTokens,
+      historical,
+    }));
+    finalRun = round.allowed && round.final;
+    if (finalRun) console.log(`[review] ${key}: ${round.reason}`);
+    const ran = round.allowed
       ? await runReview({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth,
-          reviewerLogins: [auth.login, readReviewer(config, repo)?.botLogin].filter((l): l is string => !!l) })
+          reviewerLogins: [auth.login, readReviewer(config, repo)?.botLogin].filter((l): l is string => !!l),
+          ...(finalRun ? { reviewHeading: FINAL_REVIEW_HEADING } : {}) })
       : unreviewedOutcome(round.reason, pr.head.sha);
+    const outcome: ReviewOutcome = finalRun ? { ...ran, finalReview: true } : ran;
     if (outcome.ranModel && config.limits.dailyTokens) await store.incrCounter(counterKey('tokens', day), outcome.tokens);
     assertReviewedHead(managedTarget, outcome);
     console.log(`[review] ${key}: ${describeOutcome(outcome)}`);
     if (outcome.terminal === 'none') {
       throw new Error(`review of ${repo}#${prNumber}@${pr.head.sha} ended without a terminal decision`);
     }
-    if (round.reason.startsWith('Daily ')) await store.unclaim(key);
-    else await store.mark(key);
+    if (round.daily) await store.unclaim(claimKey);
+    else await store.mark(claimKey);
     if (githubApp && managedCheckRunId !== undefined) {
       try {
-        await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, checkResultForOutcome(outcome));
+        await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, labelled(checkResultForOutcome(outcome)),
+          finalRun ? { reviewHeading: FINAL_REVIEW_HEADING } : {});
       } catch (err) {
         console.error(`[review] could not complete check ${managedCheckRunId}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -260,12 +290,12 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
   } catch (err) {
     if (githubApp && managedCheckRunId !== undefined) {
       try {
-        await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, checkResultForError(err, config));
+        await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, labelled(checkResultForError(err, config)));
       } catch (updateErr) {
         console.error(`[review] could not complete check ${managedCheckRunId}: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`);
       }
     }
-    if (!opts.force) await store.unclaim(key);                                                   // release the claim so a transient failure can be retried
+    if (!opts.force) await store.unclaim(claimKey);                                                 // release the claim so a transient failure can be retried
     throw err;
   } finally {
     await store.close();
