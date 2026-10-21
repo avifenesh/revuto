@@ -93,6 +93,11 @@ assert.equal(await store.incrCounter('reviews:2026-05-21'), 1, 'counter starts a
 assert.equal(await store.incrCounter('tokens:2026-05-21', 500), 500, 'counter adds by N');
 assert.equal(await store.incrCounter('tokens:2026-05-21', 250), 750, 'counter accumulates');
 assert.equal(await store.getCounter('tokens:2026-05-21'), 750, 'getCounter reads total');
+await store.resetCounter('tokens:2026-05-21');
+assert.equal(await store.getCounter('tokens:2026-05-21'), 0, 'resetCounter clears the counter');
+assert.equal(await store.incrCounter('tokens:2026-05-21'), 1, 'a reset counter starts again at 1');
+await store.resetCounter('absent:2026-05-21');
+assert.equal(await store.getCounter('absent:2026-05-21'), 0, 'resetting an absent counter is a no-op');
 
 await store.close();
 console.log('PASS: store + 4x graduation + draft-gate + area-glob selection + cursors + counters');

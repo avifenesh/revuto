@@ -19,6 +19,7 @@ import {
   finalReviewUsed,
   finalReviewUsedReason,
   historicalReviewRounds,
+  refundFinalReview,
   reserveReviewBudget,
   roundCapReached,
 } from './review-rounds.js';
@@ -239,6 +240,9 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
   const finalKey = `${key}:final`;
   let claimKey = key;
   let finalRun = false;
+  // Set once the run reached a terminal decision (a verdict posted or a clean skip).
+  // A final run that throws before one gets the head's final review back.
+  let decided = false;
   const labelled = (result: CheckResult): CheckResult => finalRun ? finalReviewCheckResult(result) : result;
   try {
     // A duplicate --final is refused before any claim or check run, so it cannot
@@ -287,6 +291,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
           ...(finalRun ? { reviewHeading: FINAL_REVIEW_HEADING } : {}) })
       : unreviewedOutcome(round.reason, pr.head.sha);
     const outcome: ReviewOutcome = finalRun ? { ...ran, finalReview: true } : ran;
+    decided = outcome.terminal !== 'none';
     if (outcome.ranModel && config.limits.dailyTokens) await store.incrCounter(counterKey('tokens', day), outcome.tokens);
     assertReviewedHead(managedTarget, outcome);
     console.log(`[review] ${key}: ${describeOutcome(outcome)}`);
@@ -313,8 +318,18 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
         console.error(`[review] could not complete check ${managedCheckRunId}: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`);
       }
     }
-    // A final review that failed still spent this head's final reservation.
-    if (finalRun) await store.mark(finalKey);
+    // A final review that reached a decision spent this head's final review even if
+    // the job failed afterwards. One that failed before a decision posted no verdict,
+    // so the head gets it back: the counter is refunded and the claim released below.
+    if (finalRun && decided) await store.mark(finalKey);
+    else if (finalRun) {
+      try {
+        await runQueuedForRepo(config, `_review-budget/${repo}`, () => refundFinalReview(store, prNumber, pr.head.sha));
+        console.log(`[review] ${key}: final review failed before a decision; refunded, retry with --final`);
+      } catch (refundErr) {
+        console.error(`[review] ${key}: could not refund the final review: ${refundErr instanceof Error ? refundErr.message : String(refundErr)}`);
+      }
+    }
     if (!opts.force) await store.unclaim(claimKey);                                             // release the claim so a transient failure can be retried
     throw err;
   } finally {

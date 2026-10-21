@@ -224,3 +224,56 @@ test('A head the daemon refused at the cap: --final runs once under its own clai
     assert.equal(h.headings.length, 1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+/** A model run that fails before any decision, then the harness's passing one. */
+function failingOnce(h: ReturnType<typeof appHarness>, failure: 'throw' | 'no-terminal') {
+  let calls = 0;
+  return (async (o: { headSha?: string; reviewHeading?: string }): Promise<ReviewOutcome> => {
+    if (++calls > 1) return (h.runReview as unknown as (o: unknown) => Promise<ReviewOutcome>)(o);
+    if (failure === 'throw') throw new Error('Claude CLI exited with status 1: Not logged in');
+    return { ...unreviewedOutcome('', o.headSha!), terminal: 'none', ranModel: true, inspections: 1, steps: 2 };
+  }) as never;
+}
+
+for (const failure of ['throw', 'no-terminal'] as const) {
+  for (const capturedByDaemon of [false, true]) {
+    test(`A final review that fails before a decision (${failure}${capturedByDaemon ? ', head refused at the cap first' : ''}) can be retried at the same head`, async () => {
+      const root = mkdtempSync(join(tmpdir(), 'final-review-retry-'));
+      const h = appHarness(root);
+      const runReview = failingOnce(h, failure);
+      try {
+        if (capturedByDaemon) {
+          assert.match((await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, runReview })).result, /2-round review limit/);
+        }
+        await assert.rejects(reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview }),
+          failure === 'throw' ? /Not logged in/ : /ended without a terminal decision/);
+        const retry = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview });
+        assert.equal(retry.ranModel, true, `the retry ran: ${retry.result}`);
+        assert.equal(retry.finalReview, true);
+        assert.equal(reviewExitCode(retry), REVIEW_EXIT.passed);
+        assert.equal(h.updates.at(-1)?.title, `${FINAL_REVIEW_HEADING}: review passed`);
+
+        // The completed run spent it: once per head stays.
+        const again = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview });
+        assert.equal(again.ranModel, false);
+        assert.match(again.result, /already had its final review at aaaaaaa/);
+        assert.equal(reviewExitCode(again), REVIEW_EXIT.notRun);
+        assert.deepEqual(h.headings, [FINAL_REVIEW_HEADING], 'only the retry reached the passing runner');
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+}
+
+test('A final review that posted a decision and then failed still spends the head', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'final-review-late-failure-'));
+  const h = appHarness(root);
+  // The model posted its verdict, then the head moved: the job throws after the decision.
+  const runReview = (async () => ({ ...unreviewedOutcome('', 'c'.repeat(40)), ranModel: true, inspections: 3, steps: 4,
+    terminal: 'post_review', hasFindings: true })) as never;
+  try {
+    await assert.rejects(reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview }), /head changed during review/);
+    const again = await reviewOnePr(h.cfg, 'a/repo', 7, { githubAuth: h.auth, final: true, runReview: h.runReview });
+    assert.match(again.result, /already had its final review at aaaaaaa/);
+    assert.equal(h.headings.length, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

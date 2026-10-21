@@ -2,7 +2,7 @@
  * SurrealDB backend parity smoke. Requires a running Surreal server:
  *   ~/.local/bin/surreal start --user root --pass root --bind 127.0.0.1:8000 memory
  *
- *   npx tsx scripts/smoke/surreal.ts
+ *   npx tsx scripts/smoke/surreal.ts   (SURREAL_URL overrides http://127.0.0.1:8000/rpc)
  *
  * Exercises: concerns CRUD, native vector cosine nearestConcerns (model-aware,
  * legacy untagged fallback, merge re-embedding), cursors,
@@ -26,7 +26,7 @@ const config: ReviewerConfig = {
   schedules: { review: '* * * * *', learn: '* * * * *', decay: '* * * * *' },
   review: { maxSteps: 1, allowWrite: false, workspaceDir: join(vault, '.ws') },
   limits: { maxOutputTokens: { review: 1, curator: 1, distill: 1 }, dailyReviews: 0, learnBatch: 0, dailyLearn: 0, dailyTokens: 0 },
-  store: { backend: 'surreal', surreal: { url: 'http://127.0.0.1:8000/rpc', namespace: 'reviewer_test', username: 'root', password: 'root' } },
+  store: { backend: 'surreal', surreal: { url: process.env.SURREAL_URL ?? 'http://127.0.0.1:8000/rpc', namespace: 'reviewer_test', username: 'root', password: 'root' } },
 };
 
 const store = await openStore(config, `octo/surreal-${Date.now()}`);
@@ -99,6 +99,11 @@ assert.equal(await store.getCounter('tokens:2026-05-21'), 0, 'absent counter is 
 assert.equal(await store.incrCounter('tokens:2026-05-21', 500), 500, 'counter adds by N');
 assert.equal(await store.incrCounter('tokens:2026-05-21', 250), 750, 'counter accumulates');
 assert.equal(await store.getCounter('tokens:2026-05-21'), 750, 'getCounter reads total');
+await store.resetCounter('tokens:2026-05-21');
+assert.equal(await store.getCounter('tokens:2026-05-21'), 0, 'resetCounter clears the counter');
+assert.equal(await store.incrCounter('tokens:2026-05-21'), 1, 'a reset counter starts again at 1');
+await store.resetCounter('absent:2026-05-21');
+assert.equal(await store.getCounter('absent:2026-05-21'), 0, 'resetting an absent counter is a no-op');
 
 await store.close();
 console.log('PASS: SurrealDB backend — concerns + native cosine nearest + cursors + idempotency + graduation + counters');
