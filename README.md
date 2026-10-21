@@ -493,9 +493,13 @@ so the head that merges was never reviewed. `revuto review <owner/repo> <pr> --f
 asks for one review of the current head after the cap:
 
 - Past the cap it allows exactly one review per head SHA, reserved under
-  `final-review:<pr>:<headSha>` before the model runs and never refunded, like
-  rounds. A second `--final` at the same head is refused with the reason; a new head
-  gets its own.
+  `final-review:<pr>:<headSha>` before the model runs. A run that reaches a decision
+  (a posted review or a clean skip) spends it, even if the job fails afterwards. A
+  second `--final` at that head is refused with the reason; a new head gets its own.
+- A run that fails before a decision (the model CLI is not logged in, it crashes, or
+  it ends without a terminal tool) posted no verdict, so the reservation is refunded
+  and the claim released: the next `--final` at that head runs. Normal rounds are
+  never refunded.
 - Below the cap it is a normal round and spends it.
 - The daily review and token limits still apply. A refusal there spends nothing.
 - A head the daemon already refused at the cap is marked done; `--final` takes its

@@ -115,7 +115,11 @@ export async function withReviewWorktree<T>(config: ReviewerConfig, repo: string
     if (parentSignal?.aborted) abort(); controller.signal.throwIfAborted();
     return await work(workspace, owner.cache, controller.signal);
   } finally {
+    // A cleanup failure never replaces the run's own result or error: by then a review
+    // may already be posted, and the caller must see that outcome. A worktree left
+    // behind keeps its manifest, so `reapReviewWorktrees` removes it once this process is gone.
     try { if (owner) { await removeOwned(config, owner, manifest); await rm(`${manifest}.tmp`, { force: true }); } }
+    catch (cleanupErr) { console.error(`[review] ${repo}#${pr}: could not remove the review worktree: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`); }
     finally { parentSignal?.removeEventListener('abort', abort); active.delete(entry); finish(); }
   }
 }

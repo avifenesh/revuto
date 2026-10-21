@@ -243,6 +243,9 @@ export class SqliteStore implements KnowledgeStore {
     const r = this.db.prepare(`SELECT value FROM counters WHERE key = ?`).get(key) as { value: number } | undefined;
     return r?.value ?? 0;
   }
+  async resetCounter(key: string): Promise<void> {
+    this.db.prepare(`DELETE FROM counters WHERE key = ?`).run(key);
+  }
 
   async close(): Promise<void> { this.db.close(); }
 }

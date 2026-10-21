@@ -333,6 +333,9 @@ export class SurrealStore implements KnowledgeStore {
     const rows = await this.rows(`SELECT n FROM type::record('counter', $k)`, { k: key }, { retryRead: true });
     return Number(rows[0]?.n ?? 0);
   }
+  async resetCounter(key: string): Promise<void> {
+    await this.rows(`DELETE type::record('counter', $k)`, { k: key });
+  }
 
   async close(): Promise<void> { await this.db.close(); }
 }

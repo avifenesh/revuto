@@ -145,6 +145,8 @@ export interface KnowledgeStore {
   /** Atomically add `by` (default 1) to a counter and return the new total. */
   incrCounter(key: string, by?: number): Promise<number>;
   getCounter(key: string): Promise<number>;
+  /** Remove a counter, so it reads 0 again. Refunds a reservation whose run never finished. */
+  resetCounter(key: string): Promise<void>;
 
   close(): Promise<void>;
 }

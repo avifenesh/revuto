@@ -65,9 +65,10 @@ export interface ReviewReservation {
 }
 
 /**
- * The one review a PR head may get after the round cap. Reserved before the model
- * runs and never refunded, like rounds: one per head SHA, a new head gets its own.
- * Below the cap it is an ordinary round and spends one.
+ * The one review a PR head may get after the round cap: one per head SHA, a new head
+ * gets its own. Reserved before the model runs. A run that reaches a terminal decision
+ * spends it; a run that fails before one gets it back through `refundFinalReview`.
+ * Below the cap it is an ordinary round and spends one, and rounds are never refunded.
  */
 export async function reserveFinalReview(store: CounterStore, prNumber: number, headSha: string, limit: number,
   historical: () => Promise<number>): Promise<Omit<ReviewReservation, 'daily'>> {
@@ -82,9 +83,18 @@ export async function reserveFinalReview(store: CounterStore, prNumber: number, 
 
 const finalReviewKey = (prNumber: number, headSha: string): string => `final-review:${prNumber}:${headSha}`;
 
-/** True once this head's final review was reserved (it runs, ran, or failed; it is never refunded). */
+/** True once this head's final review was reserved and not refunded (it runs, or it reached a decision). */
 export async function finalReviewUsed(store: Pick<KnowledgeStore, 'getCounter'>, prNumber: number, headSha: string): Promise<boolean> {
   return (await store.getCounter(finalReviewKey(prNumber, headSha))) > 0;
+}
+
+/**
+ * Give a head its final review back after a run that failed before a terminal decision
+ * (nothing was posted as a verdict). Only one run of a head holds the reservation at a
+ * time, and refused reservations never ran, so the counter is cleared, not decremented.
+ */
+export async function refundFinalReview(store: Pick<KnowledgeStore, 'resetCounter'>, prNumber: number, headSha: string): Promise<void> {
+  await store.resetCounter(finalReviewKey(prNumber, headSha));
 }
 
 export function finalReviewUsedReason(prNumber: number, headSha: string): string {
