@@ -73,7 +73,7 @@
   },
   "dependencies": {
     "@agent-sh/harness-core": "^0.2.0",
-    "@agent-sh/harness-tools": "^0.8.0",
+    "@agent-sh/harness-tools": "^0.9.1",
     "@ai-sdk/openai-compatible": "3.0.67",
     "@ai-sdk/provider": "4.0.17",
     "@aws-sdk/credential-provider-node": "^3.972.50",
