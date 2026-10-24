@@ -6,13 +6,13 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { agyReviewSchema, buildAgyReviewPrompt, NativeStepLimitError, normalizeClaudeEvents, probeAgy, renderEscalation, ReviewEscalation, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
 import { escalationReason, shadowRecord, shouldShadow, writeShadowRecord } from '../agents/common/src/run-agent.js';
-import { CODEX_REVIEW_SCHEMA, codexEnvironment, codexReviewSchema, normalizeCodexEvents } from '../agents/common/src/codex-review.js';
+import { CODEX_REVIEW_SCHEMA, codexEnvironment, codexReviewSchema, normalizeCodexEvents, revutoCodexHome } from '../agents/common/src/codex-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import { ModelRefusalError } from '../agents/common/src/refusal.js';
 import type { PrContext } from '../agents/common/src/workspace.js';
@@ -31,10 +31,15 @@ assert.equal(args[0], 'exec');
 assert.ok(args.includes('--ignore-user-config') && args.includes('--ignore-rules') && args.includes('--ephemeral') && args.includes('--json'));
 assert.equal(value('--disable'), 'shell_tool');
 assert.equal(value('--sandbox'), 'read-only');
-assert.equal(value('-m'), 'openai.gpt-6.1-sol');
+assert.ok(['openai.gpt-6.1-sol', 'gpt-6.1-sol'].includes(value('-m')));
 assert.equal(args.at(-1), '-');
-assert.ok(configs.includes('model_provider="amazon-bedrock"'));
-assert.ok(configs.includes('model_providers.amazon-bedrock.aws.region="us-east-1"'));
+if (value('-m') === 'gpt-6.1-sol') {
+  assert.ok(configs.includes('model_provider="openai"'));
+  assert.ok(!configs.some((c) => c.startsWith('model_providers.amazon-bedrock') || c.startsWith('model_context_window=')));
+} else {
+  assert.ok(configs.includes('model_provider="amazon-bedrock"'));
+  assert.ok(configs.includes('model_providers.amazon-bedrock.aws.region="us-east-1"'));
+}
 assert.ok(configs.includes('approval_policy="never"'));
 assert.ok(existsSync(process.env.CODEX_HOME));
 console.log('2026-10-01T00:00:00Z ERROR rmcp::transport::worker: a log line that is not JSON');
@@ -216,9 +221,54 @@ test('Codex events map to tool steps, failures and a parsed verdict', () => {
   assert.equal((notRefusal.result as { refusal?: unknown }).refusal, undefined, 'a malformed verdict is not a refusal');
 });
 
-test('Codex environment carries Bedrock credentials and nothing else sensitive', () => {
-  const env = codexEnvironment('/tmp/home', { HOME: '/h', PATH: '/bin', GH_TOKEN: 'x', OPENAI_API_KEY: 'y', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p' });
-  assert.deepEqual(env, { CODEX_HOME: '/tmp/home', HOME: '/h', PATH: '/bin', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p' });
+test('Codex environment carries only its provider credentials', () => {
+  const env = { HOME: '/h', PATH: '/bin', GH_TOKEN: 'x', OPENAI_API_KEY: 'y', TEAM_OPENAI_KEY: 't', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p' };
+  const bedrock = { baseURL: 'codex://bedrock', api: 'codex' as const, model: 'openai.gpt-6.1-sol' };
+  assert.deepEqual(codexEnvironment('/tmp/home', bedrock, env), { CODEX_HOME: '/tmp/home', HOME: '/h', PATH: '/bin', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p' });
+  const apiKey = { baseURL: 'codex://openai', api: 'codex' as const, auth: 'bearer' as const, model: 'gpt-6.1-sol' };
+  assert.deepEqual(codexEnvironment('/tmp/home', apiKey, env), { CODEX_HOME: '/tmp/home', HOME: '/h', PATH: '/bin', CODEX_API_KEY: 'y' });
+  assert.equal(codexEnvironment('/tmp/home', { ...apiKey, apiKeyEnv: 'TEAM_OPENAI_KEY' }, env).CODEX_API_KEY, 't');
+  assert.throws(() => codexEnvironment('/tmp/home', apiKey, { HOME: '/h' }), /needs an API key in OPENAI_API_KEY/);
+  const login = { ...apiKey, auth: 'subscription' as const };
+  assert.deepEqual(codexEnvironment('/login', login, env), { CODEX_HOME: '/login', HOME: '/h', PATH: '/bin' });
+  assert.equal(revutoCodexHome({ HOME: '/h' }), '/h/.config/revuto/codex');
+  assert.equal(revutoCodexHome({ HOME: '/h', REVUTO_CODEX_HOME: '/srv/codex' }), '/srv/codex');
+});
+
+test('Codex on OpenAI runs on an API key in a private home, or on revuto\'s own ChatGPT login home', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-codex-openai-'));
+  const command = fakeCodex(dir);
+  const keys = ['OPENAI_API_KEY', 'AWS_BEARER_TOKEN_BEDROCK', 'REVUTO_CODEX_HOME'] as const;
+  const previous = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const last = () => JSON.parse(readFileSync(command + '.last', 'utf8'));
+  process.env.OPENAI_API_KEY = 'openai-key';
+  process.env.AWS_BEARER_TOKEN_BEDROCK = 'bedrock-token';
+  try {
+    const apiKey = { baseURL: 'codex://openai', api: 'codex' as const, auth: 'bearer' as const, model: 'gpt-6.1-sol', command };
+    const run = await runAgyCli({ spec: apiKey, cwd: dir, prompt: 'review', schema: CODEX_REVIEW_SCHEMA });
+    assert.equal(run.result.status, 'SUCCESS');
+    assert.equal(last().env.CODEX_API_KEY, 'openai-key');
+    assert.equal(last().env.AWS_BEARER_TOKEN_BEDROCK, undefined, 'Bedrock credentials stay off the OpenAI route');
+    assert.match(last().env.CODEX_HOME, /revuto-codex-/);
+    assert.equal(existsSync(last().env.CODEX_HOME), false, 'the API-key run home is removed');
+    delete process.env.OPENAI_API_KEY;
+    await assert.rejects(runAgyCli({ spec: apiKey, cwd: dir, prompt: 'review' }), /needs an API key in OPENAI_API_KEY/);
+
+    const loginHome = join(dir, 'login-home');
+    process.env.REVUTO_CODEX_HOME = loginHome;
+    const login = { ...apiKey, auth: 'subscription' as const };
+    await assert.rejects(runAgyCli({ spec: login, cwd: dir, prompt: 'review' }), /ChatGPT login not found in .*login-home: run `CODEX_HOME=.* codex login`/);
+    mkdirSync(loginHome);
+    writeFileSync(join(loginHome, 'auth.json'), '{}');
+    await runAgyCli({ spec: login, cwd: dir, prompt: 'review', schema: CODEX_REVIEW_SCHEMA });
+    assert.equal(last().env.CODEX_HOME, loginHome);
+    assert.equal(last().env.CODEX_API_KEY, undefined);
+    assert.ok(existsSync(join(loginHome, 'auth.json')), 'the login home survives the run');
+    assert.ok(last().schema, 'the schema still goes through a temporary file');
+  } finally {
+    for (const k of keys) { if (previous[k] === undefined) delete process.env[k]; else process.env[k] = previous[k]; }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a cheap tier escalates on request or on its step budget, carrying its cost', async () => {

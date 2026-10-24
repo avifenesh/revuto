@@ -7,13 +7,13 @@
  * Authentication is intentionally delegated to AGY's own OAuth/keyring flow.
  */
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { killReviewChild } from './review-worktree.js';
-import { claudeEnvironment } from './claude-env.js';
+import { claudeEnvironment, claudeSubscriptionIsolation } from './claude-env.js';
 import { rgScopeConfigPath } from './rg-scope.js';
 import { z } from 'zod';
 import type { Octokit } from '@octokit/rest';
@@ -24,7 +24,7 @@ import type { PrContext } from './workspace.js';
 import { buildPostReviewTool, buildSkipTool } from './tools/gh.js';
 import { isToolErrorOutput, startReviewTrace, type TraceWriter } from './trace.js';
 import { ModelRefusalError } from './refusal.js';
-import { codexEnvironment, codexExecArgs, codexReviewSchema, normalizeCodexEvents, type CodexStreamState } from './codex-review.js';
+import { codexEnvironment, codexExecArgs, codexReviewSchema, codexUsesLogin, normalizeCodexEvents, revutoCodexHome, type CodexStreamState } from './codex-review.js';
 
 const AGY_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const AGY_DOCTOR_TIMEOUT_MS = 90 * 1000;
@@ -194,16 +194,31 @@ function reviewMcpServer(cwd: string, diffRange?: string, sinceRange?: string): 
 /**
  * Run one headless turn of a native CLI. AGY uses its cached OAuth session,
  * Claude Code and Codex use the provider credentials forwarded to them. Codex
- * gets a private CODEX_HOME and its output schema in a temporary directory that
- * is removed when the run ends.
+ * gets a private CODEX_HOME (revuto's own login home on a ChatGPT login) and its
+ * output schema in a temporary directory; a Claude subscription run gets a
+ * private config dir there. The directory is removed when the run ends.
  */
 export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   opts.signal?.throwIfAborted();
-  if (runnerOf(opts.spec) !== 'codex') return spawnNativeCli(opts);
-  const dir = await mkdtemp(join(tmpdir(), 'revuto-codex-'));
+  const runner = runnerOf(opts.spec);
+  const claudeSubscription = runner === 'claude' && opts.spec.auth === 'subscription';
+  if (runner !== 'codex' && !claudeSubscription) return spawnNativeCli(opts);
+  const dir = await mkdtemp(join(tmpdir(), runner === 'codex' ? 'revuto-codex-' : 'revuto-claude-'));
   try {
-    const codexHome = join(dir, 'home');
-    await mkdir(codexHome);
+    const home = join(dir, 'home');
+    if (claudeSubscription) {
+      await mkdir(home);
+      return await spawnNativeCli(opts, undefined, home);
+    }
+    let codexHome = home;
+    if (codexUsesLogin(opts.spec)) {
+      codexHome = revutoCodexHome();
+      await access(join(codexHome, 'auth.json')).catch(() => {
+        throw new Error(`Codex ChatGPT login not found in ${codexHome}: run \`CODEX_HOME=${codexHome} codex login\``);
+      });
+    } else {
+      await mkdir(codexHome);
+    }
     let schemaPath: string | undefined;
     if (opts.schema) {
       schemaPath = join(dir, 'schema.json');
@@ -215,7 +230,7 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   }
 }
 
-function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string }): Promise<AgyCliRun> {
+function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string }, claudeConfigDir?: string): Promise<AgyCliRun> {
   const runner = runnerOf(opts.spec);
   const claude = runner === 'claude';
   const label = runner === 'claude' ? 'Claude CLI' : runner === 'codex' ? 'Codex CLI' : 'AGY';
@@ -244,7 +259,8 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
     'stream-json',
   ];
   if (claude) {
-    args.push('--verbose', '--bare', '--restricted', '--setting-sources', '', '--no-session-persistence',
+    // --bare never reads OAuth, so a subscription run is isolated by its private config dir instead.
+    args.push('--verbose', ...(claudeConfigDir ? [] : ['--bare']), '--restricted', '--setting-sources', '', '--no-session-persistence',
       '--input-format', 'text',
       '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: opts.probe ? {} : { revuto: reviewMcpServer(opts.cwd, opts.diffRange, opts.sinceRange) } }),
       '--permission-mode', 'dontAsk', '--tools', '',
@@ -257,9 +273,18 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   }
   if (runner !== 'codex' && opts.schema) args.push('--json-schema', opts.schema);
   if (runner === 'agy' && opts.spec.permissionMode === 'bypass' && !opts.structuredOnly) args.push('--dangerously-skip-permissions');
-  const env = claude
-    ? { ...claudeEnvironment(), CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) }
-    : runner === 'codex' ? codexEnvironment(codex!.codexHome) : { ...process.env, AGY_CLI_HIDE_LOGO: 'true', RIPGREP_CONFIG_PATH: rgScopeConfigPath(opts.cwd) };
+  let env: NodeJS.ProcessEnv;
+  try {
+    env = claude
+      ? {
+        ...claudeEnvironment(process.env, undefined, claudeConfigDir !== undefined),
+        ...(claudeConfigDir ? claudeSubscriptionIsolation(claudeConfigDir) : {}),
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens),
+      }
+      : runner === 'codex' ? codexEnvironment(codex!.codexHome, opts.spec) : { ...process.env, AGY_CLI_HIDE_LOGO: 'true', RIPGREP_CONFIG_PATH: rgScopeConfigPath(opts.cwd) };
+  } catch (err) {
+    return Promise.reject(err);
+  }
   const promptOnStdin = runner !== 'agy' || agyStdin;
 
   return new Promise((resolve, reject) => {

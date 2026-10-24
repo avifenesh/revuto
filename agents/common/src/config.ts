@@ -26,8 +26,14 @@ export interface ModelSpec {
   readonly api?: 'chat' | 'responses' | 'converse' | 'agy' | 'claude' | 'codex';
   /** Reasoning effort for Responses/reasoning models. Converse Claude defaults to "medium"; "max" is its ceiling. */
   readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  /** Auth mode for HTTP model calls. "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime. "grok" uses ~/.grok/auth.json or GROK_API_KEY. "agy-oauth" uses the AGY CLI's cached Google OAuth session. */
-  readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'agy-oauth' | 'none';
+  /**
+   * Auth mode. For HTTP model calls, "auto" uses apiKeyEnv first, then AWS signing for bedrock-mantle / bedrock-runtime,
+   * and "grok" uses ~/.grok/auth.json or GROK_API_KEY. "agy-oauth" uses the AGY CLI's cached Google OAuth session.
+   * "subscription" runs a native Claude or Codex reviewer on the operator's plan: Claude through CLAUDE_CODE_OAUTH_TOKEN
+   * (from `claude setup-token`), Codex through the ChatGPT login in revuto's Codex home. A `codex://openai` reviewer
+   * with "bearer" uses an OpenAI API key from apiKeyEnv (default OPENAI_API_KEY).
+   */
+  readonly auth?: 'auto' | 'bearer' | 'aws' | 'grok' | 'agy-oauth' | 'subscription' | 'none';
   /** AWS region for SigV4-signed bedrock-mantle requests, and the Bedrock region a native Codex runner uses. */
   readonly awsRegion?: string;
   /** Env var holding the API key. Omit for keyless local endpoints. */
@@ -235,7 +241,8 @@ export const DEFAULT_RISK_REVIEW: RiskReviewConfig = { paths: [], hotspotMinRein
 const MODEL_APIS = ['chat', 'responses', 'converse', 'agy', 'claude', 'codex'] as const;
 const REVIEW_ROLES = ['review', 'reviewSmall', 'reviewMedium'];
 const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'agy-oauth', 'none'] as const;
+const AUTH_MODES = ['auto', 'bearer', 'aws', 'grok', 'agy-oauth', 'subscription', 'none'] as const;
+const CODEX_BASE_URLS = ['codex://bedrock', 'codex://openai'];
 const AGY_PERMISSION_MODES = ['bypass', 'settings'] as const;
 
 /**
@@ -308,6 +315,19 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   }
   if (api === 'codex' && !REVIEW_ROLES.includes(baseRole)) {
     throw new Error(`config: native Codex CLI is supported only for models.review, models.reviewSmall and models.reviewMedium`);
+  }
+  if (auth === 'subscription' && api !== 'claude' && api !== 'codex') {
+    throw new Error(`config: models.${role}.auth subscription needs api claude or codex`);
+  }
+  if (api === 'codex') {
+    if (!CODEX_BASE_URLS.includes(m.baseURL)) throw new Error(`config: models.${role}.baseURL must be codex://bedrock or codex://openai`);
+    const openai = m.baseURL === 'codex://openai';
+    if (openai && auth !== 'subscription' && auth !== 'bearer') {
+      throw new Error(`config: models.${role} on codex://openai needs auth subscription (ChatGPT login) or bearer (OpenAI API key)`);
+    }
+    if (!openai && (auth === 'subscription' || auth === 'bearer')) {
+      throw new Error(`config: models.${role}.auth ${auth} needs baseURL codex://openai`);
+    }
   }
   if ((api === 'claude' || api === 'codex') && (reasoningEffort === 'none' || reasoningEffort === 'minimal')) {
     throw new Error(`config: native ${api === 'claude' ? 'Claude' : 'Codex'} CLI reasoningEffort must be low, medium, high, xhigh, or max`);

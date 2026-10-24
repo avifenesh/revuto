@@ -301,3 +301,55 @@ test('Claude prompt names only the MCP tools and no Antigravity native tools', (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('Claude subscription runs without --bare in a private config dir with only the OAuth token', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-claude-sub-'));
+  const command = join(dir, 'claude-fake.mjs');
+  writeFileSync(command, `#!/usr/bin/env node
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+readFileSync(0, 'utf8');
+writeFileSync(process.argv[1] + '.last', JSON.stringify({ args, env: process.env, configDirExists: existsSync(process.env.CLAUDE_CONFIG_DIR ?? '') }));
+console.log(JSON.stringify({type:'system', subtype:'init'}));
+console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'ok',structured_output:{decision:'skip_review',reason:'no concerns',body:'',comments:[]},usage:{input_tokens:1,output_tokens:1}}));
+`);
+  chmodSync(command, 0o755);
+  const keys = ['HOME', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK'] as const;
+  const previous = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const last = () => JSON.parse(readFileSync(command + '.last', 'utf8'));
+  // A HOME with no ~/.claude/settings.json keeps the operator's settings out of the test.
+  process.env.HOME = dir;
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-token';
+  process.env.ANTHROPIC_API_KEY = 'api-key';
+  process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+  const spec = { baseURL: 'claude-cli://local', api: 'claude' as const, auth: 'subscription' as const, command, model: 'claude-opus-5-5', reasoningEffort: 'medium' as const };
+  try {
+    const run = await runAgyCli({ spec, cwd: dir, prompt: 'review' });
+    assert.equal(run.result.status, 'SUCCESS');
+    const sub = last();
+    assert.ok(!sub.args.includes('--bare'), 'bare mode never reads OAuth');
+    assert.ok(sub.args.includes('--restricted') && sub.args.includes('--strict-mcp-config'));
+    assert.equal(sub.args[sub.args.indexOf('--setting-sources') + 1], '');
+    assert.equal(sub.args[sub.args.indexOf('--tools') + 1], '');
+    assert.equal(sub.env.CLAUDE_CODE_OAUTH_TOKEN, 'oauth-token');
+    assert.equal(sub.env.ANTHROPIC_API_KEY, undefined, 'an API key cannot redirect a subscription run');
+    assert.equal(sub.env.CLAUDE_CODE_USE_BEDROCK, undefined, 'a provider switch cannot redirect a subscription run');
+    assert.equal(sub.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
+    assert.equal(sub.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+    assert.match(sub.env.CLAUDE_CONFIG_DIR, /revuto-claude-/);
+    assert.ok(sub.configDirExists, 'the private config dir exists during the run');
+    assert.equal(existsSync(sub.env.CLAUDE_CONFIG_DIR), false, 'the private config dir is removed after the run');
+
+    await runAgyCli({ spec: { ...spec, auth: 'none' as const }, cwd: dir, prompt: 'review' });
+    assert.ok(last().args.includes('--bare'), 'API-key and provider runs stay in bare mode');
+    assert.equal(last().env.CLAUDE_CONFIG_DIR, undefined);
+    assert.equal(last().env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+    assert.equal(last().env.ANTHROPIC_API_KEY, 'api-key');
+
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'review' }), /CLAUDE_CODE_OAUTH_TOKEN \(create one with `claude setup-token`\)/);
+  } finally {
+    for (const k of keys) { if (previous[k] === undefined) delete process.env[k]; else process.env[k] = previous[k]; }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

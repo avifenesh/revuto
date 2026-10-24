@@ -1,12 +1,15 @@
 /**
  * Codex CLI adapter for the native review runner.
  *
- * Codex runs headless (`codex exec --json`) against Amazon Bedrock with no user
- * config, no rules, no shell tool and a read-only sandbox. Its only inspection
- * surface is the same guarded revuto MCP server the Claude runner gets: the
- * fixed PR diff plus read/grep/glob over the checked-out head. The verdict is
- * the final agent message, constrained by `--output-schema`.
+ * Codex runs headless (`codex exec --json`) on OpenAI (a ChatGPT login or an API
+ * key) or Amazon Bedrock, with no user config, no rules, no shell tool and a
+ * read-only sandbox. Its only inspection surface is the same guarded revuto MCP
+ * server the Claude runner gets: the fixed PR diff plus read/grep/glob over the
+ * checked-out head. The verdict is the final agent message, constrained by
+ * `--output-schema`.
  */
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { ModelSpec } from './config.js';
 
 /** Bedrock region for Codex when the spec sets none: the GPT-6 family is served from us-east-1. */
@@ -70,17 +73,51 @@ export function codexReviewSchema(allowEscalation = false): string {
 export const CODEX_REVIEW_SCHEMA = codexReviewSchema();
 
 const PASSTHROUGH_KEYS = ['HOME', 'USER', 'PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR'] as const;
-// Bedrock authentication only. No GitHub token, no OpenAI key, no shell settings.
+// Bedrock authentication on the Bedrock provider only. No GitHub token, no shell settings.
 const AWS_KEYS = [
   'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
   'AWS_PROFILE', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE',
 ] as const;
 
-/** The environment a Codex review runs with: a private CODEX_HOME plus Bedrock credentials. */
-export function codexEnvironment(codexHome: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+/** The Codex model provider a spec runs on: `codex://openai` is OpenAI, anything else Bedrock. */
+export function codexProvider(spec: ModelSpec): 'openai' | 'amazon-bedrock' {
+  return spec.baseURL === 'codex://openai' ? 'openai' : 'amazon-bedrock';
+}
+
+/** A Codex reviewer that runs on the operator's ChatGPT login. */
+export function codexUsesLogin(spec: ModelSpec): boolean {
+  return codexProvider(spec) === 'openai' && spec.auth === 'subscription';
+}
+
+/**
+ * Revuto's own Codex home, holding only its ChatGPT login (`CODEX_HOME=<dir> codex login`).
+ * It is kept apart from ~/.codex so the operator's config, AGENTS.md, skills and
+ * sessions never reach a review. Every login review runs in this one home, so
+ * Codex refreshes and locks the token in place, as it does for concurrent sessions.
+ */
+export function revutoCodexHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.REVUTO_CODEX_HOME?.trim() || join(env.HOME ?? homedir(), '.config', 'revuto', 'codex');
+}
+
+/**
+ * The environment a Codex review runs with: its CODEX_HOME plus the credentials
+ * of its provider. Bedrock gets the AWS keys, an OpenAI API key reaches Codex as
+ * CODEX_API_KEY, and a ChatGPT login needs nothing beyond the home.
+ */
+export function codexEnvironment(codexHome: string, spec: ModelSpec, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = { CODEX_HOME: codexHome };
-  for (const key of [...PASSTHROUGH_KEYS, ...AWS_KEYS]) {
+  for (const key of PASSTHROUGH_KEYS) {
     if (env[key] !== undefined) result[key] = env[key];
+  }
+  if (codexProvider(spec) === 'amazon-bedrock') {
+    for (const key of AWS_KEYS) {
+      if (env[key] !== undefined) result[key] = env[key];
+    }
+  } else if (!codexUsesLogin(spec)) {
+    const keyEnv = spec.apiKeyEnv?.trim() || 'OPENAI_API_KEY';
+    const key = env[keyEnv]?.trim();
+    if (!key) throw new Error(`Codex on OpenAI needs an API key in ${keyEnv}`);
+    result.CODEX_API_KEY = key;
   }
   return result;
 }
@@ -96,19 +133,23 @@ export interface CodexArgsOptions {
 /** `codex exec` arguments for one review turn. The prompt is read from stdin (`-`). */
 export function codexExecArgs(opts: CodexArgsOptions): string[] {
   const toml = (value: string) => JSON.stringify(value);
-  const region = opts.spec.awsRegion?.trim() || CODEX_DEFAULT_REGION;
+  const provider = codexProvider(opts.spec);
   const args = [
     'exec',
     '--ignore-user-config', '--ignore-rules',
     '--disable', 'shell_tool',
     '-c', `web_search=${toml('disabled')}`,
     '-c', `approval_policy=${toml('never')}`,
-    '-c', `model_provider=${toml('amazon-bedrock')}`,
-    '-c', `model_providers.amazon-bedrock.aws.region=${toml(region)}`,
-    '-m', opts.spec.model,
-    '-c', `model_context_window=${CODEX_CONTEXT_WINDOW}`,
-    '-c', `model_auto_compact_token_limit=${CODEX_AUTO_COMPACT_TOKENS}`,
+    '-c', `model_provider=${toml(provider)}`,
   ];
+  if (provider === 'amazon-bedrock') {
+    const region = opts.spec.awsRegion?.trim() || CODEX_DEFAULT_REGION;
+    args.push('-c', `model_providers.amazon-bedrock.aws.region=${toml(region)}`);
+  }
+  args.push('-m', opts.spec.model);
+  // OpenAI's own catalog knows its context windows; Bedrock ids are missing from it.
+  if (provider === 'amazon-bedrock') args.push('-c', `model_context_window=${CODEX_CONTEXT_WINDOW}`);
+  args.push('-c', `model_auto_compact_token_limit=${CODEX_AUTO_COMPACT_TOKENS}`);
   if (opts.spec.reasoningEffort) args.push('-c', `model_reasoning_effort=${toml(opts.spec.reasoningEffort)}`);
   if (opts.mcpServer) {
     args.push(
