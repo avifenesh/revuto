@@ -1,650 +1,148 @@
-# revuto
+<h1 align="center">revuto</h1>
 
-[![CI](https://github.com/avifenesh/revuto/actions/workflows/ci.yml/badge.svg)](https://github.com/avifenesh/revuto/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/avifenesh/revuto/actions/workflows/codeql.yml/badge.svg)](https://github.com/avifenesh/revuto/actions/workflows/codeql.yml)
-[![npm](https://img.shields.io/npm/v/revuto.svg)](https://www.npmjs.com/package/revuto)
+<p align="center">
+  <b>A PR reviewer that runs on your machine and learns how your team reviews.</b>
+</p>
 
-A local, supplier-agnostic, repo-agnostic autonomous PR reviewer that **learns**.
+<p align="center">
+  <a href="https://github.com/avifenesh/revuto/actions/workflows/ci.yml"><img src="https://github.com/avifenesh/revuto/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/avifenesh/revuto/actions/workflows/codeql.yml"><img src="https://github.com/avifenesh/revuto/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://www.npmjs.com/package/revuto"><img src="https://img.shields.io/npm/v/revuto.svg" alt="npm"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
 
-Point it at any GitHub repo. It clones the repo, reads its PR history to build a
-curated "textbook" of that repo's institutional knowledge, then reviews new PRs
-and keeps learning from how maintainers respond — graduating repeated feedback
-into reusable topic skills.
+Point revuto at a GitHub repo. It reads the repo's PR history, writes down what
+your maintainers care about, and reviews every new PR with that knowledge. When
+maintainers reply to its comments, it learns. Feedback that keeps coming back
+becomes a reusable skill.
 
-- **Supplier-agnostic.** Model roles can use OpenAI-compatible endpoints such as
-  Bedrock (via a gateway), xAI/Grok, GLM, or a local vLLM/Ollama. Review can also
-  run through the native Antigravity (`agy`) CLI with its cached Google OAuth.
-- **Runs locally.** An optional GitHub App webhook triggers reviews immediately;
-  the scheduler keeps polling as a recovery path and runs the learn/decay jobs.
-- **Embedder optional.** Configure a local or cloud embedding model for similarity
-  dedup + skill selection, or omit it and fall back to LLM-judged dedup + area-glob
-  selection.
-- **Knowledge is yours and visible.** Skills are markdown notes in an Obsidian
-  vault (or any folder). Nothing is written into the reviewed repo.
+## Why revuto
 
-## Install
+- **Learns your repo.** It builds a textbook from up to 1,000 past PRs and keeps
+  adding to it from every review thread.
+- **Runs on the plan you already have.** Claude, ChatGPT, Gemini, GLM, Grok, a
+  local model or Amazon Bedrock. Mix them per PR size.
+- **Lives on your machine.** One daemon, a local store, and an optional GitHub App
+  for review-on-push.
+- **Knowledge you can read.** Skills are markdown notes in an Obsidian vault, or
+  any folder. Nothing is written into the reviewed repo.
+- **Careful with your code.** Claude and Codex reviewers get read-only tools over
+  the PR checkout: no shell, no network tools, no GitHub token. Revuto posts the
+  review itself.
 
-```bash
-npm i -g revuto          # or run ad-hoc: npx revuto <command>
-```
-
-Needs Node ≥ 22. `better-sqlite3` ships prebuilt binaries. For the default SurrealDB
-memory backend, install [SurrealDB](https://surrealdb.com) separately and start it
-with `revuto`'s `scripts/surreal-start.sh` — or set `store.backend` to `sqlite` for
-zero external deps.
-
-## How it works
-
-```
-init   clone repo → scan structure → backfill ≤1000 PRs → distill maintainer-
-       essence → compose <vault>/skills/<repo>/_textbook.md → register reviewer
-
-review (webhook + cron fallback)  claim exact PR head → check out PR head → select
-       textbook + relevant active topic skills → LLM review → post_review /
-       skip_review → complete the revuto-review check
-
-learn  (cron)  poll replies to the reviewer's comments since cursor → filter noise
-       → dedup into the concerns store (bump count) → at 4× reinforcement, graduate
-       a topic skill into the vault and delete the source concern
-
-decay  (daily) age out concerns that never reach the graduation threshold
-```
-
-Graduated skills land as `draft` by default and are loaded by the reviewer only
-after `revuto approve`; repos with `autoActivate` enabled graduate skills as
-`active` immediately.
-
-## Setup
+## Quick start
 
 ```bash
-revuto init-config                       # writes <vault>/revuto.config.json (default ~/revuto) — edit models
-export GH_TOKEN=ghp_...                  # or: gh auth login
-
-# default backend is SurrealDB — install it (https://surrealdb.com) and start it:
-surreal start --user root --pass root --bind 127.0.0.1:8000 surrealkv://"$HOME"/revuto/memory/surreal &
-#   …or set "store": { "backend": "sqlite" } in the config for zero external deps.
-
-revuto doctor                            # verify models + store backend + GitHub token
+npm i -g revuto            # Node 22 or newer
+revuto init-config         # writes ~/revuto/revuto.config.json
 ```
 
-### Local dashboard
-
-The local dashboard can run as a user service and open from a desktop icon:
+Pick a reviewer from the next section and put it in `models.review`. Then:
 
 ```bash
-npm run dashboard:install-desktop
+export GH_TOKEN=ghp_...    # or: gh auth login
+revuto doctor              # checks models, store and GitHub token
+revuto init owner/repo     # clone, read PR history, write the textbook
+revuto daemon              # review, learn and decay on schedule
 ```
 
-That builds the SvelteKit dashboard, installs `revuto-dashboard.service` under
-`~/.config/systemd/user/`, starts it on `127.0.0.1:5180`, and writes a
-`Revuto Watch` launcher to both the desktop applications menu and `~/Desktop`.
-After that, use the icon or:
+The default memory store is [SurrealDB](https://surrealdb.com): start it with
+`scripts/surreal-start.sh`. For no extra dependencies, set
+`"store": { "backend": "sqlite" }`.
 
-```bash
-npm run dashboard:open
-```
+## Bring your own plan
 
-The dashboard includes daemon controls (`start`, `restart`, `doctor`, guarded
-`stop`) and per-repo controls for pause/resume plus one-off review, learn, and
-decay runs.
-
-Useful checks:
-
-```bash
-systemctl --user status revuto-dashboard.service
-journalctl --user -u revuto-dashboard.service -f
-```
-
-**Config lives in the vault by default.** `init-config` writes
-`<vault>/revuto.config.json`, where `<vault>` is `$REVUTO_VAULT` or `~/revuto`, so
-config + skills + reviewer notes all sit in one Obsidian-editable place. `loadConfig`
-resolves in order: `$REVUTO_CONFIG` → `./revuto.config.json` (local override) →
-`<vault>/revuto.config.json` → `./reviewer.config.json`. Use `init-config --local` to
-drop the config in the current dir instead (it still points `vaultPath` at the vault).
-
-Config keys: `vaultPath`, `github.tokenEnv`, optional `github.app`, per-role
-`models`, `schedules`, `limits`, and `store`. Model specs require `baseURL` and
-`model`; optional keys are `name`, `apiKeyEnv`, `api`, `auth`,
-`reasoningEffort`, `awsRegion`, `command`, `permissionMode`, and `fallbacks`
-(`embedder` may be `null`). See
-`revuto.config.example.json`. No secrets are stored - API keys and the webhook
-secret are env-referenced. `revuto doctor` checks model endpoints, configured
-fallbacks, the store backend, and the token before you run anything.
-
-### Real-time GitHub App reviews
-
-Polling works without public infrastructure. For review-on-push, create one
-GitHub App and install it on each account you want Revuto to cover. Configure:
-
-- Repository permissions: **Contents: read**, **Pull requests: read/write**,
-  **Checks: read/write**, and **Metadata: read**.
-- Subscribe to the **Pull request** event. Revuto handles `opened`,
-  `synchronize`, `reopened`, and `ready_for_review`.
-- Set the webhook URL to a stable HTTPS endpoint that forwards to
-  `http://127.0.0.1:8787/github/webhook`.
-- Install the App on `agent-sh`, your personal account, or selected repositories.
-
-Add the App settings to `<vault>/revuto.config.json`:
-
-```json
-{
-  "github": {
-    "tokenEnv": "GH_TOKEN",
-    "app": {
-      "appId": 123456,
-      "privateKeyPath": "~/.config/revuto/revuto-review.pem",
-      "webhookSecretEnv": "REVUTO_GITHUB_WEBHOOK_SECRET",
-      "host": "127.0.0.1",
-      "port": 8787,
-      "path": "/github/webhook",
-      "allowedOwners": ["agent-sh", "avifenesh"],
-      "ignoredRepos": ["avifenesh/extensions", "someone/*"],
-      "checkName": "revuto-review"
-    }
-  }
-}
-```
-
-Put the matching secret in the daemon environment, keep the PEM file mode
-`0600`, then restart `revuto daemon`. The daemon serves `GET /healthz` and
-validates every delivery with `X-Hub-Signature-256` before returning `202`.
-Each exact `repo#PR@headSHA` is claimed once. A clean `skip_review` completes
-the App check successfully and submits an approving review from the App,
-anchored to that exact head. Posted findings or review errors fail the check
-without approving.
-
-A Tailscale Funnel can provide the stable HTTPS endpoint while the receiver
-stays bound to loopback:
-
-```bash
-tailscale funnel --bg --https=8443 \
-  --set-path=/github/webhook \
-  http://127.0.0.1:8787/github/webhook
-tailscale funnel status
-```
-
-Use the resulting public `https://<machine>.<tailnet>.ts.net:8443/github/webhook`
-URL in the App settings. Funnel configuration persists in Tailscale; keep the
-cron review schedule enabled as recovery for delivery or machine outages. After
-the first successful App check appears, require `revuto-review` in each
-repository's branch rules.
-
-The daemon checks the App's recent GitHub webhook delivery results at startup
-and every three minutes. `github.app.webhookHealthIntervalMinutes` changes this
-interval. Every observed failed delivery logs an `ALERT` once per attempt state.
-The alerted attempts are kept in `<vault>/.state/webhook-health.json` for
-GitHub's three-day delivery window, so a daemon restart does not repeat them.
-Repair runs only when the newest `github.app.webhookFailureThreshold` deliveries
-all failed with status 0 or 5xx. Authentication failures, redirects and other
-client errors still alert but do not reconfigure ingress. The default threshold
-is three: one transient failure does not trigger repair. The threshold accepts
-1 through 100, the size of the recent-delivery page.
-
-Optionally set `github.app.webhookRepairCommand` to an executable and its
-arguments, or an ordered sequence of those arrays. For the Funnel above:
-
-```json
-{
-  "webhookHealthIntervalMinutes": 3,
-  "webhookFailureThreshold": 3,
-  "webhookRepairEnvAllowlist": [],
-  "webhookRepairCommand": [
-    ["tailscale", "funnel", "--https=8443", "off"],
-    ["tailscale", "funnel", "--bg", "--https=8443", "--set-path", "/github/webhook", "http://127.0.0.1:8787/github/webhook"]
-  ]
-}
-```
-
-Place these keys inside `github.app`. A single command can be written as
-`["/path/to/repair-program", "--argument"]`. Commands run as the daemon user,
-without a shell, in order, with a 30-second deadline per command. This bounds
-a stuck repair and leaves the next health poll available. The child receives
-only `PATH`, `HOME`, and environment variable names explicitly listed in
-`github.app.webhookRepairEnvAllowlist`. The allowlist defaults to empty.
-A systemd unit's `PATH` often omits `/snap/bin`, where the Tailscale snap
-installs its CLI; use an absolute path such as `/snap/bin/tailscale` there.
-A command that cannot start is logged by its position in the sequence.
-Child output, command
-arguments, webhook payloads, and API error bodies are never logged by the
-monitor. Omit the command to keep alerting and catch-up without automatic repair.
-A successful repair runs once per newest failed delivery; a failed repair is
-retried at the next poll.
-
-After GitHub reports a successful delivery following a detected outage, the
-monitor scans delivery history and requests redelivery of the newest failed `pull_request`
-`opened`, `synchronize`, `reopened`, or `ready_for_review` event matching each open PR's current
-head. It only covers registered repositories allowed by the App
-configuration, respects `ignoredRepos`, skips draft payloads, and skips events
-with a successful redelivery. Delivery IDs remain exact decimal strings,
-including IDs above JavaScript's safe integer range.
-If an accepted asynchronous redelivery subsequently fails, it can
-retry using that recovery evidence. Catch-up also runs after restarting a daemon
-whose ingress has already recovered. GitHub accepts redelivery asynchronously; the monitor waits
-for an actual successful delivery before treating ingress as recovered.
-
-The first scan reads retained delivery history. Later scans stop at the prior
-scan boundary; progress stays behind outstanding replays so pending outcomes
-remain visible. Failed-delivery routing fields are cached by exact delivery ID,
-and repeated attempts of the same GUID reuse those fields. Resolved GUIDs need
-no detail fetch. Only repositories with eligible candidates have their open
-PRs listed. An installation lookup returning 404 logs once and is skipped,
-with scan progress saved. New candidate deliveries can revalidate a prior
-installation miss. App metadata and PR lookup 404s remain retryable;
-an unavailable delivery detail is retired without blocking
-other candidates. Routing caches expire with GitHub's three-day delivery
-window. Recovery evidence is kept independently of the incremental scan
-window so a pending replay can still retry after older metadata is pruned.
-
-The scheduled review pass also scans open PR heads for this App's queued check
-suites with zero runs older than five minutes, even if the PR's `updated_at`
-predates its review cursor. Five minutes gives normal webhook admission time
-to create a check before cron takes over. These reviews keep the usual draft,
-author, exact-head claim, concurrency, and review-budget rules.
-If a rescue is deferred by daily budgets or fails, the pass rewinds its cursor
-to keep that PR eligible even after the first attempt creates a check run.
-
-## Providers
-
-Any OpenAI-compatible endpoint works; set it per role in `models`. Verify reachability
-with `revuto doctor` before running.
-
-```jsonc
-// local llama.cpp chat model (scripts/llama-server.sh) — keyless
-{ "baseURL": "http://127.0.0.1:8080/v1", "model": "qwen3.6-27b" }
-
-// local llama.cpp embedder (EMBED=1 scripts/llama-server.sh) — keyless, separate port
-{ "baseURL": "http://127.0.0.1:8181/v1", "model": "bge-small-en-v1.5" }
-
-// hosted GLM (Z.ai coding endpoint)
-{ "baseURL": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.1", "apiKeyEnv": "GLM_API_KEY" }
-
-// Amazon Bedrock OpenAI-compatible Responses API (Mantle)
-// Uses AWS_BEARER_TOKEN_BEDROCK when set; otherwise signs HTTP with the default AWS credential chain.
-{
-  "name": "bedrock-mantle",
-  "baseURL": "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
-  "model": "openai.gpt-5.5",
-  "api": "responses",
-  "reasoningEffort": "xhigh",
-  "auth": "auto",
-  "apiKeyEnv": "AWS_BEARER_TOKEN_BEDROCK",
-  "awsRegion": "us-east-2"
-}
-
-// fallback chain: try Mantle GPT-5.5 first, then Bedrock Runtime Claude Opus
-{
-  "name": "bedrock-mantle",
-  "baseURL": "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
-  "model": "openai.gpt-5.5",
-  "api": "responses",
-  "reasoningEffort": "xhigh",
-  "auth": "auto",
-  "apiKeyEnv": "AWS_BEARER_TOKEN_BEDROCK",
-  "awsRegion": "us-east-2",
-  "fallbacks": [{
-    "name": "bedrock-converse",
-    "baseURL": "https://bedrock-runtime.us-east-2.amazonaws.com",
-    "model": "global.anthropic.claude-opus-5-5",
-    "api": "converse",
-    "reasoningEffort": "medium",
-    "auth": "auto",
-    "apiKeyEnv": "AWS_BEARER_TOKEN_BEDROCK",
-    "awsRegion": "us-east-2"
-  }]
-}
-
-// a self-hosted agent exposing /v1 (e.g. Hermes)
-{ "baseURL": "http://127.0.0.1:PORT/v1", "model": "<served-name>", "apiKeyEnv": "HERMES_API_KEY" }
-
-// native AGY review runner — uses AGY's cached Google OAuth, not an API key
-// (`agy://local` is a marker and is not contacted)
-{
-  "name": "agy-oauth",
-  "baseURL": "agy://local",
-  "model": "gemini-3.8-flash-high",
-  "api": "agy",
-  "auth": "agy-oauth",
-  "command": "/home/avifenesh/.local/bin/agy",
-  "permissionMode": "bypass"
-}
-```
-
-`api` defaults to `chat` (`/v1/chat/completions`). Set `api: "responses"` for
-`/v1/responses` providers such as Bedrock Mantle. Responses calls are stateless
-by default (`store: false`) and can use `reasoningEffort` for GPT/o-series models.
-The current Responses adapter covers Revuto's text + function-tool loop, bearer
-auth, and Bedrock SigV4 signing. It intentionally leaves streaming, stored
-conversation state, multimodal/file inputs, structured-output helpers, and built-in
-Responses tools unsupported for now.
-
-`api: "agy"` uses AGY's native CLI. For reviews, AGY inspects the prepared worktree
-in headless `stream-json` mode and returns a strict review object; Revuto performs
-the one GitHub `post_review` or `skip_review` action.
-Set `auth: "agy-oauth"` to make the OAuth dependency explicit. Set
-`permissionMode: "bypass"` only for a fully trusted review environment; it passes
-AGY's `--dangerously-skip-permissions` flag for unattended tool execution.
-
-Curator and distillation models also accept `api: "agy"`. Each completion runs
-in an empty temporary workspace in plan mode and returns text or structured
-function calls. Revuto executes the function calls and sends their results back
-on the next turn. Native tool use fails the completion. These calls do not enable
-permission bypass. HTTP models such as GLM can follow AGY in `fallbacks`.
-
-For Claude Code print mode, set the reviewer to:
-
-```json
-{
-  "name": "claude-cli-opus-5",
-  "api": "claude",
-  "baseURL": "claude-cli://local",
-  "auth": "none",
-  "command": "/home/avifenesh/.local/bin/claude",
-  "model": "global.anthropic.claude-opus-5[1m]",
-  "reasoningEffort": "medium"
-}
-```
-
-The model ID above uses a configured Bedrock route; use the exact ID appropriate
-to the CLI's provider. This mode requires native Git and ripgrep on PATH,
-Claude Code 2.1.248 or newer, and
-API-key or third-party provider authentication (Bedrock, Vertex, or Foundry).
-Subscription OAuth and keychain authentication are unavailable in bare mode.
-Revuto forwards only allowlisted provider environment values from the daemon
-environment or the operator's `~/.claude/settings.json`; it does not forward
-GitHub credentials, arbitrary user settings, or project/local settings.
-This mode applies only to the review tiers (`models.review`, `reviewSmall`,
-`reviewMedium`) and runs `claude -p` with streamed
-JSON, schema validation, restricted mode, and all built-in tools disabled.
-An isolated MCP server exposes workspace-guarded read/grep/glob tools and the
-fixed PR diff, excluding sensitive paths. Search honors the workspace's own
-ignore files only: ignore files and `.git` directories above the workspace and
-the global gitignore do not apply. A directory the workspace's rules hide is
-searched directly when the scoped search finds nothing, and the result says so.
-Shells given to open-model and AGY reviewers set `RIPGREP_CONFIG_PATH` to the
-same scope (`agents/common/rg/`). It exposes no shell, arbitrary Git,
-LSP, write, or network tools. Bare mode disables automatically loaded hooks,
-plugins and project memory; Revuto supplies the PR and repository knowledge.
-Valid effort values are `low`, `medium`, `high`, `xhigh`, and `max`.
-Claude receives `review.maxSteps` as `--max-turns` and the configured review
-output cap as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. A turn-limit exit fails the review.
-AGY retains its native CLI limits and the 20-minute runner timeout; Revuto's
-step/output knobs apply to HTTP and Claude review execution, not AGY.
-Automatic dashboard probes skip native CLI models. Explicit `revuto doctor`
-opts in; its Claude probe has no tools/MCP servers, one turn, low effort and a
-32-token output cap, and checks the exact expected response.
-
-For Codex CLI on Amazon Bedrock (`api: "codex"`), set a review tier to:
-
-```json
-{
-  "name": "codex-sol",
-  "api": "codex",
-  "baseURL": "codex://bedrock",
-  "auth": "aws",
-  "command": "/home/avifenesh/.local/bin/codex",
-  "model": "openai.gpt-6.1-sol",
-  "awsRegion": "us-east-1",
-  "reasoningEffort": "high"
-}
-```
-
-Revuto runs `codex exec --json` with `--ignore-user-config --ignore-rules`, the shell
-tool disabled, web search off, a read-only sandbox, `--ephemeral`, and a private
-`CODEX_HOME` in a temporary directory that is removed after the run. It never uses
-the operator's Codex login or `~/.codex` config. The model provider is Codex's
-built-in `amazon-bedrock` with `awsRegion` (default `us-east-1`, where Bedrock
-serves the GPT-6 family). Only `HOME`, `PATH`, locale and TLS variables and the
-AWS credentials (`AWS_BEARER_TOKEN_BEDROCK`, keys, profile) reach the process.
-The inspection surface is the same guarded revuto MCP server the Claude runner
-gets, and the verdict comes back through `--output-schema` with a strict schema.
-The prompt goes over stdin. Codex has no turn limit, so revuto stops the run after
-`review.maxSteps` tool calls. Revuto passes a 900K context window (Codex's bundled
-catalog lists 272K for every GPT model) and compacts at 250K, so no request crosses
-the 272K-input price step. Codex has no output-token setting, so
-`limits.maxOutputTokens.review` does not apply to it. A turn Codex reports as a
-policy failure (`cyber_policy`, `bio_policy`, `invalid_prompt` and the like) or a
-final message that declines instead of returning the verdict raises a refusal, and
-the review moves to the spec's next `fallbacks` entry, as Claude refusals do.
-`command` defaults to `$REVUTO_CODEX_COMMAND` or `codex` on PATH.
-
-`github.app.ignoredRepos` lists repositories revuto never reviews: full names
-(`owner/name`) or `owner/*`. A matching pull request is skipped before anything is
-enqueued: no claim, no round or daily counter, no check run (revuto only creates its
-check once it has claimed a head, so nothing stays pending). The skip is logged once
-per PR as `skipped: repo ignored`. `revuto review <repo> <pr> --force` still works.
-
-### Review tiers: small, medium and large PRs
-
-Revuto routes each pull request to one of three review tiers before any model call,
-from the PR's file list and line counts. No LLM call is spent on routing.
-
-| tier | model | takes |
+| you have | revuto runs | sign in with |
 |---|---|---|
-| small | `models.reviewSmall` | every changed file is documentation (`review.small.docsOnly`), or at most `review.small.maxChangedLines` changed lines |
-| medium | `models.reviewMedium` | at most `review.medium.maxCodeLines` changed code lines (default 500) |
-| large | `models.review` | everything else, and any PR whose file list or size is incomplete |
+| Claude Pro or Max | Claude Code | `claude setup-token`, then `CLAUDE_CODE_OAUTH_TOKEN` |
+| a ChatGPT plan | Codex | `CODEX_HOME=~/.config/revuto/codex codex login` |
+| an Anthropic API key | Claude Code | `ANTHROPIC_API_KEY` |
+| an OpenAI API key | Codex | `OPENAI_API_KEY` |
+| a Google account | Gemini through Antigravity | the `agy` login |
+| the Z.ai coding plan | GLM | `ZAI_API_KEY` |
+| Grok | Grok | the Grok CLI login or `GROK_API_KEY` |
+| a GPU | llama.cpp, vLLM, Ollama or any OpenAI-compatible server | nothing |
+| AWS, Google Cloud or Azure | Claude on Bedrock, Vertex or Foundry; GPT on Bedrock | your cloud credentials |
 
-Code lines are additions plus deletions in files that are neither documentation nor
-tests (test directories, `*.test.*`, `*.spec.*`, `*_test.*`). A tier with no model
-configured falls through to the next one. Each tier takes any model shape, native
-CLIs included. The route shows in the daemon log (`model <name> (<tier> tier):
-<reason>`); without `models.reviewMedium`, the log still says when the medium tier
-would have taken a PR. Nothing posted to GitHub names the model.
+A reviewer on your Claude plan:
+
+```json
+{ "api": "claude", "baseURL": "claude-cli://local", "auth": "subscription", "model": "claude-opus-5-5", "reasoningEffort": "high" }
+```
+
+On your ChatGPT plan:
+
+```json
+{ "api": "codex", "baseURL": "codex://openai", "auth": "subscription", "model": "gpt-6.1-sol", "reasoningEffort": "high" }
+```
+
+Mix them. Big PRs go to Claude, small ones to Codex, Gemini curates skills and GLM
+distills PR history:
 
 ```jsonc
 "models": {
-  "review":       { "name": "claude-cli-opus", "api": "claude", "baseURL": "claude-cli://local", "auth": "none", "model": "global.anthropic.claude-opus-5-5[1m]", "reasoningEffort": "high" },
-  "reviewMedium": { "name": "codex-sol-high",  "api": "codex",  "baseURL": "codex://bedrock", "auth": "aws", "model": "openai.gpt-6.1-sol", "reasoningEffort": "high" },
-  "reviewSmall":  { "name": "codex-sol-medium", "api": "codex", "baseURL": "codex://bedrock", "auth": "aws", "model": "openai.gpt-6.1-sol", "reasoningEffort": "medium" }
-},
-"review": {
-  "small": { "maxChangedLines": 200, "docsOnly": true, "docsExtensions": [".md", ".mdx", ".txt", ".rst", ".adoc"], "docsPaths": ["docs/", "doc/", "notes/"] },
-  "medium": { "maxCodeLines": 500 }
+  "review":      { "api": "claude", "baseURL": "claude-cli://local", "auth": "subscription", "model": "claude-opus-5-5", "reasoningEffort": "high",
+                   "fallbacks": [{ "api": "codex", "baseURL": "codex://openai", "auth": "subscription", "model": "gpt-6.1-sol", "reasoningEffort": "high" }] },
+  "reviewSmall": { "api": "codex", "baseURL": "codex://openai", "auth": "subscription", "model": "gpt-6.1-sol", "reasoningEffort": "medium" },
+  "curator":     { "api": "agy", "baseURL": "agy://local", "auth": "agy-oauth", "model": "gemini-4-argon-high",
+                   "fallbacks": [{ "baseURL": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.3", "apiKeyEnv": "ZAI_API_KEY" }] },
+  "distill":     { "baseURL": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.3", "apiKeyEnv": "ZAI_API_KEY" },
+  "embedder":    null
 }
 ```
 
-`maxChangedLines: 0` turns the small size rule off; `docsOnly: false` turns the docs
-rule off; `maxCodeLines: 0` turns the medium tier off.
+Claude Code and Codex run the review tiers. The curator and distiller run on any
+HTTP model or Antigravity. The embedder is optional; without one, dedup and skill
+selection fall back to an LLM judge and area globs.
 
-Risk paths and hotspots send a PR to the large tier whatever its size. A changed code
-file (not docs, not tests) that matches a `review.risk.paths` glob, or the area of a
-learned concern reinforced at least `review.risk.hotspotMinReinforcement` times
-(default 3; 0 turns hotspots off), routes the PR to `models.review`. The log says
-which file matched what. A replay of 400 recent PRs found a threshold of 2 moved 58%
-of medium-tier PRs to the large tier; 3 moves 23%.
+Every provider, its isolation and its knobs: [docs/providers.md](docs/providers.md).
 
-```jsonc
-"review": { "risk": { "paths": ["**/auth/**", "**/migrations/**", ".github/workflows/**"], "hotspotMinReinforcement": 3 } }
+## How it works
+
+```mermaid
+flowchart LR
+  init["init<br/>read up to 1,000 PRs"] --> textbook["textbook<br/>in your vault"]
+  textbook --> review["review<br/>every new PR head"]
+  review --> replies["maintainers<br/>reply"]
+  replies --> learn["learn<br/>dedup into concerns"]
+  learn -- "reinforced 4 times" --> skill["topic skill"]
+  skill --> review
 ```
 
-A small or medium tier can hand a PR to the large tier once (`review.escalate`,
-default `true`). The reviewer answers `escalate` with a reason when it cannot settle
-part of the change, and a native runner that hits its step or turn budget escalates
-instead of failing. The large tier then reviews the whole PR with the first pass's
-reason in its prompt. The outcome counts both passes' tokens and steps, so daily token
-limits see the full cost. The log says `<tier model> escalated to <large model>: <reason>`.
+- **init** clones the repo, scans its structure, backfills up to 1,000 PRs,
+  distills what maintainers care about and writes
+  `<vault>/skills/<repo>/_textbook.md`.
+- **review** claims the exact PR head, checks it out, picks the textbook and the
+  relevant skills, runs the reviewer, then posts a review or skips. A webhook
+  triggers it; a cron pass catches anything missed.
+- **learn** reads replies to revuto's comments, filters noise and dedups them into
+  concerns. A concern reinforced four times graduates into a topic skill.
+- **decay** ages out concerns that never graduate.
 
-`review.shadowSample` (0 to 1, default 0) measures what the cheaper tiers miss. That
-share of small and medium reviews also runs on the large tier after the real review,
-in the same workspace, posting nothing. Each comparison is appended to
-`<vault>/.shadow/<YYYY-MM>.jsonl`: both tiers' decisions, the large tier's comment
-locations, both token counts, and whether they agree. The log line ends in `agree` or
-`DISAGREE`. Shadow runs need a native large tier; their tokens are recorded in the file,
-not added to the review's outcome or the daily token count.
+New skills land as `draft` and load only after `revuto approve`. Repos with
+`autoActivate` graduate them as `active` right away.
 
-### Re-reviews look at what changed
+## Review on push
 
-When revuto reviews a new head of a PR it already reviewed, the review covers what
-changed since its last reviewed head (`review.incremental`, default `true`). The last
-reviewed head is the commit of revuto's newest signed review on an earlier head. When
-that commit is still an ancestor of the new head, the review is routed by the size of
-`<last>..<head>` in the PR's own files, so a merge from the base branch does not
-count, and the reviewer gets a re-review note with the changed files. Native CLI
-runners also get a `new_changes` tool with that diff; `pr_diff` still returns the
-whole PR diff, and inline comments still land on lines of the full PR diff. A
-force-push that rewrote the reviewed head, a file list cut at one page, or no earlier
-revuto review means a full review. The daemon log says `re-review since <sha>`.
+Polling works with no public endpoint. For reviews within seconds of a push,
+install one GitHub App on the accounts you want covered and point its webhook at
+the daemon. Each PR head gets a `revuto-review` check: a clean review passes it and
+approves that exact head, and findings fail it. Setup, a Tailscale Funnel recipe,
+and the self-healing webhook monitor: [docs/github-app.md](docs/github-app.md).
 
-`review.maxRounds` defaults to **3 model-run attempts per PR across all commits**.
-Signed reviews already posted by the configured reviewer seed the lifetime count.
-A reserved attempt counts even if the run errors; a new push, daemon restart, or
-`--force` does not reset or bypass it. At the cap, automatic review/fix cycles stop
-and the check stays failed with a manual-review explanation. Reaching the cap
-never approves or merges a PR. The separate `maxSteps` limit bounds a single run.
+## Reviews that fit the PR
 
-#### Final review after the cap
+- **Three tiers.** Docs-only and small PRs go to `models.reviewSmall`, mid-size ones
+  to `models.reviewMedium`, the rest to `models.review`. Risky paths and learned
+  hotspots always get the large tier. Routing costs no model call.
+- **Re-reviews look at what changed** since revuto's last reviewed head.
+- **A round cap** (3 by default) stops endless review and fix loops. After the cap,
+  `revuto review owner/repo 123 --final` runs one last review of the head that
+  will merge.
 
-An orchestrator that runs a PR through many revisions usually ends past the cap,
-so the head that merges was never reviewed. `revuto review <owner/repo> <pr> --final`
-asks for one review of the current head after the cap:
+Tiers, escalation, shadow sampling and exit codes: [docs/reviews.md](docs/reviews.md).
 
-- Past the cap it allows exactly one review per head SHA, reserved under
-  `final-review:<pr>:<headSha>` before the model runs. A run that reaches a decision
-  (a posted review or a clean skip) spends it, even if the job fails afterwards. A
-  second `--final` at that head is refused with the reason; a new head gets its own.
-- A run that fails before a decision (the model CLI is not logged in, it crashes, or
-  it ends without a terminal tool) posted no verdict, so the reservation is refunded
-  and the claim released: the next `--final` at that head runs. Normal rounds are
-  never refunded.
-- Below the cap it is a normal round and spends it.
-- The daily review and token limits still apply. A refusal there spends nothing.
-- A head the daemon already refused at the cap is marked done; `--final` takes its
-  own claim on that head, so the marker does not block it. A head still under the
-  cap that was already reviewed stays reviewed.
-- The posted review summary, the check title and the App approval say
-  "Revuto final review (round cap reached)". Pass and fail work as for any review.
-
-`revuto review` exits with a code an orchestrator can act on:
-
-| code | meaning |
-|---|---|
-| 0 | the review ran and passed |
-| 1 | the review ran and failed (no decision, a failed post, a skip without inspection) or an error |
-| 2 | the review ran and posted blocking concerns |
-| 3 | refused or not run (round cap, final review already used, daily limit, draft, head already reviewed) |
-
-When the orchestrator has finished its own rounds:
-
-```bash
-revuto review owner/repo 123 --final
-```
-
-Reviews use up to `review.maxConcurrent` slots globally (default 4) and
-`review.maxConcurrentPerRepo` per repository (default 2), with one active run per
-PR. These limits cover the daemon, webhooks and manual CLI processes. Waiting
-reviews are admitted in order when their repository has capacity.
-Each run gets a detached worktree from a shared bare Git cache. The checkout and
-its Git registration are removed after success, failure or cancellation; daemon
-startup reaps worktrees left by crashed processes. The bare cache is retained to
-avoid fetching the repository again. Round and daily-review limits remain enforced.
-The CLI returns a verdict; Revuto retains GitHub posting authority. Structured
-output alone does not count as inspection: a verdict returned without a single
-evidence read is discarded and the turn runs once more with the requirement
-spelled out, and a second uninspected verdict fails the review before posting.
-A failing CLI/model does not silently switch to another provider.
-
-At run time, override a role with a primary/fallback chain instead of editing the
-config file:
-
-```bash
-revuto doctor --review-model gpt55,opus
-revuto review owner/repo 123 --review-model gpt55,opus
-revuto daemon --model review=gpt55@us-east-2,opus --model curator=opus,sonnet --model distill=opus,sonnet
-```
-
-Aliases are `sol61`, `sol`, `astra`, `gpt55`, `codex`, `opus`, `fable`, `sonnet`
-and `grok`. OpenAI model ids use Bedrock Mantle
-(`https://bedrock-mantle.<region>.api.aws/openai/v1`, default region `us-east-1`)
-and Anthropic ids use Bedrock Runtime Converse
-(`https://bedrock-runtime.<region>.amazonaws.com`, default `us-east-2`). `codex` is
-GPT-6.1 Sol through the native Codex runner at high effort. `--review-medium-model`
-overrides the medium tier; a pinned `--review-model` drops the small and medium tiers
-unless they are pinned too. Use `--bedrock-region` (every alias) or append
-`@region` to one alias to change the generated endpoint.
-
-On Claude ids the Converse adapter follows the Opus 5.5 / Fable 5.1 request rules:
-it calls ConverseStream (a 128K-token turn outlasts a plain HTTP response), never
-sends temperature, topP or a forced tool choice (a `required` choice goes out as
-`auto` with the tools named, retried once if no call comes back), defaults effort
-to `medium`, replays signed reasoning blocks unmodified, and hands a refusal to the
-next fallback in the chain. The Claude CLI reviewer does the same for refusals.
-
-Tool calling is required (the reviewer/curator drive tools), so a local **chat** server
-must run with a tool-capable chat template — `scripts/llama-server.sh` passes `--jinja`
-for that. For an **embedder**, `EMBED=1 LLAMA_MODEL=... scripts/llama-server.sh` serves it
-with `--embedding`, CLS pooling, CPU-only (`-ngl 0`), on port 8181 (clear of the chat
-server's 8080). The `embedder` role may be `null` — dedup + skill selection then fall back
-to LLM-judge / area-glob.
-
-Stored embeddings are tagged with the embedder's `model` id. Similarity search only
-compares vectors from the same model, and the skill-embedding cache is keyed by it, so
-switching `embedder` is safe: skills re-embed on the next review. Concerns stored before
-the tag existed are still compared when their vector length matches the query; concerns
-embedded by a different model drop out of similarity search until they are re-embedded
-(a merge re-embeds its target).
-
-`model` in `models.embedder` is the embedding identity. A local server such as
-llama-server ignores the requested model name, so revuto cannot tell when the weights
-behind the endpoint change. Change `model` whenever the served embedding model changes,
-or old and new vectors get compared as if they came from one model.
-
-To tag the untagged concerns (legacy vectors, and records stored while no embedder
-was configured or reachable), re-embed them once with the configured embedder:
-
-```bash
-npm run reembed-concerns                  # every registered repo
-npm run reembed-concerns -- owner/repo    # just these repos
-```
-
-It works on both store backends and is safe to re-run: tagged records are skipped, and
-a record changed by a concurrent merge is left alone.
-
-## Storage backend
-
-Skills are always Obsidian markdown. The structured memory (concerns, embeddings,
-cursors, idempotency) has two backends, set in `store.backend`:
-
-- `surreal` (**default**) — SurrealDB, with native vector search
-  (`vector::similarity::cosine`) for concern dedup. Start it first with
-  `scripts/surreal-start.sh` (persistent surrealkv under the vault):
-
-  ```jsonc
-  "store": {
-    "backend": "surreal",
-    "surreal": { "url": "http://127.0.0.1:8000/rpc", "namespace": "reviewer",
-                 "username": "root", "password": "root" }
-  }
-  ```
-
-- `sqlite` — opt-in, zero dependency; a per-repo SQLite file under `<vault>/memory/`
-  (no server to run). Set `"store": { "backend": "sqlite" }`.
-
-Both backends keep in-flight claims (`claims` / `claim`) apart from the done markers
-(`idempotency` / `seen`). A claim is released when the review completes or fails, and is
-stealable after a 90-minute lease, so a worker killed mid-review no longer strands its
-head - the next poll retakes it. A done marker never expires. Heads recorded before the
-lease existed were written to the done markers, so a review the old code lost that way
-still reads as finished; re-run it with `revuto review <owner/repo> <pr> --force`, which
-bypasses the claim entirely.
-
-## Limits
-
-Optional caps under `limits` (0 = unlimited; run/comment/token counts are per repo per UTC day, enforced via store counters):
-
-- `maxOutputTokens` — per-run output-token cap for each agent: `{ review, curator, distill }`. Curator and distill default to 16384 and 8192. When `review` is unset, the routed review model decides: 128000 when its whole fallback chain is Claude (thinking counts toward the cap; 128K is the Opus 5.5 and Sonnet 5 ceiling), 32768 otherwise, since a chat endpoint can 400 above its own limit. For the Claude CLI reviewer the cap becomes `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
-- `dailyReviews` — max review runs per repo per day.
-- `learnBatch` — max comments processed per learn pass (per batch, not per comment).
-- `dailyLearn` — max comments processed per repo per day.
-- `dailyTokens` — **shared** daily token budget across all agents (review + curator + distill), per repo. When the day's running total reaches it, the review and learn loops stop until the next day.
-
-```jsonc
-"limits": {
-  "maxOutputTokens": { "review": 128000, "curator": 16384, "distill": 8192 },
-  "dailyReviews": 20, "learnBatch": 30, "dailyLearn": 100, "dailyTokens": 2000000
-}
-```
-
-## Usage
+## Commands
 
 ```bash
 revuto doctor                        # verify endpoints + GitHub token first
@@ -668,11 +166,15 @@ revuto decay <owner/repo>            # run decay now
 revuto approve <owner/repo> <slug>   # activate a draft skill
 ```
 
-Run the daemon as a systemd user service to survive reboots — see
-`deploy/revuto.service`. For the full local stack, install the matching
-`deploy/revuto-surreal.service`, `deploy/revuto-embedder.service`, and
-`deploy/revuto-guard.timer` units too; the guard keeps the daemon, store, and
-embedder available for scheduled review/learn/decay runs.
+## Configuration
+
+Config, skills and reviewer notes live together in the vault (`~/revuto`, or
+`$REVUTO_VAULT`), so you can read and edit all of it in Obsidian. No secrets are
+stored there: API keys and the webhook secret are referenced by environment
+variable name. Optional daily caps on reviews, learn passes and tokens bound the spend.
+
+Config keys, storage backends, limits, the local dashboard and systemd units:
+[docs/configuration.md](docs/configuration.md).
 
 ## Development
 
@@ -680,6 +182,7 @@ embedder available for scheduled review/learn/decay runs.
 git clone https://github.com/avifenesh/revuto && cd revuto
 npm install && npm run build
 npm run typecheck
+npm test
 npx tsx scripts/smoke/graduation.ts    # store + 4× graduation + selection
 npx tsx scripts/smoke/loop.ts          # full learn loop (fake endpoint)
 npx tsx scripts/smoke/responses.ts     # /v1/responses + Bedrock Mantle auth
@@ -689,3 +192,7 @@ npx tsx scripts/smoke/webhook.ts       # GitHub webhook HMAC + dispatch/check ou
 npx tsx scripts/smoke/scheduler.ts     # registry + schedule planning
 npx tsx scripts/smoke/scan.ts          # onboarding repo scan
 ```
+
+## License
+
+[MIT](LICENSE)
