@@ -317,12 +317,18 @@ auth, and Bedrock SigV4 signing. It intentionally leaves streaming, stored
 conversation state, multimodal/file inputs, structured-output helpers, and built-in
 Responses tools unsupported for now.
 
-`api: "agy"` is a review-runner mode rather than an OpenAI-compatible model. AGY
-inspects the prepared worktree in headless `stream-json` mode and returns a strict
-review object; Revuto performs the one GitHub `post_review` or `skip_review` action.
+`api: "agy"` uses AGY's native CLI. For reviews, AGY inspects the prepared worktree
+in headless `stream-json` mode and returns a strict review object; Revuto performs
+the one GitHub `post_review` or `skip_review` action.
 Set `auth: "agy-oauth"` to make the OAuth dependency explicit. Set
 `permissionMode: "bypass"` only for a fully trusted review environment; it passes
 AGY's `--dangerously-skip-permissions` flag for unattended tool execution.
+
+Curator and distillation models also accept `api: "agy"`. Each completion runs
+in an empty temporary workspace in plan mode and returns text or structured
+function calls. Revuto executes the function calls and sends their results back
+on the next turn. Native tool use fails the completion. These calls do not enable
+permission bypass. HTTP models such as GLM can follow AGY in `fallbacks`.
 
 For Claude Code print mode, set the reviewer to:
 
