@@ -9,7 +9,7 @@
  * `--output-schema`.
  */
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { ModelSpec } from './config.js';
 
 /** Bedrock region for Codex when the spec sets none: the GPT-6 family is served from us-east-1. */
@@ -92,11 +92,13 @@ export function codexUsesLogin(spec: ModelSpec): boolean {
 /**
  * Revuto's own Codex home, holding only its ChatGPT login (`CODEX_HOME=<dir> codex login`).
  * It is kept apart from ~/.codex so the operator's config, AGENTS.md, skills and
- * sessions never reach a review. Every login review runs in this one home, so
- * Codex refreshes and locks the token in place, as it does for concurrent sessions.
+ * sessions never reach a review. Every login review runs in this one home, so a
+ * token refresh lands where the next review reads it; a per-run copy would strand
+ * the rotated refresh token.
  */
 export function revutoCodexHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.REVUTO_CODEX_HOME?.trim() || join(env.HOME ?? homedir(), '.config', 'revuto', 'codex');
+  // Resolved here: Codex runs with the PR checkout as its cwd, so a relative path would land inside it.
+  return resolve(env.REVUTO_CODEX_HOME?.trim() || join(env.HOME ?? homedir(), '.config', 'revuto', 'codex'));
 }
 
 /**
@@ -140,6 +142,10 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
     '--disable', 'shell_tool',
     '-c', `web_search=${toml('disabled')}`,
     '-c', `approval_policy=${toml('never')}`,
+    // The checkout is untrusted: its AGENTS.md and skills, and those under the
+    // operator's HOME, must not reach the model as instructions.
+    '-c', 'project_doc_max_bytes=0',
+    '-c', 'skills.include_instructions=false',
     '-c', `model_provider=${toml(provider)}`,
   ];
   if (provider === 'amazon-bedrock') {

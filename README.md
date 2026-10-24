@@ -33,7 +33,7 @@ becomes a reusable skill.
 ## Quick start
 
 ```bash
-npm i -g revuto            # Node 22 or newer
+npm i -g revuto            # Node 22 or newer; or run ad hoc with npx revuto <command>
 revuto init-config         # writes ~/revuto/revuto.config.json
 ```
 
@@ -48,14 +48,14 @@ revuto daemon              # review, learn and decay on schedule
 
 The default memory store is [SurrealDB](https://surrealdb.com): start it with
 `scripts/surreal-start.sh`. For no extra dependencies, set
-`"store": { "backend": "sqlite" }`.
+`"store": { "backend": "sqlite" }`; `better-sqlite3` ships prebuilt binaries.
 
 ## Bring your own plan
 
 | you have | revuto runs | sign in with |
 |---|---|---|
 | Claude Pro or Max | Claude Code | `claude setup-token`, then `CLAUDE_CODE_OAUTH_TOKEN` |
-| a ChatGPT plan | Codex | `CODEX_HOME=~/.config/revuto/codex codex login` |
+| a ChatGPT plan | Codex | `mkdir -p ~/.config/revuto/codex && CODEX_HOME=~/.config/revuto/codex codex login` |
 | an Anthropic API key | Claude Code | `ANTHROPIC_API_KEY` |
 | an OpenAI API key | Codex | `OPENAI_API_KEY` |
 | a Google account | Gemini through Antigravity | the `agy` login |
@@ -76,8 +76,8 @@ On your ChatGPT plan:
 { "api": "codex", "baseURL": "codex://openai", "auth": "subscription", "model": "gpt-6.1-sol", "reasoningEffort": "high" }
 ```
 
-Mix them. Big PRs go to Claude, small ones to Codex, Gemini curates skills and GLM
-distills PR history:
+Mix them. Big PRs go to Claude (Codex takes over if Claude refuses), small ones to
+Codex, Gemini curates skills and GLM distills PR history:
 
 ```jsonc
 "models": {
@@ -116,7 +116,8 @@ flowchart LR
   relevant skills, runs the reviewer, then posts a review or skips. A webhook
   triggers it; a cron pass catches anything missed.
 - **learn** reads replies to revuto's comments, filters noise and dedups them into
-  concerns. A concern reinforced four times graduates into a topic skill.
+  concerns. A concern reinforced four times graduates into a topic skill, and the
+  concern is deleted.
 - **decay** ages out concerns that never graduate.
 
 New skills land as `draft` and load only after `revuto approve`. Repos with

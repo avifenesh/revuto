@@ -2,7 +2,7 @@
   "name": "revuto",
   "version": "0.1.0",
   "type": "module",
-  "description": "Local, supplier-agnostic, repo-agnostic autonomous PR reviewer. Stands up a learning reviewer for any repo: clone + onboard + PR-history backfill → curated skill, then poll-review + learn loop with skills graduated into an external (Obsidian) vault.",
+  "description": "Local, supplier-agnostic, repo-agnostic autonomous PR reviewer. Stands up a learning reviewer for any repo: clone + onboard + PR-history backfill \u2192 curated skill, then poll-review + learn loop with skills graduated into an external (Obsidian) vault.",
   "license": "MIT",
   "author": "Avi Fenesh",
   "keywords": [
@@ -48,7 +48,11 @@
     "deploy",
     "revuto.config.example.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/providers.md",
+    "docs/github-app.md",
+    "docs/reviews.md",
+    "docs/configuration.md"
   ],
   "engines": {
     "node": ">=22"

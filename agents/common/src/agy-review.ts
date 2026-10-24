@@ -214,7 +214,7 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     if (codexUsesLogin(opts.spec)) {
       codexHome = revutoCodexHome();
       await access(join(codexHome, 'auth.json')).catch(() => {
-        throw new Error(`Codex ChatGPT login not found in ${codexHome}: run \`CODEX_HOME=${codexHome} codex login\``);
+        throw new Error(`Codex ChatGPT login not found in ${codexHome}: run \`mkdir -p ${codexHome} && CODEX_HOME=${codexHome} codex login\``);
       });
     } else {
       await mkdir(codexHome);
@@ -259,7 +259,8 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
     'stream-json',
   ];
   if (claude) {
-    // --bare never reads OAuth, so a subscription run is isolated by its private config dir instead.
+    // --bare never reads OAuth. A subscription run relies on --restricted and empty setting
+    // sources to keep the checkout's .claude settings and hooks out, plus a private config dir.
     args.push('--verbose', ...(claudeConfigDir ? [] : ['--bare']), '--restricted', '--setting-sources', '', '--no-session-persistence',
       '--input-format', 'text',
       '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: opts.probe ? {} : { revuto: reviewMcpServer(opts.cwd, opts.diffRange, opts.sinceRange) } }),

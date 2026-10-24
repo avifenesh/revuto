@@ -41,6 +41,8 @@ if (value('-m') === 'gpt-6.1-sol') {
   assert.ok(configs.includes('model_providers.amazon-bedrock.aws.region="us-east-1"'));
 }
 assert.ok(configs.includes('approval_policy="never"'));
+assert.ok(configs.includes('project_doc_max_bytes=0'), 'the checkout AGENTS.md stays out');
+assert.ok(configs.includes('skills.include_instructions=false'), 'checkout and HOME skills stay out');
 assert.ok(existsSync(process.env.CODEX_HOME));
 console.log('2026-10-01T00:00:00Z ERROR rmcp::transport::worker: a log line that is not JSON');
 console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
@@ -233,6 +235,7 @@ test('Codex environment carries only its provider credentials', () => {
   assert.deepEqual(codexEnvironment('/login', login, env), { CODEX_HOME: '/login', HOME: '/h', PATH: '/bin' });
   assert.equal(revutoCodexHome({ HOME: '/h' }), '/h/.config/revuto/codex');
   assert.equal(revutoCodexHome({ HOME: '/h', REVUTO_CODEX_HOME: '/srv/codex' }), '/srv/codex');
+  assert.equal(revutoCodexHome({ HOME: '/h', REVUTO_CODEX_HOME: 'rel/codex' }), join(process.cwd(), 'rel/codex'));
 });
 
 test('Codex on OpenAI runs on an API key in a private home, or on revuto\'s own ChatGPT login home', async () => {
@@ -257,7 +260,7 @@ test('Codex on OpenAI runs on an API key in a private home, or on revuto\'s own 
     const loginHome = join(dir, 'login-home');
     process.env.REVUTO_CODEX_HOME = loginHome;
     const login = { ...apiKey, auth: 'subscription' as const };
-    await assert.rejects(runAgyCli({ spec: login, cwd: dir, prompt: 'review' }), /ChatGPT login not found in .*login-home: run `CODEX_HOME=.* codex login`/);
+    await assert.rejects(runAgyCli({ spec: login, cwd: dir, prompt: 'review' }), /ChatGPT login not found in .*login-home: run `mkdir -p .*login-home && CODEX_HOME=.* codex login`/);
     mkdirSync(loginHome);
     writeFileSync(join(loginHome, 'auth.json'), '{}');
     await runAgyCli({ spec: login, cwd: dir, prompt: 'review', schema: CODEX_REVIEW_SCHEMA });

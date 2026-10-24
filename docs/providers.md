@@ -10,9 +10,10 @@ check it with `revuto doctor` before the first run.
 | `distill` | turns PR history into the textbook | HTTP models, Antigravity |
 | `embedder` | dedup and skill selection | an OpenAI-compatible embeddings endpoint, or `null` |
 
-Each spec can list `fallbacks`: models to try, in order, when a call fails or the
-model refuses. Native CLI runners (Claude Code, Codex, Antigravity) must come before
-HTTP models in a chain.
+Each spec can list `fallbacks`, tried in order. An HTTP model falls back when its
+call fails or the model refuses. A native CLI runner (Claude Code, Codex,
+Antigravity) falls back only on a refusal; any other error, such as a plan's usage
+limit, fails the review. Native runners must come before HTTP models in a chain.
 
 ## Claude Code
 
@@ -39,10 +40,11 @@ environment as `CLAUDE_CODE_OAUTH_TOKEN`. A subscription run gets that token and
 nothing else from the provider environment: an `ANTHROPIC_API_KEY` or a
 `CLAUDE_CODE_USE_BEDROCK` set for something else cannot redirect it.
 
-Bare mode never reads OAuth, so a subscription run is isolated another way. Each
-run gets a private, empty `CLAUDE_CONFIG_DIR` that is removed afterwards: no user
-settings, plugins, hooks, memory or stored login. `CLAUDE.md` loading, auto-memory
-and nonessential traffic are off, and setting sources stay empty.
+Bare mode never reads OAuth, so a subscription run is isolated another way.
+`--restricted` and empty setting sources keep the checkout's `.claude` settings,
+hooks and `CLAUDE.md` out. Each run also gets a private, empty `CLAUDE_CONFIG_DIR`
+that is removed afterwards: no user settings, plugins, memory or stored login.
+`CLAUDE.md` loading, auto-memory and nonessential traffic are off as well.
 
 ### On an Anthropic API key or a cloud provider
 
@@ -88,9 +90,10 @@ in; its Claude probe has no tools or MCP servers, one turn, low effort and a
 ## Codex
 
 Revuto runs `codex exec --json` with `--ignore-user-config --ignore-rules`, the shell
-tool disabled, web search off, a read-only sandbox and `--ephemeral`. It never
-reads the operator's `~/.codex` config, AGENTS.md, skills or sessions. Codex runs
-the review tiers only.
+tool disabled, web search off, a read-only sandbox and `--ephemeral`. Project docs
+(`AGENTS.md`) and skill instructions are off, so neither the checkout's nor the
+operator's reach the model, and the operator's `~/.codex` config and sessions are
+never read. Codex runs the review tiers only.
 
 ### On a ChatGPT plan
 
@@ -108,13 +111,14 @@ the review tiers only.
 Log in once into revuto's own Codex home:
 
 ```bash
-CODEX_HOME=~/.config/revuto/codex codex login
+mkdir -p ~/.config/revuto/codex
+CODEX_HOME=~/.config/revuto/codex codex login    # add --device-auth on a headless box
 ```
 
 `REVUTO_CODEX_HOME` moves that home. It holds only the login, so it stays apart
-from your own `~/.codex`. Every login review runs in this one home, where Codex
-refreshes and locks the token in place, as it does for concurrent sessions. A
-review with no login there fails with the command to run.
+from your own `~/.codex`. Every login review runs in this one home, so a token
+refresh lands where the next review reads it. A review with no login there fails
+with the command to run.
 
 ### On an OpenAI API key
 
