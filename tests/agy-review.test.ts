@@ -272,6 +272,15 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
     assert.ok(existsSync(marker));assert.equal(explicit.length,2);assert.ok(explicit.every(p=>p.ok));
     const bad=await runModelProbes({...config,models:{...config.models,review:{...native,model:'wrong'}}},{includeNative:true});
     assert.match(bad.find(p=>p.api==='claude')?.error??'',/unexpected response/);
+    // Same model on another credential path is its own probe, and a missing login fails it.
+    const home=process.env.HOME, token=process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.HOME=dir; delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    try {
+      const mixed=await runModelProbes({...config,models:{...config.models,reviewSmall:{...native,auth:'subscription' as const}}},{includeNative:true});
+      assert.equal(mixed.length,3);
+      assert.match(mixed.find(p=>p.roles.includes('reviewSmall'))?.error??'',/CLAUDE_CODE_OAUTH_TOKEN/);
+      assert.ok(mixed.find(p=>p.roles.includes('review'))?.ok);
+    } finally { process.env.HOME=home; if (token!==undefined) process.env.CLAUDE_CODE_OAUTH_TOKEN=token; }
   } finally {await server.close();rmSync(dir,{recursive:true,force:true});}
 });
 

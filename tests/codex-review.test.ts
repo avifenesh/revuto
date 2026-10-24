@@ -228,7 +228,7 @@ test('Codex environment carries only its provider credentials', () => {
   const apiKey = { baseURL: 'codex://openai', api: 'codex' as const, auth: 'bearer' as const, model: 'gpt-6.1-sol' };
   assert.deepEqual(codexEnvironment('/tmp/home', apiKey, env), { CODEX_HOME: '/tmp/home', HOME: '/h', PATH: '/bin', CODEX_API_KEY: 'y' });
   assert.equal(codexEnvironment('/tmp/home', { ...apiKey, apiKeyEnv: 'TEAM_OPENAI_KEY' }, env).CODEX_API_KEY, 't');
-  assert.throws(() => codexEnvironment('/tmp/home', apiKey, { HOME: '/h' }), /needs an API key in OPENAI_API_KEY/);
+  assert.throws(() => codexEnvironment('/tmp/home', apiKey, { HOME: '/h' }), /needs an API key in its apiKeyEnv variable/);
   const login = { ...apiKey, auth: 'subscription' as const };
   assert.deepEqual(codexEnvironment('/login', login, env), { CODEX_HOME: '/login', HOME: '/h', PATH: '/bin' });
   assert.equal(revutoCodexHome({ HOME: '/h' }), '/h/.config/revuto/codex');
@@ -252,7 +252,7 @@ test('Codex on OpenAI runs on an API key in a private home, or on revuto\'s own 
     assert.match(last().env.CODEX_HOME, /revuto-codex-/);
     assert.equal(existsSync(last().env.CODEX_HOME), false, 'the API-key run home is removed');
     delete process.env.OPENAI_API_KEY;
-    await assert.rejects(runAgyCli({ spec: apiKey, cwd: dir, prompt: 'review' }), /needs an API key in OPENAI_API_KEY/);
+    await assert.rejects(runAgyCli({ spec: apiKey, cwd: dir, prompt: 'review' }), /needs an API key in its apiKeyEnv variable/);
 
     const loginHome = join(dir, 'login-home');
     process.env.REVUTO_CODEX_HOME = loginHome;

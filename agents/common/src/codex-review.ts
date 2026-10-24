@@ -116,7 +116,7 @@ export function codexEnvironment(codexHome: string, spec: ModelSpec, env: NodeJS
   } else if (!codexUsesLogin(spec)) {
     const keyEnv = spec.apiKeyEnv?.trim() || 'OPENAI_API_KEY';
     const key = env[keyEnv]?.trim();
-    if (!key) throw new Error(`Codex on OpenAI needs an API key in ${keyEnv}`);
+    if (!key) throw new Error('Codex on OpenAI needs an API key in its apiKeyEnv variable (default OPENAI_API_KEY)');
     result.CODEX_API_KEY = key;
   }
   return result;
