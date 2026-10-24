@@ -173,6 +173,8 @@ export interface RunAgyCliOptions {
   readonly maxSteps?: number;
   readonly maxOutputTokens?: number;
   readonly probe?: boolean;
+  /** Completion bridge: return tool selections without running native tools. */
+  readonly structuredOnly?: boolean;
   readonly signal?: AbortSignal;
   readonly onStep?: (step: AgyStepUpdate) => void;
 }
@@ -222,6 +224,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   const timeoutMs = opts.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
   const maxSteps = opts.maxSteps ?? 150;
   const maxOutputTokens = opts.maxOutputTokens ?? CLAUDE_DEFAULT_MAX_OUTPUT_TOKENS;
+  const agyStdin = runner === 'agy' && opts.structuredOnly;
   if (claude && (![maxSteps, maxOutputTokens].every(n => Number.isSafeInteger(n) && n > 0))) {
     return Promise.reject(new Error('Claude review step and output limits must be positive integers'));
   }
@@ -234,8 +237,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
     ...(opts.probe ? {} : { mcpServer: reviewMcpServer(opts.cwd, opts.diffRange, opts.sinceRange) }),
     ...(codex?.schemaPath ? { schemaPath: codex.schemaPath } : {}),
   }) : [
-    '-p',
-    ...(claude ? [] : [opts.prompt]),
+    ...(agyStdin ? ['--input-format', 'stream-json'] : ['-p', ...(claude ? [] : [opts.prompt])]),
     '--model',
     opts.spec.model,
     '--output-format',
@@ -251,13 +253,14 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
     if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
   } else if (runner === 'agy') {
     args.push('--print-timeout', timeoutArg(timeoutMs));
+    if (opts.structuredOnly) args.push('--mode', 'plan', '--disable-slash-commands');
   }
   if (runner !== 'codex' && opts.schema) args.push('--json-schema', opts.schema);
-  if (runner === 'agy' && opts.spec.permissionMode === 'bypass') args.push('--dangerously-skip-permissions');
+  if (runner === 'agy' && opts.spec.permissionMode === 'bypass' && !opts.structuredOnly) args.push('--dangerously-skip-permissions');
   const env = claude
     ? { ...claudeEnvironment(), CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) }
     : runner === 'codex' ? codexEnvironment(codex!.codexHome) : { ...process.env, AGY_CLI_HIDE_LOGO: 'true', RIPGREP_CONFIG_PATH: rgScopeConfigPath(opts.cwd) };
-  const promptOnStdin = runner !== 'agy';
+  const promptOnStdin = runner !== 'agy' || agyStdin;
 
   return new Promise((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
@@ -434,7 +437,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
     });
     if (promptOnStdin) {
       child.stdin!.on('error', stopWithError);
-      child.stdin!.end(opts.prompt);
+      child.stdin!.end(agyStdin ? JSON.stringify({ event: 'user', message: { content: opts.prompt } }) + '\n' : opts.prompt);
     }
     if (opts.signal?.aborted) abort();
   });

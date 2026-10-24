@@ -22,7 +22,7 @@ export interface ModelSpec {
   readonly baseURL: string;
   /** Model id as the endpoint expects it (e.g. "global.anthropic.claude-opus-5-5", "qwen3-8b"). */
   readonly model: string;
-  /** API surface. chat/responses/converse use HTTP; agy/claude/codex use native CLI review runners. Defaults to chat. */
+  /** API surface. chat/responses/converse use HTTP; agy uses a native CLI for all roles; claude/codex are native review runners. Defaults to chat. */
   readonly api?: 'chat' | 'responses' | 'converse' | 'agy' | 'claude' | 'codex';
   /** Reasoning effort for Responses/reasoning models. Converse Claude defaults to "medium"; "max" is its ceiling. */
   readonly reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';

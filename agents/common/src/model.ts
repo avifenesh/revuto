@@ -20,6 +20,7 @@ import { buildResponsesModel } from './responses-model.js';
 import { buildConverseModel } from './converse-model.js';
 import { grokCLIHeaders, grokCLIToken, usesGrokCLIAuth } from './grok-cli-auth.js';
 import { isModelRefusal, refusalAllowsFallback } from './refusal.js';
+import { AgyLanguageModel } from './agy-model.js';
 
 export function resolveApiKey(spec: ModelSpec): string {
   if (spec.apiKeyEnv) return process.env[spec.apiKeyEnv] ?? '';
@@ -69,6 +70,7 @@ function withoutFallbacks(spec: ModelSpec): ModelSpec {
 
 function buildSingleChatModel(spec: ModelSpec): LanguageModelV4 {
   const single = withoutFallbacks(spec);
+  if (single.api === 'agy') return new AgyLanguageModel(single);
   if (isNativeRunner(single)) {
     throw new Error('CLI models are driven by the native review runner, not the OpenAI-compatible model factory');
   }
