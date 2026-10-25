@@ -24,7 +24,9 @@ Config keys: `vaultPath`, `github.tokenEnv` (only for repositories a configured 
 `revuto.config.example.json`, and [providers.md](providers.md) for every `api` and
 `auth` value. No secrets are stored: API keys and the webhook secret are
 env-referenced. `revuto doctor` checks model endpoints, configured
-fallbacks, the store backend, and the token before you run anything.
+fallbacks, the store backend, and the token before you run anything. It fails
+only when a role has no working model: a failing model whose chain still has a
+working one, primary or fallback, is a `warn`.
 
 ## Storage backend
 

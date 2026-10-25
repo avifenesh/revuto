@@ -152,7 +152,28 @@ export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
   return { github, store, models };
 }
 
-/** true if everything reachable. */
+/** The chain a probed role belongs to: `review.fallback1` serves `review`. */
+const chainOf = (role: string): string => role.split('.')[0]!;
+
+/**
+ * Chains with no working model. A chain exists so one model can stand in for
+ * another, so it is down only when every model in it fails.
+ */
+export function brokenChains(models: readonly ModelProbe[]): string[] {
+  const working = new Map<string, boolean>();
+  for (const m of models) {
+    for (const role of m.roles) working.set(chainOf(role), (working.get(chainOf(role)) ?? false) || m.ok);
+  }
+  return [...working].filter(([, ok]) => !ok).map(([chain]) => chain);
+}
+
+/** `warn`: this model fails, but every chain it is in still has a working model. */
+export function modelStatus(m: ModelProbe, broken: readonly string[]): 'ok' | 'warn' | 'fail' {
+  if (m.ok) return 'ok';
+  return m.roles.some((role) => broken.includes(chainOf(role))) ? 'fail' : 'warn';
+}
+
+/** true if GitHub and the store are reachable and every model chain has a working model. */
 export function doctorOk(r: DoctorReport): boolean {
-  return r.github.ok && r.store.ok && r.models.every((m) => m.ok);
+  return r.github.ok && r.store.ok && brokenChains(r.models).length === 0;
 }
