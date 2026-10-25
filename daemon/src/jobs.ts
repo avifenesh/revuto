@@ -340,6 +340,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
   // Set once the run reached a terminal decision (a verdict posted or a clean skip).
   // A final run that throws before one gets the head's final review back.
   let decided = false;
+  let tokensCounted = false;
   const labelled = (result: CheckResult): CheckResult => finalRun ? finalReviewCheckResult(result) : result;
   try {
     // A duplicate --final is refused before any claim or check run, so it cannot
@@ -394,6 +395,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
     const outcome: ReviewOutcome = finalRun ? { ...ran, finalReview: true } : ran;
     decided = outcome.terminal !== 'none';
     if (outcome.ranModel && config.limits.dailyTokens) await store.incrCounter(counterKey('tokens', day), outcome.tokens);
+    tokensCounted = true;
     assertReviewedHead(managedTarget, outcome);
     console.log(`[review] ${key}: ${describeOutcome(outcome)}`);
     if (outcome.terminal === 'none') {
@@ -416,6 +418,11 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
     }
     return outcome;
   } catch (err) {
+    // A run that failed after spending tokens (a step-limit stop, say) still counts against the day.
+    const spent = (err as { tokens?: unknown } | null)?.tokens;
+    if (!tokensCounted && typeof spent === 'number' && spent > 0 && config.limits.dailyTokens) {
+      await store.incrCounter(counterKey('tokens', dayKey()), spent).catch(() => {});
+    }
     if (githubApp && managedCheckRunId !== undefined) {
       try {
         await completeReviewCheck(auth, githubApp, managedTarget, managedCheckRunId, labelled(checkResultForError(err, config)));

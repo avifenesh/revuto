@@ -266,33 +266,33 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const botLogin = (await octokit.users.getAuthenticated()).data.login;
 
   // Fail fast if the store backend is unreachable, before the expensive backfill + LLM work.
+  // The store is closed on every path: an open SurrealDB connection keeps the process alive.
   const store = await openStore(config, repo);
-
-  const [owner, name] = repo.split('/');
-  const cloneDir = join(config.review.workspaceDir, `${owner}__${name}`);
-  console.log(`[init] cloning ${repo} …`);
-  await cloneRepo(repo, await token(), cloneDir);
-
-  console.log('[init] scanning repo structure …');
-  const facts = scanRepo(cloneDir);
-
-  console.log(`[init] backfilling up to ${maxPRs} PRs of review history …`);
-  const corpus = await backfillReviewCorpus(octokit, repo, maxPRs);
-  console.log(`[init] collected feedback from ${corpus.length} PRs`);
-
-  console.log('[init] distilling maintainer-essence …');
-  const essence = await distillEssence(config, facts, repo, corpus);
-
-  console.log('[init] composing reviewer textbook …');
-  const textbook = await composeTextbook(config, repo, facts, essence);
-  // The textbook is read by every review and has no approval step, so the guard must pass it.
-  const verdict = await buildKnowledgeGuard(config)({ kind: 'textbook', repo, text: textbook, source: essence });
-  if (!verdict.approve) {
-    await store.close();
-    throw new Error(`init: the knowledge guard rejected the textbook for ${repo}: ${verdict.reason}`);
-  }
-
+  let textbook: string;
+  let corpusSize: number;
   try {
+    const [owner, name] = repo.split('/');
+    const cloneDir = join(config.review.workspaceDir, `${owner}__${name}`);
+    console.log(`[init] cloning ${repo} …`);
+    await cloneRepo(repo, await token(), cloneDir);
+
+    console.log('[init] scanning repo structure …');
+    const facts = scanRepo(cloneDir);
+
+    console.log(`[init] backfilling up to ${maxPRs} PRs of review history …`);
+    const corpus = await backfillReviewCorpus(octokit, repo, maxPRs);
+    corpusSize = corpus.length;
+    console.log(`[init] collected feedback from ${corpus.length} PRs`);
+
+    console.log('[init] distilling maintainer-essence …');
+    const essence = await distillEssence(config, facts, repo, corpus);
+
+    console.log('[init] composing reviewer textbook …');
+    textbook = await composeTextbook(config, repo, facts, essence);
+    // The textbook is read by every review and has no approval step, so the guard must pass it.
+    const verdict = await buildKnowledgeGuard(config)({ kind: 'textbook', repo, text: textbook, source: essence });
+    if (!verdict.approve) throw new Error(`init: the knowledge guard rejected the textbook for ${repo}: ${verdict.reason}`);
+
     await store.writeTextbook(textbook);
   } finally {
     await store.close();
@@ -302,5 +302,5 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   writeReviewer(config, { ...(readReviewer(config, repo) ?? {}), repo, botLogin });
   console.log(`[init] wrote textbook (${textbook.length} chars) and registered ${repo}`);
 
-  return { repo, prsScanned: corpus.length, textbookChars: textbook.length, botLogin };
+  return { repo, prsScanned: corpusSize, textbookChars: textbook.length, botLogin };
 }

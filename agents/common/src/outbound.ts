@@ -75,6 +75,21 @@ function defuseInline(text: string): string {
   return text.split(/(`+[^`]*`+)/g).map((chunk, i) => (i % 2 === 1 ? chunk : defuseProse(chunk))).join('');
 }
 
+/**
+ * Code fence languages that Obsidian plugins execute (Dataview JS, Templater,
+ * JS Engine). A model-written note keeps the code, but as plain text.
+ */
+const EXECUTABLE_FENCE = /^([ \t]*)(```+|~~~+)[ \t]*(dataviewjs|dataview|js-engine|templater|tp)\b[^\n]*$/gim;
+
+/**
+ * A note revuto writes into the vault from model output (skills, the textbook):
+ * HTML, remote images and plugin-executed code fences are defused and secrets
+ * redacted, so opening the note in Obsidian loads or runs nothing.
+ */
+export function sanitizeNote(text: string, env: NodeJS.ProcessEnv = process.env): string {
+  return sanitizeOutbound(text.replace(EXECUTABLE_FENCE, '$1$2text'), env);
+}
+
 /** Everything revuto posts goes through this: defused prose, redacted secrets. */
 export function sanitizeOutbound(text: string, env: NodeJS.ProcessEnv = process.env): string {
   return defuseMarkdown(redactSecrets(text, env));

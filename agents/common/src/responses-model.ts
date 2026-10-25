@@ -193,7 +193,7 @@ class ResponsesLanguageModel {
         throw new Error(`models.${this.provider}: Grok Code CLI session is required (run \`grok login\`)`);
       }
       headers.authorization = `Bearer ${apiKey}`;
-      return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal });
+      return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal, redirect: 'error' });
     }
     if (auth === 'bearer' || auth === 'grok') {
       throw new Error(
@@ -209,9 +209,10 @@ class ResponsesLanguageModel {
         headers: await signHeaders(url, headers, bodyText, this.awsRegion(url)),
         body: bodyText,
         signal: options.abortSignal,
+        redirect: 'error',
       });
     }
-    return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal });
+    return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal, redirect: 'error' });
   }
 
   private awsRegion(url: URL): string {
