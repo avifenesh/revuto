@@ -152,27 +152,40 @@ test('Claude print mode pins Opus and preserves read-only inspection and structu
 import assert from 'node:assert/strict';
 const args = process.argv.slice(2);
 const {readFileSync} = await import('node:fs');
-const prompt = readFileSync(0, 'utf8');
+const fullPrompt = readFileSync(0, 'utf8');
+// A review prompt ends with the run's Workspace section (scratch and skills paths).
+assert.match(fullPrompt, /## Workspace\\n- Scratch directory, yours to write: /);
+const prompt = fullPrompt.split('\\n\\n## Workspace')[0];
 const {appendFileSync} = await import('node:fs');
 appendFileSync(process.argv[1] + '.calls', 'x');
 assert.equal(args[0], '-p');
 assert.equal(args[1], '--model');
 assert.equal(args[args.indexOf('--model') + 1], 'global.anthropic.claude-opus-5[1m]');
 assert.equal(args[args.indexOf('--effort') + 1], 'medium');
-assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
-assert.equal(args[args.indexOf('--tools') + 1], '');
+assert.equal(args[args.indexOf('--permission-mode') + 1], 'auto');
+assert.equal(args[args.indexOf('--tools') + 1], 'Bash,Read,Grep,Glob,Write,Edit');
 assert.equal(args[args.indexOf('--setting-sources') + 1], '');
-assert.ok(args.includes('--restricted'));
+const settings = JSON.parse(args[args.indexOf('--settings') + 1]);
+assert.equal(settings.sandbox.enabled, true);
+assert.equal(settings.sandbox.failIfUnavailable, true);
+assert.equal(settings.sandbox.allowUnsandboxedCommands, false);
+assert.deepEqual(settings.sandbox.network.allowedDomains, []);
+assert.ok(settings.permissions.blockReadsOutsideWorkingDirectories);
+assert.ok(settings.sandbox.credentials.envVars.some((v) => v.name === 'AWS_BEARER_TOKEN_BEDROCK' && v.mode === 'deny'));
+assert.ok(args.includes('--add-dir'), 'a scratch directory is added');
+assert.equal(process.env.PYTHONSAFEPATH, '1');
+assert.ok(process.env.CLAUDE_CONFIG_DIR, 'a private config dir');
+assert.ok(!args.includes('--restricted') && !args.includes('--bare'));
 assert.equal(args[args.indexOf('--max-turns') + 1], prompt === 'budget' ? '7' : '150');
 assert.equal(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, prompt === 'budget' ? '2048' : '128000');
-assert.deepEqual(Object.keys(JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers), ['revuto']);
-assert.ok(args.includes('--bare') && args.includes('--verbose') && args.includes('--strict-mcp-config'));
+assert.deepEqual(JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers, {});
+assert.ok(args.includes('--verbose') && args.includes('--strict-mcp-config'));
 assert.ok(!args.includes('--print-timeout') && !args.includes('--dangerously-skip-permissions'));
 console.log(JSON.stringify({type:'system', subtype:'init', model:'global.anthropic.claude-opus-5[1m]'}));
 const retry = prompt.includes('## Retry: evidence required');
 if (retry) assert.ok(prompt.includes('was discarded'));
 if (!prompt.includes('terminal-only') || (retry && !prompt.includes('always'))) {
-  console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'read-1',name:'mcp__revuto__read'}]}}));
+  console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'read-1',name:'Read'}]}}));
   console.log(JSON.stringify({type:'user', message:{content:[{type:'tool_result',tool_use_id:'read-1',content:'actual file contents'}]}}));
 }
 console.log(JSON.stringify({type:'assistant', message:{content:[{type:'tool_use',id:'schema-1',name:'StructuredOutput'}]}}));
@@ -190,7 +203,7 @@ console.log(JSON.stringify({type:'result',subtype:prompt==='fail'?'error_during_
     await assert.rejects(runAgyCli({spec:model,cwd:dir,prompt:'bad budget',maxSteps:0}), /positive integers/);
     assert.equal(result.result.usage?.total_tokens, 32);
     assert.equal(result.inspections, 1);
-    assert.equal(result.toolSteps[0]?.name, 'mcp__revuto__read');
+    assert.equal(result.toolSteps[0]?.name, 'Read');
     assert.deepEqual(result.result.structured_output, {decision:'skip_review',reason:'no concerns',body:'',comments:[]});
     await assert.rejects(runAgyCli({spec:model,cwd:dir,prompt:'fail'}), /run failed/);
     const noInspection = await runAgyCli({spec:model,cwd:dir,prompt:'terminal-only'});
@@ -295,12 +308,14 @@ test('Claude refusals surface on the result and on assistant stop_reason', () =>
   assert.equal((clean[0].result as { refusal?: unknown }).refusal, undefined);
 });
 
-test('Claude prompt names only the MCP tools and no Antigravity native tools', () => {
+test('Claude prompt points at git and the sandbox rules, not the old MCP tools', () => {
   const dir = mkdtempSync(join(tmpdir(), 'revuto-claude-prompt-'));
   try {
     const claude = buildAgyReviewPrompt(context(dir), '', 'claude');
     assert.match(claude, /Claude Code CLI/);
-    assert.match(claude, /mcp__revuto__pr_diff/);
+    assert.match(claude, /git diff/);
+    assert.match(claude, /Never run code from the repository/);
+    assert.doesNotMatch(claude, /mcp__revuto__/);
     assert.doesNotMatch(claude, /native read\/search\/git\/command/);
     assert.doesNotMatch(claude, /Antigravity/);
     const agy = buildAgyReviewPrompt(context(dir), '');
@@ -310,7 +325,7 @@ test('Claude prompt names only the MCP tools and no Antigravity native tools', (
   }
 });
 
-test('Claude subscription runs without --bare in a private config dir with only the OAuth token', async () => {
+test('every Claude run gets a private config dir; a subscription run carries only the OAuth token', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'revuto-claude-sub-'));
   const command = join(dir, 'claude-fake.mjs');
   writeFileSync(command, `#!/usr/bin/env node
@@ -336,9 +351,9 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
     assert.equal(run.result.status, 'SUCCESS');
     const sub = last();
     assert.ok(!sub.args.includes('--bare'), 'bare mode never reads OAuth');
-    assert.ok(sub.args.includes('--restricted') && sub.args.includes('--strict-mcp-config'));
+    assert.ok(sub.args.includes('--strict-mcp-config'));
     assert.equal(sub.args[sub.args.indexOf('--setting-sources') + 1], '');
-    assert.equal(sub.args[sub.args.indexOf('--tools') + 1], '');
+    assert.equal(sub.args[sub.args.indexOf('--permission-mode') + 1], 'auto');
     assert.equal(sub.env.CLAUDE_CODE_OAUTH_TOKEN, 'oauth-token');
     assert.equal(sub.env.ANTHROPIC_API_KEY, undefined, 'an API key cannot redirect a subscription run');
     assert.equal(sub.env.CLAUDE_CODE_USE_BEDROCK, undefined, 'a provider switch cannot redirect a subscription run');
@@ -349,8 +364,8 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
     assert.equal(existsSync(sub.env.CLAUDE_CONFIG_DIR), false, 'the private config dir is removed after the run');
 
     await runAgyCli({ spec: { ...spec, auth: 'none' as const }, cwd: dir, prompt: 'review' });
-    assert.ok(last().args.includes('--bare'), 'API-key and provider runs stay in bare mode');
-    assert.equal(last().env.CLAUDE_CONFIG_DIR, undefined);
+    assert.ok(!last().args.includes('--bare'), 'bare mode would drop Write, Grep and Glob');
+    assert.match(last().env.CLAUDE_CONFIG_DIR, /revuto-claude-/);
     assert.equal(last().env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
     assert.equal(last().env.ANTHROPIC_API_KEY, 'api-key');
 

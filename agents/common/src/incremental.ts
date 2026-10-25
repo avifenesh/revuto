@@ -124,7 +124,7 @@ export async function findIncrementalReview(input: IncrementalInput): Promise<In
   const fromSha = lastReviewedHead(input.reviews, input.headSha, input.reviewerLogins);
   if (!fromSha) return undefined;
   try {
-    await input.git(['fetch', '--filter=tree:0', 'origin', fromSha]);
+    await input.git(['fetch', '--filter=blob:none', 'origin', fromSha]);
     await input.git(['merge-base', '--is-ancestor', fromSha, input.headSha]);
     const range = `${fromSha}..${input.headSha}`;
     const findings = earlierFindings(input.comments ?? [], input.reviewerLogins);

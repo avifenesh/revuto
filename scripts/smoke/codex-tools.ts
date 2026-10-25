@@ -1,8 +1,9 @@
 /**
  * Smoke for the tools a real Codex CLI offers a review. The run goes through
  * runAgyCli against a local server that records Codex's first model request;
- * the only tools in it must be the revuto MCP tools and Codex's MCP resource
- * tools. Run it after every Codex upgrade. It uses the build, because the MCP
+ * the only tools in it must be the sandboxed shell (exec_command, write_stdin):
+ * no code mode, sub-agents, tool search or patch tool. Run it after every Codex
+ * upgrade. It uses the build, because the MCP
  * server Codex starts is the compiled one.
  *
  *   npm run build && npx tsx scripts/smoke/codex-tools.ts [model]   # default gpt-6.1-sol
@@ -63,7 +64,7 @@ const walk = (tools: unknown[] = [], prefix = '') => {
 };
 walk(request.tools);
 for (const item of request.input ?? []) if (item.type === 'additional_tools') walk(item.tools);
-const allowed = /^(functions\.)?(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)$|(^|\.)mcp__revuto\.(read|grep|glob|pr_diff|new_changes)$/;
-assert.ok(names.some((n) => n.endsWith('mcp__revuto.pr_diff')), `the revuto tools are offered directly: ${names.join(', ')}`);
-assert.deepEqual(names.filter((n) => !allowed.test(n)), [], 'no tool beyond revuto MCP and MCP resources');
+const allowed = /^(functions\.)?(exec_command|write_stdin)$/;
+assert.ok(names.some((n) => /(^|\.)exec_command$/.test(n)), `the review gets a shell: ${names.join(', ')}`);
+assert.deepEqual(names.filter((n) => !allowed.test(n)), [], 'no tool beyond the sandboxed shell');
 console.log(`codex tools ok (${model}): ${names.join(', ')}`);

@@ -8,9 +8,9 @@
  */
 import { execFile, spawn } from 'node:child_process';
 import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import { killReviewChild } from './review-worktree.js';
@@ -25,9 +25,11 @@ import type { PrContext } from './workspace.js';
 import { buildPostReviewTool, buildSkipTool } from './tools/gh.js';
 import { isToolErrorOutput, startReviewTrace, type TraceWriter } from './trace.js';
 import { ModelRefusalError } from './refusal.js';
-import { codexCatalogArgs, codexEnvironment, codexExecArgs, codexReviewSchema, codexUsesLogin, normalizeCodexEvents, restrictCodexCatalog, revutoCodexHome, type CodexStreamState } from './codex-review.js';
+import { codexCatalogArgs, codexEnvironment, codexExecArgs, codexExecutableRoots, codexReviewSchema, codexUsesLogin, normalizeCodexEvents, restrictCodexCatalog, revutoCodexHome, type CodexStreamState } from './codex-review.js';
 import { renderPrOverview } from './workspace.js';
+import { repoSlug } from './store/markdown-skills.js';
 import { fenceUntrusted, stripControl } from './untrusted.js';
+import { CLAUDE_REVIEW_TOOLS, REVIEW_COMMAND_ENV, checkoutGitDir, claudeReviewSettings, copySkills, reviewRunLayout, type ReviewRunLayout } from './native-sandbox.js';
 
 const AGY_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const AGY_DOCTOR_TIMEOUT_MS = 90 * 1000;
@@ -179,6 +181,8 @@ export interface RunAgyCliOptions {
   readonly maxSteps?: number;
   readonly maxOutputTokens?: number;
   readonly probe?: boolean;
+  /** The repository's revuto skills directory; a copy is readable by native reviewers. */
+  readonly skillsDir?: string;
   /** Completion bridge: return tool selections without running native tools. */
   readonly structuredOnly?: boolean;
   readonly signal?: AbortSignal;
@@ -215,13 +219,10 @@ function runnerOf(spec: ModelSpec): NativeRunner {
   return spec.api === 'claude' ? 'claude' : spec.api === 'codex' ? 'codex' : 'agy';
 }
 
-const INSPECTION_TOOLS = ['mcp__revuto__read', 'mcp__revuto__grep', 'mcp__revuto__glob', 'mcp__revuto__pr_diff', 'mcp__revuto__new_changes'];
-/** The inspection tools whose success means PR evidence was read; grep and glob alone are not. */
-const EVIDENCE_TOOLS = ['mcp__revuto__read', 'mcp__revuto__pr_diff', 'mcp__revuto__new_changes'];
-
-function reviewMcpServer(cwd: string, diffRange?: string, sinceRange?: string): { command: string; args: string[] } {
-  return { command: process.execPath, args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), cwd, diffRange ?? '', ...(sinceRange ? [sinceRange] : [])] };
-}
+/** Tool calls that inspect the PR: a shell command (git, rg, python) or a file read or search. */
+const INSPECTION_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'codex.command_execution'];
+/** The inspections whose success means PR evidence was read; a Glob listing alone is not. */
+const EVIDENCE_TOOLS = ['Bash', 'Read', 'Grep', 'codex.command_execution'];
 
 /**
  * Run one headless turn of a native CLI. AGY uses its cached OAuth session,
@@ -233,14 +234,18 @@ function reviewMcpServer(cwd: string, diffRange?: string, sinceRange?: string): 
 export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   opts.signal?.throwIfAborted();
   const runner = runnerOf(opts.spec);
-  const claudeSubscription = runner === 'claude' && opts.spec.auth === 'subscription';
-  if (runner === 'claude' && !claudeSubscription) return spawnNativeCli(opts);
   const dir = await mkdtemp(join(tmpdir(), `revuto-${runner}-`));
   try {
     const home = join(dir, 'home');
-    if (claudeSubscription) {
-      await mkdir(home);
-      return await spawnNativeCli(opts, undefined, home);
+    if (runner === 'claude') {
+      const layout = reviewRunLayout(dir);
+      await mkdir(layout.configDir);
+      await mkdir(layout.scratch);
+      if (opts.probe) return await spawnNativeCli(opts, undefined, { layout });
+      await copySkills(opts.skillsDir, layout.skills);
+      const git = await checkoutGitDir(opts.cwd);
+      return await spawnNativeCli({ ...opts, prompt: withWorkspace(opts.prompt, layout) }, undefined,
+        { layout, settings: claudeReviewSettings({ checkout: opts.cwd, ...(git ?? {}), runDirs: [layout.scratch, layout.skills] }) });
     }
     if (runner === 'agy') {
       const settings = join(home, '.gemini', 'antigravity-cli');
@@ -250,6 +255,11 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     }
     const scratchHome = join(dir, 'user-home');
     await mkdir(scratchHome);
+    const layout = reviewRunLayout(dir);
+    if (!opts.probe) {
+      await mkdir(layout.scratch);
+      await copySkills(opts.skillsDir, layout.skills);
+    }
     let codexHome = home;
     if (codexUsesLogin(opts.spec)) {
       codexHome = revutoCodexHome();
@@ -266,7 +276,12 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     }
     const catalogPath = join(dir, 'models.json');
     await writeFile(catalogPath, await restrictedCodexCatalog(opts, codexHome, scratchHome));
-    return await spawnNativeCli(opts, { codexHome, schemaPath, scratchHome, catalogPath });
+    if (opts.probe) return await spawnNativeCli(opts, { codexHome, schemaPath, scratchHome, catalogPath });
+    const git = await checkoutGitDir(opts.cwd);
+    const readableDirs = [...new Set([git?.gitDir, git?.commonDir].filter((d): d is string => !!d)),
+      ...(existsSync(layout.skills) ? [layout.skills] : []), ...await codexExecutableRoots(nativeCommand(opts.spec))];
+    return await spawnNativeCli({ ...opts, prompt: withWorkspace(opts.prompt, layout) },
+      { codexHome, schemaPath, scratchHome, catalogPath, writableDirs: [layout.scratch], readableDirs });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -302,7 +317,26 @@ async function restrictedCodexCatalog(opts: RunAgyCliOptions, codexHome: string,
   }
 }
 
-function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string; catalogPath?: string }, claudeConfigDir?: string, agyHome?: string): Promise<AgyCliRun> {
+/** The run's own paths, appended to a native review prompt. */
+function withWorkspace(prompt: string, layout: ReviewRunLayout): string {
+  return [
+    prompt,
+    '',
+    '## Workspace',
+    `- Scratch directory, yours to write: ${layout.scratch}`,
+    ...(existsSync(layout.skills)
+      ? [`- All of this repository's revuto skills and its textbook, to read when the change touches their topic: ${layout.skills}. The ones selected for this PR are already under Repository knowledge.`]
+      : []),
+  ].join('\n');
+}
+
+interface ClaudeRun {
+  readonly layout: ReviewRunLayout;
+  /** Absent for the doctor probe, which gets no tools at all. */
+  readonly settings?: Record<string, unknown>;
+}
+
+function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string; catalogPath?: string; writableDirs?: string[]; readableDirs?: string[] }, claudeRun?: ClaudeRun, agyHome?: string): Promise<AgyCliRun> {
   const runner = runnerOf(opts.spec);
   const claude = runner === 'claude';
   const label = runner === 'claude' ? 'Claude CLI' : runner === 'codex' ? 'Codex CLI' : 'AGY';
@@ -320,7 +354,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   const args = runner === 'codex' ? codexExecArgs({
     spec: opts.spec,
     cwd: opts.cwd,
-    ...(opts.probe ? {} : { mcpServer: reviewMcpServer(opts.cwd, opts.diffRange, opts.sinceRange) }),
+    ...(codex?.writableDirs ? { writableDirs: codex.writableDirs, readableDirs: codex.readableDirs ?? [] } : {}),
     ...(codex?.schemaPath ? { schemaPath: codex.schemaPath } : {}),
     ...(codex?.catalogPath ? { catalogPath: codex.catalogPath } : {}),
   }) : [
@@ -331,14 +365,21 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
     'stream-json',
   ];
   if (claude) {
-    // --bare never reads OAuth. A subscription run relies on --restricted and empty setting
-    // sources to keep the checkout's .claude settings and hooks out, plus a private config dir.
-    args.push('--verbose', ...(claudeConfigDir ? [] : ['--bare']), '--restricted', '--setting-sources', '', '--no-session-persistence',
-      '--input-format', 'text',
-      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: opts.probe ? {} : { revuto: reviewMcpServer(opts.cwd, opts.diffRange, opts.sinceRange) } }),
-      '--permission-mode', 'dontAsk', '--tools', '',
-      '--max-turns', String(maxSteps),
-      '--allowedTools', opts.probe ? '' : INSPECTION_TOOLS.join(','));
+    // Nothing from the checkout or the operator's ~/.claude loads: no setting
+    // sources, a private config dir, only the MCP servers named here (none), no
+    // CLAUDE.md or memory. A review gets real tools under auto mode, its shell
+    // inside the sandbox --settings describes; the doctor probe gets no tools.
+    const layout = claudeRun!.layout;
+    args.push('--verbose', '--setting-sources', '', '--no-session-persistence', '--input-format', 'text',
+      '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }),
+      '--max-turns', String(maxSteps));
+    if (opts.probe || !claudeRun!.settings) {
+      args.push('--permission-mode', 'dontAsk', '--tools', '');
+    } else {
+      args.push('--permission-mode', 'auto', '--tools', CLAUDE_REVIEW_TOOLS.join(','),
+        '--settings', JSON.stringify(claudeRun!.settings), '--add-dir', layout.scratch,
+        ...(existsSync(layout.skills) ? ['--add-dir', layout.skills] : []));
+    }
     if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
   } else if (runner === 'agy') {
     // Terminal restrictions on top of the workspace-only settings in its private home.
@@ -351,8 +392,9 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   try {
     env = claude
       ? {
-        ...claudeEnvironment(process.env, undefined, claudeConfigDir !== undefined),
-        ...(claudeConfigDir ? claudeSubscriptionIsolation(claudeConfigDir) : {}),
+        ...claudeEnvironment(process.env, undefined, opts.spec.auth === 'subscription'),
+        ...claudeSubscriptionIsolation(claudeRun!.layout.configDir),
+        ...REVIEW_COMMAND_ENV,
         CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens),
       }
       : runner === 'codex' ? codexEnvironment(codex!.codexHome, opts.spec, process.env, codex!.scratchHome) : agyEnvironment(agyHome!, opts.cwd);
@@ -608,6 +650,7 @@ export async function runAgyReview(opts: RunAgyReviewOptions): Promise<ReviewOut
         schema: runner === 'codex' ? codexReviewSchema(escalation.allow) : agyReviewSchema(escalation.allow),
         diffRange: opts.ctx.diffRefSpec,
         ...(opts.ctx.incremental ? { sinceRange: opts.ctx.incremental.range } : {}),
+        skillsDir: join(opts.config.vaultPath, 'skills', repoSlug(`${opts.ctx.owner}/${opts.ctx.repo}`)),
         maxSteps: opts.config.review.maxSteps,
         maxOutputTokens: reviewOutputTokens(opts.config),
         signal: opts.signal,
@@ -735,20 +778,15 @@ export function renderEscalation(escalation: { allow?: boolean; note?: string; v
 }
 
 export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runner: NativeRunner = 'agy', escalation: { allow?: boolean; note?: string } = {}): string {
-  const setup = runner === 'codex'
-    ? [
-        `You are Revuto's autonomous pull-request reviewer running inside Codex CLI.`,
-        `Review exactly the single PR described below. Your tools are the revuto MCP tools: pr_diff, which returns the PR diff, ${ctx.incremental ? 'new_changes, which returns what changed since the last review, ' : ''}and read, grep and glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
-        `Do not ask questions and do not stop at a plan. Read the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
-        `This is a read-only review. Do not print credentials or remote URLs.`,
-      ]
-    : runner === 'claude'
-    ? [
-        `You are Revuto's autonomous pull-request reviewer running inside Claude Code CLI.`,
-        `Review exactly the single PR described below. Your tools are mcp__revuto__pr_diff, which returns the PR diff, ${ctx.incremental ? 'mcp__revuto__new_changes, which returns what changed since the last review, ' : ''}and mcp__revuto__read, mcp__revuto__grep and mcp__revuto__glob, which read the checked-out PR head. There is no shell, network, or Git access.`,
-        `Do not ask questions and do not stop at a plan. Read the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
-        `This is a read-only review. Do not print credentials or remote URLs.`,
-      ]
+  const native = runner === 'agy' ? [] : [
+    `You are Revuto's autonomous pull-request reviewer running inside ${runner === 'codex' ? 'Codex CLI' : 'Claude Code CLI'}.`,
+    `Review exactly the single PR described below. The current directory is the checked-out PR head with its git history. Use the shell and file tools: git diff, git log, git show and git blame for the change and its history, rg and the file tools to trace callers and impact. Python is there for your own calculations and checks; write notes and scripts in the scratch directory named under Workspace.`,
+    `Never run code from the repository: no builds, tests, installs, package scripts or repository scripts, and no tools that load project configuration. Read that code instead. Commands run in a sandbox without network, and git history is local, so an object missing from it cannot be fetched.`,
+    `Do not ask questions and do not stop at a plan. Read the diff first, trace impact and callers, apply the repository knowledge, and then decide.`,
+    `Do not change the checkout, and do not print credentials or remote URLs.`,
+  ];
+  const setup = runner !== 'agy'
+    ? native
     : [
         `You are Revuto's autonomous pull-request reviewer running inside the Antigravity CLI.`,
         `Review exactly the single PR described below using the native read/search/git/command tools available in this workspace.`,
@@ -766,8 +804,8 @@ export function buildAgyReviewPrompt(ctx: PrContext, skillMarkdown: string, runn
     `Return only the enforced structured result with decision, reason, body, and comments. Never return a simulated GitHub post or an empty findings review.`,
     ...(runner === 'codex' ? [`In each comment, set side, start_line and start_side to null unless the comment needs them.`] : []),
     '',
-    renderPrOverview(ctx, runner === 'agy' ? {} : { diffHint: 'read it with pr_diff' }),
-    renderReReview(ctx, runner === 'agy' ? 'git' : 'mcp'),
+    renderPrOverview(ctx, { diffHint: `read it with \`git diff ${ctx.diffRefSpec}\`` }),
+    renderReReview(ctx, 'git'),
     renderEscalation(escalation),
     skillMarkdown.trim() ? `\n## Repository knowledge\n\n${skillMarkdown.trim()}` : '',
   ].filter(Boolean).join('\n');
