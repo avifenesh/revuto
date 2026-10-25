@@ -6,7 +6,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
@@ -202,6 +202,10 @@ test('a Codex review posts through revuto with the null comment fields dropped',
     assert.equal(review.comments.length, 1);
     assert.deepEqual(Object.keys(review.comments[0]).sort(), ['body', 'line', 'path']);
     assert.match(String(review.comments[0].body), /Evidence-backed concern/);
+    const traces = join(dir, '.traces', 'owner__repo');
+    const trace = readdirSync(traces).map((f) => readFileSync(join(traces, f), 'utf8')).join('');
+    assert.match(trace, /ERROR: bad pattern/);
+    assert.doesNotMatch(trace, /ERROR: ERROR:/, 'a tool error is traced with one prefix');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
