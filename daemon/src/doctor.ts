@@ -56,7 +56,8 @@ export async function runModelProbes(config: ReviewerConfig, opts: { includeNati
     // The dashboard polls this function. A native CLI model turn is explicit
     // diagnostic work, not a background status read.
     if (!opts.includeNative && isNativeRunner(e.spec)) continue;
-    const key = `${e.kind}:${e.spec.api ?? 'chat'}:${e.spec.baseURL}:${e.spec.model}`;
+    // Specs that differ only in credentials are separate probes: one working login says nothing about another.
+    const key = `${e.kind}:${e.spec.api ?? 'chat'}:${e.spec.baseURL}:${e.spec.model}:${e.spec.auth ?? ''}:${e.spec.apiKeyEnv ?? ''}`;
     const g = groups.get(key);
     if (g) g.roles.push(e.role);
     else groups.set(key, { roles: [e.role], spec: e.spec, kind: e.kind });

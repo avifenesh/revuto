@@ -1,0 +1,101 @@
+# Configuration
+
+## Where the config lives
+
+**Config lives in the vault by default.** `init-config` writes
+`<vault>/revuto.config.json`, where `<vault>` is `$REVUTO_VAULT` or `~/revuto`, so
+config + skills + reviewer notes all sit in one Obsidian-editable place. `loadConfig`
+resolves in order: `$REVUTO_CONFIG` → `./revuto.config.json` (local override) →
+`<vault>/revuto.config.json` → `./reviewer.config.json`. Use `init-config --local` to
+drop the config in the current dir instead (it still points `vaultPath` at the vault).
+
+Config keys: `vaultPath`, `github.tokenEnv`, optional `github.app`, per-role
+`models`, `schedules`, `limits`, and `store`. Model specs require `baseURL` and
+`model`; optional keys are `name`, `apiKeyEnv`, `api`, `auth`,
+`reasoningEffort`, `awsRegion`, `command`, `permissionMode`, and `fallbacks`
+(`embedder` may be `null`). See
+`revuto.config.example.json`, and [providers.md](providers.md) for every `api` and
+`auth` value. No secrets are stored: API keys and the webhook secret are
+env-referenced. `revuto doctor` checks model endpoints, configured
+fallbacks, the store backend, and the token before you run anything.
+
+## Storage backend
+
+Skills are always Obsidian markdown. The structured memory (concerns, embeddings,
+cursors, idempotency) has two backends, set in `store.backend`:
+
+- `surreal` (**default**): SurrealDB, with native vector search
+  (`vector::similarity::cosine`) for concern dedup. Start it first with
+  `scripts/surreal-start.sh` (persistent surrealkv under the vault):
+
+  ```jsonc
+  "store": {
+    "backend": "surreal",
+    "surreal": { "url": "http://127.0.0.1:8000/rpc", "namespace": "reviewer",
+                 "username": "root", "password": "root" }
+  }
+  ```
+
+- `sqlite`: opt-in, zero dependency; a per-repo SQLite file under `<vault>/memory/`
+  (no server to run). Set `"store": { "backend": "sqlite" }`.
+
+Both backends keep in-flight claims (`claims` / `claim`) apart from the done markers
+(`idempotency` / `seen`). A claim is released when the review completes or fails, and is
+stealable after a 90-minute lease, so a worker killed mid-review no longer strands its
+head - the next poll retakes it. A done marker never expires. Heads recorded before the
+lease existed were written to the done markers, so a review the old code lost that way
+still reads as finished; re-run it with `revuto review <owner/repo> <pr> --force`, which
+bypasses the claim entirely.
+
+## Limits
+
+Optional caps under `limits` (0 = unlimited; run/comment/token counts are per repo per UTC day, enforced via store counters):
+
+- `maxOutputTokens`: per-run output-token cap for each agent: `{ review, curator, distill }`. Curator and distill default to 16384 and 8192. When `review` is unset, the routed review model decides: 128000 when its whole fallback chain is Claude (thinking counts toward the cap; 128K is the Opus 5.5 and Sonnet 5 ceiling), 32768 otherwise, since a chat endpoint can 400 above its own limit. For the Claude CLI reviewer the cap becomes `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
+- `dailyReviews`: max review runs per repo per day.
+- `learnBatch`: max comments processed per learn pass (per batch, not per comment).
+- `dailyLearn`: max comments processed per repo per day.
+- `dailyTokens`: **shared** daily token budget across all agents (review + curator + distill), per repo. When the day's running total reaches it, the review and learn loops stop until the next day.
+
+```jsonc
+"limits": {
+  "maxOutputTokens": { "review": 128000, "curator": 16384, "distill": 8192 },
+  "dailyReviews": 20, "learnBatch": 30, "dailyLearn": 100, "dailyTokens": 2000000
+}
+```
+
+## Local dashboard
+
+The local dashboard can run as a user service and open from a desktop icon:
+
+```bash
+npm run dashboard:install-desktop
+```
+
+That builds the SvelteKit dashboard, installs `revuto-dashboard.service` under
+`~/.config/systemd/user/`, starts it on `127.0.0.1:5180`, and writes a
+`Revuto Watch` launcher to both the desktop applications menu and `~/Desktop`.
+After that, use the icon or:
+
+```bash
+npm run dashboard:open
+```
+
+The dashboard includes daemon controls (`start`, `restart`, `doctor`, guarded
+`stop`) and per-repo controls for pause/resume plus one-off review, learn, and
+decay runs.
+
+Useful checks:
+
+```bash
+systemctl --user status revuto-dashboard.service
+journalctl --user -u revuto-dashboard.service -f
+```
+
+## Running as a service
+
+Run the daemon as a systemd user service to survive reboots; see
+`deploy/revuto.service`. For the full local stack, install the matching
+`deploy/revuto-surreal.service`, `deploy/revuto-embedder.service`, and
+`deploy/revuto-guard.timer` units too; the guard keeps the daemon, store, and
+embedder available for scheduled review/learn/decay runs.

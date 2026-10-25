@@ -138,3 +138,20 @@ test('Claude rejects unsupported effort at config load', () => {
     }
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
+
+test('subscription auth is limited to native Claude and Codex, and Codex auth matches its provider', () => {
+  const root=mkdtempSync(join(tmpdir(),'revuto-config-'));
+  try {
+    const path=join(root,'revuto.config.json');
+    const http={baseURL:'http://localhost',model:'test'};
+    const load=(review: object)=>{writeFileSync(path,JSON.stringify({models:{review,curator:http,distill:http}}));return loadConfig(path);};
+    assert.equal(load({baseURL:'claude-cli://local',model:'claude-opus-5-5',api:'claude',auth:'subscription'}).models.review.auth,'subscription');
+    assert.equal(load({baseURL:'codex://openai',model:'gpt-6.1-sol',api:'codex',auth:'subscription'}).models.review.auth,'subscription');
+    assert.equal(load({baseURL:'codex://openai',model:'gpt-6.1-sol',api:'codex',auth:'bearer'}).models.review.auth,'bearer');
+    assert.equal(load({baseURL:'codex://bedrock',model:'openai.gpt-6.1-sol',api:'codex',auth:'aws'}).models.review.auth,'aws');
+    assert.throws(()=>load({...http,auth:'subscription'}),/subscription needs api claude or codex/);
+    assert.throws(()=>load({baseURL:'codex://openai',model:'gpt-6.1-sol',api:'codex',auth:'aws'}),/needs auth subscription .* or bearer/);
+    assert.throws(()=>load({baseURL:'codex://bedrock',model:'gpt-6.1-sol',api:'codex',auth:'subscription'}),/needs baseURL codex:\/\/openai/);
+    assert.throws(()=>load({baseURL:'codex://elsewhere',model:'gpt-6.1-sol',api:'codex',auth:'aws'}),/codex:\/\/bedrock or codex:\/\/openai/);
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
