@@ -22,6 +22,7 @@ import { buildChatModel } from '../../agents/common/src/model.js';
 import { engineRoot } from '../../agents/common/src/engine-root.js';
 import { classifyCommentBody } from '../../agents/common/src/heuristics.js';
 import { writeReviewer } from './reviewers.js';
+import { buildKnowledgeGuard } from '../../agents/common/src/knowledge-guard.js';
 
 // ---------------------------------------------------------------------------
 // 2. deterministic repo scan
@@ -274,6 +275,12 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
 
   console.log('[init] composing reviewer textbook …');
   const textbook = await composeTextbook(config, repo, facts, essence);
+  // The textbook is read by every review and has no approval step, so the guard must pass it.
+  const verdict = await buildKnowledgeGuard(config)({ kind: 'textbook', repo, text: textbook, source: essence });
+  if (!verdict.approve) {
+    await store.close();
+    throw new Error(`init: the knowledge guard rejected the textbook for ${repo}: ${verdict.reason}`);
+  }
 
   try {
     await store.writeTextbook(textbook);

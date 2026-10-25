@@ -118,10 +118,14 @@ flowchart LR
 - **learn** reads replies to revuto's comments, filters noise and dedups them into
   concerns. A concern reinforced four times graduates into a topic skill, and the
   concern is deleted.
+- **guard** checks every comment before it is learned from, every concern before it
+  is stored or rewritten, and every skill and textbook before it is saved. It is a
+  model with no tools that reads the candidate as untrusted data, rejects anything
+  that tries to steer reviews, and fails closed.
 - **decay** ages out concerns that never graduate.
 
 New skills land as `draft` and load only after `revuto approve`. Repos with
-`autoActivate` graduate them as `active` right away.
+`autoActivate` graduate them as `active` right away, once the guard approves them.
 
 ## Review on push
 

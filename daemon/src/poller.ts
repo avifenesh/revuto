@@ -176,6 +176,7 @@ export async function pollFeedback(
       anchorLine: c.line ?? undefined,
       inReplyToBot,
       actor: c.user?.login,
+      ...(c.author_association ? { association: String(c.author_association) } : {}),
       touchedFiles: c.path ? [c.path] : [],
     });
   }

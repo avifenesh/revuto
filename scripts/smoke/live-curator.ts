@@ -14,6 +14,7 @@ import { loadConfig } from '../../agents/common/src/config.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 import { maybeEmbedder } from '../../agents/common/src/memory/embedder.js';
 import { runCurator, type FeedbackEvent } from '../../agents/curator/src/run-curator.js';
+import { buildKnowledgeGuard } from '../../agents/common/src/knowledge-guard.js';
 
 const config = { ...loadConfig(), vaultPath: mkdtempSync(join(tmpdir(), 'reviewer-live-')) };
 const store = await openStore(config, 'octo/demo');
@@ -34,7 +35,7 @@ const feedback: FeedbackEvent = {
 
 console.log(`live curator pass via ${config.models.curator.model} @ ${config.models.curator.baseURL}`);
 const t = Date.now();
-const out = await runCurator({ config, store, embedder, feedback });
+const out = await runCurator({ config, store, embedder, feedback, guard: buildKnowledgeGuard(config) });
 console.log(`decision=${out.decision} | summary=${out.summary} | ${Date.now() - t}ms`);
 console.log('concerns:', JSON.stringify((await store.allConcerns()).map((c) => ({ bucket: c.areaBucket, subject: c.subject, area: c.area, count: c.reinforcementCount })), null, 2));
 await store.close();

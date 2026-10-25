@@ -37,6 +37,8 @@ console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',structured_o
   return { dir, spec };
 }
 
+const approveAll = async () => ({ approve: true, reason: 'test', tokens: 0 });
+
 function curatorConfig(spec: ModelSpec): ReviewerConfig {
   return { models: { curator: spec }, limits: { maxOutputTokens: { curator: 1024 } } } as ReviewerConfig;
 }
@@ -50,6 +52,7 @@ test('AGY curator executes local tools and receives their results before finishi
       store: { listConcerns: async () => { lists++; return []; } } as never,
       embedder: null,
       feedback: { feedbackId: 'test', kind: 'review_comment', body: 'Looks good.', repo: 'owner/repo', prNumber: 1, touchedFiles: ['src/a.ts'] },
+      guard: approveAll,
     });
     assert.equal(lists, 1);
     assert.equal(outcome.decision, 'noop');
@@ -66,6 +69,7 @@ test('AGY curator falls back to an HTTP model when the CLI fails', async () => {
       config: curatorConfig({ ...fake.spec, fallbacks: [{ baseURL: http.url, model: 'glm-fallback' }] }),
       store: {} as never, embedder: null,
       feedback: { feedbackId: 'test', kind: 'review_comment', body: 'Looks good.', repo: 'owner/repo', prNumber: 1, touchedFiles: [] },
+      guard: approveAll,
     });
     assert.equal(outcome.decision, 'noop');
     assert.match(outcome.summary, /Fallback handled/);

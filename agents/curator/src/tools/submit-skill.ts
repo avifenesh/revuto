@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { tool } from '../../../common/src/tool-def.js';
 import type { KnowledgeStore, SkillNote, SkillStatus } from '../../../common/src/store/store.js';
+import type { KnowledgeGuard } from '../../../common/src/knowledge-guard.js';
+import { renderConcernForGuard } from './concerns-store.js';
+
+/** Reinforcements a concern needs before it may graduate into a skill. */
+export const GRADUATION_THRESHOLD = 4;
 
 /**
  * Graduate a concern into a topic skill note in the vault.
@@ -26,6 +31,9 @@ export interface GraduateInput {
 export async function graduate(store: KnowledgeStore, input: GraduateInput): Promise<SkillNote> {
   const source = await store.getConcern(input.sourceRecordId);
   if (!source) throw new Error(`graduate: source concern ${input.sourceRecordId} not found`);
+  if (source.reinforcementCount < GRADUATION_THRESHOLD) {
+    throw new Error(`graduate: concern ${input.sourceRecordId} has ${source.reinforcementCount} reinforcements; ${GRADUATION_THRESHOLD} are needed`);
+  }
 
   const body = `${input.skillMd.trim()}\n\n_(graduated from concern record_id=${input.sourceRecordId})_`;
   const note = await store.writeSkill({
@@ -57,7 +65,7 @@ Call this in Phase 2 BEFORE composing. Skills accumulate one per subject over ti
   });
 }
 
-export function buildSubmitSkillTool(store: KnowledgeStore, opts: { autoActivate?: boolean } = {}) {
+export function buildSubmitSkillTool(store: KnowledgeStore, opts: { autoActivate?: boolean; guard?: KnowledgeGuard; repo?: string } = {}) {
   const status: SkillStatus = opts.autoActivate ? 'active' : 'draft';
   return tool({
     name: 'submit_skill',
@@ -79,6 +87,16 @@ The note lands as ${status} in the vault. When autoActivate is disabled it stays
     }),
     callback: async (input) => {
       try {
+        if (opts.guard) {
+          const concern = await store.getConcern(input.source_record_id);
+          const verdict = await opts.guard({
+            kind: 'skill',
+            repo: opts.repo ?? '',
+            text: [`Subject: ${input.subject}`, `Description: ${input.description}`, '', input.skill_md].join('\n'),
+            ...(concern ? { source: renderConcernForGuard(concern) } : {}),
+          });
+          if (!verdict.approve) return `ERROR submit_skill: rejected by the knowledge guard: ${verdict.reason}`;
+        }
         const note = await graduate(store, {
           subject: input.subject,
           description: input.description,

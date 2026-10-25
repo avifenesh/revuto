@@ -8,6 +8,7 @@ check it with `revuto doctor` before the first run.
 | `review`, `reviewMedium`, `reviewSmall` | reviews a PR head | any provider below |
 | `curator` | writes and merges skills | HTTP models, Antigravity |
 | `distill` | turns PR history into the textbook | HTTP models, Antigravity |
+| `guard` | approves every learned fact, skill and textbook before it is stored | HTTP models only; defaults to the HTTP models of `distill`, then `curator` |
 | `embedder` | dedup and skill selection | an OpenAI-compatible embeddings endpoint, or `null` |
 
 Each spec can list `fallbacks`, tried in order. An HTTP model falls back when its

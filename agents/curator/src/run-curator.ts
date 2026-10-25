@@ -12,8 +12,10 @@ import type { Embedder } from '../../common/src/memory/embedder.js';
 import { CURATOR_SYSTEM_PROMPT } from './prompts/curator-system.js';
 import { assembleCuratorTools } from './tools/index.js';
 import { toAiSdkTools } from '../../common/src/tool-def.js';
+import type { KnowledgeGuard } from '../../common/src/knowledge-guard.js';
+import { GRADUATION_THRESHOLD } from './tools/submit-skill.js';
 
-export const GRADUATION_THRESHOLD = 4;
+export { GRADUATION_THRESHOLD };
 const CURATOR_MAX_STEPS = 40;
 
 export interface FeedbackEvent {
@@ -29,6 +31,8 @@ export interface FeedbackEvent {
   /** The reviewer's comment being replied to — present only for review_comment_reply. */
   readonly inReplyToBot?: string;
   readonly actor?: string;
+  /** The author's GitHub author_association (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...). */
+  readonly association?: string;
   readonly touchedFiles: readonly string[];
 }
 
@@ -45,13 +49,29 @@ export interface RunCuratorOptions {
   readonly embedder: Embedder | null;
   readonly feedback: FeedbackEvent;
   readonly autoActivate?: boolean;
+  /** Approves the feedback, and every concern and skill the run writes. */
+  readonly guard: KnowledgeGuard;
 }
 
 export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcome> {
+  let guardTokens = 0;
+  const guard: KnowledgeGuard = async (item) => {
+    const verdict = await opts.guard(item);
+    guardTokens += verdict.tokens;
+    if (!verdict.approve) console.warn(`[guard] ${item.repo} ${opts.feedback.feedbackId}: rejected ${item.kind}: ${verdict.reason}`);
+    return verdict;
+  };
+  const prompt = renderFeedback(opts.feedback);
+  const admitted = await guard({ kind: 'feedback', repo: opts.feedback.repo, text: prompt });
+  if (!admitted.approve) return { decision: 'guard_rejected', summary: admitted.reason, tokens: guardTokens };
+
   const tools = toAiSdkTools(assembleCuratorTools({
     store: opts.store,
     embedder: opts.embedder,
     autoActivate: opts.autoActivate,
+    guard,
+    repo: opts.feedback.repo,
+    source: prompt,
   }));
 
   const model = buildChatModel(opts.config.models.curator);
@@ -59,7 +79,6 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
   let system = CURATOR_SYSTEM_PROMPT;
   // Tool-shy models (GLM, etc.) tend to end with prose instead of calling curator_done.
   if (needsToolUseEnforcement(opts.config.models.curator)) system += TOOL_USE_ENFORCEMENT;
-  const prompt = renderFeedback(opts.feedback);
 
   const main = await generateText({
     model,
@@ -107,7 +126,7 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
       } catch { /* leave defaults */ }
     }
   }
-  return { decision, summary, tokens };
+  return { decision, summary, tokens: tokens + guardTokens };
 }
 
 /** Whether any step called the curator's terminal tool. */
@@ -119,17 +138,17 @@ function renderFeedback(f: FeedbackEvent): string {
   const lines: string[] = [];
   lines.push(`# Review feedback ${f.feedbackId}`);
   lines.push('');
-  lines.push(`- Kind: ${f.kind === 'review_comment_reply' ? 'reply to the reviewer\'s comment' : 'maintainer review comment'}`);
+  lines.push(`- Kind: ${f.kind === 'review_comment_reply' ? 'reply to the reviewer\'s comment' : 'review comment'}`);
   lines.push(`- Repo / PR: ${f.repo} / #${f.prNumber}`);
   if (f.anchorPath) lines.push(`- Anchor: ${f.anchorPath}:${f.anchorLine ?? '?'}`);
-  if (f.actor) lines.push(`- Author: ${f.actor}`);
+  if (f.actor) lines.push(`- Author: ${f.actor}${f.association ? ` (${f.association})` : ''}`);
   if (f.touchedFiles.length) lines.push(`- Touched files (up to 20): ${f.touchedFiles.slice(0, 20).join(', ')}`);
   lines.push('');
   if (f.inReplyToBot) {
     lines.push("## The reviewer's comment being replied to", '', f.inReplyToBot.trim() || '(empty)', '');
     lines.push('## The reply', '', f.body.trim() || '(empty)', '');
   } else {
-    lines.push('## Maintainer review comment', '', f.body.trim() || '(empty)', '');
+    lines.push('## Review comment', '', f.body.trim() || '(empty)', '');
     lines.push('Treat this as observed institutional signal: does it reveal a durable concern, invariant, or intentional carve-out the reviewer should remember? Most comments are routine and should be dropped.', '');
   }
   lines.push('---', '');

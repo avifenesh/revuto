@@ -18,6 +18,10 @@ import { SqliteStore } from '../../agents/common/src/store/sqlite-store.js';
 import { runCurator, type FeedbackEvent } from '../../agents/curator/src/run-curator.js';
 import { runDecay } from '../../ops/src/decay.js';
 import { startFakeOpenAI } from './fake-openai.js';
+import type { KnowledgeGuard } from '../../agents/common/src/knowledge-guard.js';
+
+// The guard has its own tests; this smoke covers the learn loop past it.
+const guard: KnowledgeGuard = async () => ({ approve: true, reason: 'smoke', tokens: 0 });
 
 const vault = mkdtempSync(join(tmpdir(), 'reviewer-loop-'));
 const store = new SqliteStore(vault, 'octo/demo');
@@ -52,7 +56,7 @@ const feedback: FeedbackEvent = {
 const createSrv = await startFakeOpenAI((n) => n === 0
   ? { tool: 'create_concern', args: { area_bucket: 'src', record: { area: ['src/net/**'], subject: 'reconnect backoff', concern: 'cap retries with exponential backoff', context: '' } } }
   : { tool: 'curator_done', args: { decision: 'created', summary: 'created reconnect backoff' } });
-const out1 = await runCurator({ config: cfg(createSrv.url), store, embedder: null, feedback });
+const out1 = await runCurator({ config: cfg(createSrv.url), store, embedder: null, feedback, guard });
 await createSrv.close();
 assert.equal(out1.decision, 'created', 'curator reported created');
 const concerns = await store.listConcerns('src');
@@ -77,7 +81,7 @@ const gradSrv = await startFakeOpenAI((n) => {
   };
   return { tool: 'curator_done', args: { decision: 'graduated', summary: 'graduated reconnect backoff' } };
 });
-const out2 = await runCurator({ config: cfg(gradSrv.url), store, embedder: null, feedback });
+const out2 = await runCurator({ config: cfg(gradSrv.url), store, embedder: null, feedback, guard });
 await gradSrv.close();
 assert.equal(out2.decision, 'graduated', 'curator reported graduated');
 assert.equal(await store.getConcern(cid), null, 'source concern removed after graduation');
@@ -108,7 +112,7 @@ const autoSrv = await startFakeOpenAI((n) => {
   };
   return { tool: 'curator_done', args: { decision: 'graduated', summary: 'graduated cache eviction ordering' } };
 });
-const out3 = await runCurator({ config: cfg(autoSrv.url), store, embedder: null, feedback, autoActivate: true });
+const out3 = await runCurator({ config: cfg(autoSrv.url), store, embedder: null, feedback, autoActivate: true, guard });
 await autoSrv.close();
 assert.equal(out3.decision, 'graduated', 'auto-activate curator reported graduated');
 assert.equal(await store.getConcern(autoRec.recordId), null, 'auto-activated concern removed after graduation');
