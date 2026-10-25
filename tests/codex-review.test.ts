@@ -8,9 +8,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
-import { agyReviewSchema, buildAgyReviewPrompt, NativeStepLimitError, normalizeClaudeEvents, probeAgy, renderEscalation, ReviewEscalation, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
+import { agyReviewSchema, buildAgyReviewPrompt, nativeCommand, NativeStepLimitError, normalizeClaudeEvents, probeAgy, renderEscalation, ReviewEscalation, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
 import { escalationReason, shadowRecord, shouldShadow, writeShadowRecord } from '../agents/common/src/run-agent.js';
 import { CODEX_REVIEW_SCHEMA, codexEnvironment, codexReviewSchema, normalizeCodexEvents, revutoCodexHome } from '../agents/common/src/codex-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
@@ -162,6 +162,26 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
   } finally {
     if (previous.gh === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = previous.gh;
     if (previous.aws === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK; else process.env.AWS_BEARER_TOKEN_BEDROCK = previous.aws;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a relative CLI path resolves against the daemon, never the PR checkout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-codex-test-'));
+  const checkout = join(dir, 'checkout');
+  mkdirSync(checkout);
+  const command = fakeCodex(dir);
+  const rel = relative(process.cwd(), command);
+  assert.ok(rel.includes('/') && !rel.startsWith('/'));
+  assert.equal(nativeCommand({ baseURL: 'codex://bedrock', api: 'codex', model: 'm', command: rel }), command);
+  assert.equal(nativeCommand({ baseURL: 'codex://bedrock', api: 'codex', model: 'm', command: 'codex' }), 'codex', 'a bare name still goes through PATH');
+  const aws = process.env.AWS_BEARER_TOKEN_BEDROCK;
+  process.env.AWS_BEARER_TOKEN_BEDROCK = 'bedrock-token';
+  try {
+    const run = await runAgyCli({ spec: { baseURL: 'codex://bedrock', api: 'codex', model: 'openai.gpt-6.1-sol', command: rel }, cwd: checkout, prompt: 'review', schema: CODEX_REVIEW_SCHEMA });
+    assert.equal(run.result.status, 'SUCCESS', 'the catalog and the review both find the operator\'s CLI');
+  } finally {
+    if (aws === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK; else process.env.AWS_BEARER_TOKEN_BEDROCK = aws;
     rmSync(dir, { recursive: true, force: true });
   }
 });

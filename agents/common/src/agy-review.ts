@@ -9,7 +9,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
@@ -272,10 +272,16 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   }
 }
 
-function nativeCommand(spec: ModelSpec): string {
+/**
+ * The native CLI to run. A relative path is resolved against the daemon's own
+ * working directory: the child runs inside the PR checkout, where `./bin/codex`
+ * would be the PR's file.
+ */
+export function nativeCommand(spec: ModelSpec): string {
   const runner = runnerOf(spec);
-  return spec.command?.trim()
+  const command = spec.command?.trim()
     || (runner === 'claude' ? 'claude' : runner === 'codex' ? process.env.REVUTO_CODEX_COMMAND?.trim() || 'codex' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
+  return command.includes('/') ? resolve(command) : command;
 }
 
 /**

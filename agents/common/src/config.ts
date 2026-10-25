@@ -40,7 +40,7 @@ export interface ModelSpec {
   readonly apiKeyEnv?: string;
   /** Optional provider label for diagnostics. */
   readonly name?: string;
-  /** Native CLI executable. AGY defaults to $REVUTO_AGY_COMMAND or agy; Claude defaults to claude; Codex to $REVUTO_CODEX_COMMAND or codex. */
+  /** Native CLI executable. AGY defaults to $REVUTO_AGY_COMMAND or agy; Claude defaults to claude; Codex to $REVUTO_CODEX_COMMAND or codex. A relative path resolves against the daemon's working directory, never the PR checkout. */
   readonly command?: string;
   /** AGY CLI permission policy. "bypass" adds --dangerously-skip-permissions. */
   readonly permissionMode?: 'bypass' | 'settings';
