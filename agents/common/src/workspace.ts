@@ -96,13 +96,13 @@ async function ensureClone(owner: string, repoName: string, workspaceRoot: strin
   const remoteUrl = `https://github.com/${owner}/${repoName}.git`;
   if (!existsSync(`${workspaceRoot}/.git`)) {
     await mkdir(dirname(workspaceRoot), { recursive: true, mode: 0o700 });
-    await run('git', ['clone', '--filter=tree:0', remoteUrl, workspaceRoot], { env });
+    await run('git', ['clone', '--filter=blob:none', remoteUrl, workspaceRoot], { env });
   } else {
     // Also scrubs a token an older revuto wrote into the remote, and brings the scan up to date.
     await run('git', ['remote', 'set-url', 'origin', remoteUrl], { cwd: workspaceRoot, env });
     // The clone is often left detached at a PR head, so there is no upstream to reset to:
     // fetch the default branch and check it out detached.
-    await run('git', ['fetch', '--quiet', '--filter=tree:0', 'origin', 'HEAD'], { cwd: workspaceRoot, env });
+    await run('git', ['fetch', '--quiet', '--filter=blob:none', 'origin', 'HEAD'], { cwd: workspaceRoot, env });
     await run('git', ['checkout', '--quiet', '--force', '--detach', 'FETCH_HEAD'], { cwd: workspaceRoot, env });
   }
 }
@@ -118,9 +118,9 @@ async function checkoutPr(workspaceRoot: string, headSha: string): Promise<strin
   const env = { GIT_TERMINAL_PROMPT: '0' };
   // Fetch the exact PR head commit by SHA (GitHub allows reachable-SHA fetch — same as the
   // baseSha fetch below). Using the SHA from the PR object rather than pull/<n>/head avoids
-  // a race if the head advances after we read the PR, and needs no persisted ref. tree:0
+  // a race if the head advances after we read the PR, and needs no persisted ref. blob:none
   // hydrates lazily; the detached checkout keeps the working tree clean for LSP.
-  await run('git', ['fetch', '--filter=tree:0', 'origin', headSha], { cwd: workspaceRoot, env });
+  await run('git', ['fetch', '--filter=blob:none', 'origin', headSha], { cwd: workspaceRoot, env });
   await run('git', ['checkout', '--detach', headSha], { cwd: workspaceRoot, env });
   return headSha;
 }
@@ -154,9 +154,14 @@ export async function prepareWorkspace(
       await mkdir(dirname(cache), { recursive: true, mode: 0o700 });
       // A killed first clone may leave a non-repository directory in this owned cache slot.
       await rm(cache, { recursive: true, force: true });
-      await reviewGit(['clone', '--bare', '--filter=tree:0', `https://github.com/${owner}/${repoName}.git`, cache], { env, signal: options.signal });
+      await reviewGit(['clone', '--bare', '--filter=blob:none', `https://github.com/${owner}/${repoName}.git`, cache], { env, signal: options.signal });
+    } else if ((await git(['config', '--get', 'remote.origin.partialclonefilter']).catch(() => '')).trim() === 'tree:0') {
+      // Reviewers read history offline (git log -- <path>, --stat, blame), which a
+      // treeless cache cannot answer. Refetch it once with every commit and tree.
+      await git(['fetch', '--refetch', '--filter=blob:none', 'origin']);
+      await git(['config', 'remote.origin.partialclonefilter', 'blob:none']);
     }
-    await git(['fetch', '--filter=tree:0', 'origin', targetHeadSha, baseSha]);
+    await git(['fetch', '--filter=blob:none', 'origin', targetHeadSha, baseSha]);
     headSha = targetHeadSha;
     mergeBaseSha = (await git(['merge-base', headSha, baseSha])).trim();
     await git(['worktree', 'add', '--detach', workspaceRoot, headSha]);
@@ -165,8 +170,8 @@ export async function prepareWorkspace(
   } else {
     await ensureClone(owner, repoName, workspaceRoot, token);
     headSha = await checkoutPr(workspaceRoot, targetHeadSha);
-    await run('git', ['fetch', '--filter=tree:0', 'origin', `${pr.base.ref}:refs/remotes/origin/${pr.base.ref}`], { cwd: workspaceRoot }).catch(() => {});
-    await run('git', ['fetch', '--filter=tree:0', 'origin', baseSha], { cwd: workspaceRoot }).catch(() => {});
+    await run('git', ['fetch', '--filter=blob:none', 'origin', `${pr.base.ref}:refs/remotes/origin/${pr.base.ref}`], { cwd: workspaceRoot }).catch(() => {});
+    await run('git', ['fetch', '--filter=blob:none', 'origin', baseSha], { cwd: workspaceRoot }).catch(() => {});
     mergeBaseSha = (await run('git', ['merge-base', headSha, baseSha], { cwd: workspaceRoot })).trim();
     repoGit = (args) => run('git', args, { cwd: workspaceRoot, env: { GIT_TERMINAL_PROMPT: '0' } });
   }

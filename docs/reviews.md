@@ -72,9 +72,9 @@ changed since its last reviewed head (`review.incremental`, default `true`). The
 reviewed head is the commit of revuto's newest signed review on an earlier head. When
 that commit is still an ancestor of the new head, the review is routed by the size of
 `<last>..<head>` in the PR's own files, so a merge from the base branch does not
-count, and the reviewer gets a re-review note with the changed files. Native CLI
-runners also get a `new_changes` tool with that diff; `pr_diff` still returns the
-whole PR diff, and inline comments still land on lines of the full PR diff. A
+count, and the reviewer gets a re-review note with the changed files and the git
+range of the new changes (HTTP reviewers get a `new_changes` tool with that diff).
+Inline comments still land on lines of the full PR diff. A
 force-push that rewrote the reviewed head, a file list cut at one page, or no earlier
 revuto review means a full review. The daemon log says `re-review since <sha>`.
 

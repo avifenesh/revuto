@@ -32,15 +32,29 @@ if (args[0] === 'debug' && args[1] === 'models') {
   console.log(JSON.stringify({ models: [{ slug: 'gpt-6.1-sol', tool_mode: 'code_mode_only', multi_agent_version: 'v2', supports_search_tool: true, apply_patch_tool_type: 'freeform', experimental_supported_tools: ['clock'], context_window: 272000 }] }));
   process.exit(0);
 }
-const prompt = readFileSync(0, 'utf8');
+const fullPrompt = readFileSync(0, 'utf8');
+const prompt = fullPrompt.split('\\n\\n## Workspace')[0];
+const probe = prompt.includes('AGY_REVUTO_DOCTOR_OK');
 const catalog = configs.find((c) => c.startsWith('model_catalog_json='));
 assert.ok(catalog, 'every run loads the restricted catalog');
-writeFileSync(process.argv[1] + '.last', JSON.stringify({ args, prompt, env: process.env, catalog: readFileSync(JSON.parse(catalog.slice('model_catalog_json='.length)), 'utf8'), schema: args.includes('--output-schema') ? readFileSync(value('--output-schema'), 'utf8') : null }));
+writeFileSync(process.argv[1] + '.last', JSON.stringify({ args, prompt, fullPrompt, env: process.env, catalog: readFileSync(JSON.parse(catalog.slice('model_catalog_json='.length)), 'utf8'), schema: args.includes('--output-schema') ? readFileSync(value('--output-schema'), 'utf8') : null }));
 assert.ok(configs.includes('tools.experimental_request_user_input.enabled=false'));
 assert.equal(args[0], 'exec');
 assert.ok(args.includes('--ignore-user-config') && args.includes('--ignore-rules') && args.includes('--ephemeral') && args.includes('--json'));
-assert.equal(value('--disable'), 'shell_tool');
-assert.equal(value('--sandbox'), 'read-only');
+if (probe) {
+  assert.equal(value('--disable'), 'shell_tool');
+  assert.equal(value('--sandbox'), 'read-only');
+} else {
+  // A review gets a shell in the workspace-write sandbox, with a scratch dir and no /tmp.
+  assert.ok(!args.includes('--disable'));
+  assert.equal(value('--sandbox'), 'workspace-write');
+  assert.ok(existsSync(value('--add-dir')), 'the scratch dir exists during the run');
+  assert.ok(configs.includes('sandbox_workspace_write.exclude_slash_tmp=true') && configs.includes('sandbox_workspace_write.exclude_tmpdir_env_var=true'));
+  assert.ok(configs.includes('shell_environment_policy.inherit="core"'));
+  assert.ok(configs.some((c) => c.startsWith('shell_environment_policy.set=') && c.includes('PYTHONSAFEPATH="1"')));
+  assert.match(fullPrompt, /## Workspace\\n- Scratch directory, yours to write: /);
+  assert.ok(!configs.some((c) => c.startsWith('mcp_servers.')), 'no MCP server: the shell reads the diff');
+}
 assert.ok(['openai.gpt-6.1-sol', 'gpt-6.1-sol'].includes(value('-m')));
 assert.equal(args.at(-1), '-');
 if (value('-m') === 'gpt-6.1-sol') {
@@ -64,9 +78,9 @@ if (prompt.includes('AGY_REVUTO_DOCTOR_OK')) {
 }
 const calls = prompt.includes('runaway') ? 5 : 2;
 for (let i = 0; i < calls; i++) {
-  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'revuto', tool: i === 0 ? 'pr_diff' : 'read', arguments: {}, result: { content: [{ type: 'text', text: 'evidence ' + i }] }, error: null, status: 'completed' } }));
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: i === 0 ? 'git diff' : 'cat src/file.ts', aggregated_output: 'evidence ' + i, exit_code: 0, status: 'completed' } }));
 }
-console.log(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'revuto', tool: 'grep', arguments: {}, result: { content: [{ type: 'text', text: 'ERROR: bad pattern' }] }, error: null, status: 'failed' } }));
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: 'rg (', aggregated_output: 'ERROR: bad pattern', exit_code: 2, status: 'failed' } }));
 if (prompt.includes('policy-turn')) {
   console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'This request was declined', codex_error_info: 'cyber_policy' } }));
   process.exit(1);
@@ -107,7 +121,7 @@ function context(workspacePath: string, body = 'PR body'): PrContext {
   };
 }
 
-test('Codex runs on Bedrock with no user config, no shell and only the revuto MCP server', async () => {
+test('Codex runs on Bedrock with no user config, a sandboxed shell and a scratch dir', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'revuto-codex-test-'));
   const command = fakeCodex(dir);
   const spec = { baseURL: 'codex://bedrock', api: 'codex' as const, model: 'openai.gpt-6.1-sol', reasoningEffort: 'high' as const, command };
@@ -119,10 +133,8 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
     const last = JSON.parse(readFileSync(command + '.last', 'utf8'));
     assert.equal(last.prompt, 'review', 'the prompt goes over stdin');
     assert.ok(last.args.includes('model_reasoning_effort="high"'));
-    assert.ok(last.args.some((a: string) => a.startsWith('mcp_servers.revuto.command=')));
-    const mcpArgs = last.args.find((a: string) => a.startsWith('mcp_servers.revuto.args='));
-    assert.match(mcpArgs, /claude-review-mcp\.js/);
-    assert.ok(mcpArgs.includes(context(dir).diffRefSpec), 'the MCP server gets the fixed diff range');
+    const scratch = last.args[last.args.indexOf('--add-dir') + 1];
+    assert.equal(existsSync(scratch), false, 'the scratch dir is removed after the run');
     assert.ok(last.args.includes('model_context_window=900000'));
     assert.ok(last.args.includes('model_auto_compact_token_limit=250000'));
     assert.deepEqual(JSON.parse(last.schema), JSON.parse(CODEX_REVIEW_SCHEMA), 'the strict schema is written to a file');
@@ -144,7 +156,7 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
     assert.equal(run.result.conversation_id, 'thread-1');
     assert.equal(run.inspections, 2);
     assert.equal(run.toolErrors, 1);
-    assert.deepEqual(run.toolSteps.map((s) => s.name), ['mcp__revuto__pr_diff', 'mcp__revuto__read', 'mcp__revuto__grep']);
+    assert.deepEqual(run.toolSteps.map((s) => s.name), ['codex.command_execution', 'codex.command_execution', 'codex.command_execution']);
     assert.equal(run.result.usage?.total_tokens, 107);
     assert.deepEqual(run.result.structured_output, { decision: 'skip_review', reason: 'no concerns', body: '', comments: [] });
 
@@ -211,7 +223,7 @@ test('a Codex review posts through revuto with the null comment fields dropped',
   }
 });
 
-test('the explicit Codex doctor probe runs at low effort with no MCP server and no schema', async () => {
+test('the explicit Codex doctor probe runs at low effort with no shell, no MCP server and no schema', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'revuto-codex-test-'));
   const command = fakeCodex(dir);
   try {
@@ -227,11 +239,12 @@ test('the explicit Codex doctor probe runs at low effort with no MCP server and 
   }
 });
 
-test('Codex prompt names only the revuto MCP tools', () => {
+test('Codex prompt points at git and the sandbox rules', () => {
   const prompt = buildAgyReviewPrompt(context('/ws'), '', 'codex');
   assert.match(prompt, /inside Codex CLI/);
-  assert.match(prompt, /pr_diff/);
-  assert.match(prompt, /There is no shell, network, or Git access/);
+  assert.match(prompt, /git diff c{40}\.\.a{40}/);
+  assert.match(prompt, /Never run code from the repository/);
+  assert.match(prompt, /sandbox without network/);
   assert.match(prompt, /set side, start_line and start_side to null/);
   assert.doesNotMatch(prompt, /Antigravity|mcp__revuto__/);
 });
@@ -242,6 +255,10 @@ test('Codex events map to tool steps, failures and a parsed verdict', () => {
   assert.deepEqual(normalizeCodexEvents({ type: 'error', message: 'Reconnecting... 1/5' }, state), []);
   const [failed] = normalizeCodexEvents({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'revuto', tool: 'read', status: 'failed', error: { message: 'denied' }, result: null } }, state);
   assert.deepEqual(failed, { event: 'step_update', step_update: { step_type: 'tool', tool_name: 'mcp__revuto__read', tool_info: { output: '', error: { message: 'denied' } } } });
+  const [command] = normalizeCodexEvents({ type: 'item.completed', item: { type: 'command_execution', command: 'git log', aggregated_output: 'abc first', exit_code: 0, status: 'completed' } }, state);
+  assert.deepEqual(command, { event: 'step_update', step_update: { step_type: 'tool', tool_name: 'codex.command_execution', tool_info: { output: 'abc first' } } });
+  const [denied] = normalizeCodexEvents({ type: 'item.completed', item: { type: 'command_execution', command: 'curl x', aggregated_output: '', exit_code: 1, status: 'declined' } }, state);
+  assert.deepEqual((denied.step_update as { tool_info: unknown }).tool_info, { output: '', error: 'command declined' });
   const [other] = normalizeCodexEvents({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'elsewhere', tool: 'x', status: 'completed', result: { content: [] } } }, state);
   assert.equal((other.step_update as { tool_name: string }).tool_name, 'elsewhere.x');
   normalizeCodexEvents({ type: 'item.completed', item: { type: 'agent_message', text: 'not json' } }, state);

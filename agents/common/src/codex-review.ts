@@ -2,15 +2,16 @@
  * Codex CLI adapter for the native review runner.
  *
  * Codex runs headless (`codex exec --json`) on OpenAI (a ChatGPT login or an API
- * key) or Amazon Bedrock, with no user config, no rules, no shell tool and a
- * read-only sandbox. Its only inspection surface is the same guarded revuto MCP
- * server the Claude runner gets: the fixed PR diff plus read/grep/glob over the
- * checked-out head. The verdict is the final agent message, constrained by
- * `--output-schema`.
+ * key) or Amazon Bedrock, with no user config, no rules, no AGENTS.md or skills
+ * from the checkout, and a shell in the workspace-write sandbox: no network,
+ * writes only to the checkout and the run's scratch dir, `.git` read-only. It
+ * reads the diff and history with git (see native-sandbox.ts). The verdict is the
+ * final agent message, constrained by `--output-schema`.
  */
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ModelSpec } from './config.js';
+import { REVIEW_COMMAND_ENV } from './native-sandbox.js';
 
 /** Bedrock region for Codex when the spec sets none: the GPT-6 family is served from us-east-1. */
 export const CODEX_DEFAULT_REGION = 'us-east-1';
@@ -180,8 +181,12 @@ export function codexEnvironment(codexHome: string, spec: ModelSpec, env: NodeJS
 export interface CodexArgsOptions {
   readonly spec: ModelSpec;
   readonly cwd: string;
-  /** Path of the guarded MCP server script; omitted for the doctor probe. */
-  readonly mcpServer?: { readonly command: string; readonly args: readonly string[] };
+  /**
+   * Directories a review may write besides the checkout (its scratch dir). Set
+   * for a review, which then gets a shell in the workspace-write sandbox; absent
+   * for the doctor probe, which runs read-only with no shell.
+   */
+  readonly writableDirs?: readonly string[];
   readonly schemaPath?: string;
   /** The restricted model catalog (`restrictCodexCatalog`). */
   readonly catalogPath?: string;
@@ -194,7 +199,7 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
   const args = [
     'exec',
     '--ignore-user-config', '--ignore-rules',
-    '--disable', 'shell_tool',
+    ...(opts.writableDirs ? [] : ['--disable', 'shell_tool']),
     '-c', `web_search=${toml('disabled')}`,
     '-c', `approval_policy=${toml('never')}`,
     // The checkout is untrusted: its AGENTS.md and skills, and those under the
@@ -207,6 +212,11 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
     '-c', 'agents.max_depth=0',
     // Exec has nobody to answer a question.
     '-c', 'tools.experimental_request_user_input.enabled=false',
+    // Commands see only core variables plus the safety ones: no provider key
+    // (Codex also drops any name with KEY, SECRET or TOKEN), and Python never
+    // imports from the directory it runs in.
+    '-c', `shell_environment_policy.inherit=${toml('core')}`,
+    '-c', `shell_environment_policy.set={${Object.entries(REVIEW_COMMAND_ENV).map(([k, v]) => `${k}=${toml(v)}`).join(',')}}`,
     '-c', `model_provider=${toml(provider)}`,
   ];
   if (opts.catalogPath) args.push('-c', `model_catalog_json=${toml(opts.catalogPath)}`);
@@ -219,13 +229,12 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
   if (provider === 'amazon-bedrock') args.push('-c', `model_context_window=${CODEX_CONTEXT_WINDOW}`);
   args.push('-c', `model_auto_compact_token_limit=${CODEX_AUTO_COMPACT_TOKENS}`);
   if (opts.spec.reasoningEffort) args.push('-c', `model_reasoning_effort=${toml(opts.spec.reasoningEffort)}`);
-  if (opts.mcpServer) {
-    args.push(
-      '-c', `mcp_servers.revuto.command=${toml(opts.mcpServer.command)}`,
-      '-c', `mcp_servers.revuto.args=[${opts.mcpServer.args.map(toml).join(',')}]`,
-    );
-  }
-  args.push('--skip-git-repo-check', '-C', opts.cwd, '--sandbox', 'read-only', '--ephemeral', '--json');
+  // workspace-write: network off, writes to the checkout and the scratch dir;
+  // the sandbox keeps .git (and the gitdir a pointer names) read-only.
+  // /tmp and $TMPDIR are not writable: the scratch dir is the place to write.
+  if (opts.writableDirs) args.push('-c', 'sandbox_workspace_write.exclude_slash_tmp=true', '-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true');
+  args.push('--skip-git-repo-check', '-C', opts.cwd, '--sandbox', opts.writableDirs ? 'workspace-write' : 'read-only',
+    ...(opts.writableDirs ?? []).flatMap((dir) => ['--add-dir', dir]), '--ephemeral', '--json');
   if (opts.schemaPath) args.push('--output-schema', opts.schemaPath);
   args.push('-');
   return args;
@@ -263,6 +272,12 @@ export function normalizeCodexEvents(record: Record<string, unknown>, state: Cod
     if (item.type === 'agent_message' && typeof item.text === 'string') {
       state.lastMessage = item.text;
       return [{ event: 'step_update', step_update: { step_type: 'text', text_delta: item.text } }];
+    }
+    if (item.type === 'command_execution') {
+      const failed = item.status === 'failed' || item.status === 'declined';
+      const output = typeof item.aggregated_output === 'string' ? item.aggregated_output : '';
+      return [{ event: 'step_update', step_update: { step_type: 'tool', tool_name: 'codex.command_execution',
+        tool_info: { output, ...(failed ? { error: output || `command ${String(item.status)}` } : {}) } } }];
     }
     if (item.type === 'mcp_tool_call') {
       const raw = `${String(item.server ?? '')}.${String(item.tool ?? '')}`;

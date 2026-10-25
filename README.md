@@ -26,8 +26,10 @@ becomes a reusable skill.
   for review-on-push.
 - **Knowledge you can read.** Skills are markdown notes in an Obsidian vault, or
   any folder. Nothing is written into the reviewed repo.
-- **Careful with your code.** Every reviewer gets read-only tools over the PR
-  checkout: no shell, no network tools, no GitHub token, no daemon credentials.
+- **Real tools, behind a sandbox.** Claude Code and Codex reviewers get a shell,
+  file tools, git history, Python and a scratch directory, under auto mode or
+  Codex's sandbox: no network, no credentials, nothing from the checkout loaded
+  as configuration, and no repository code run.
   Revuto posts the review itself, after stripping mentions, HTML and secrets.
 
 ## Quick start
@@ -202,6 +204,7 @@ npx tsx scripts/smoke/webhook.ts       # GitHub webhook HMAC + dispatch/check ou
 npx tsx scripts/smoke/scheduler.ts     # registry + schedule planning
 npx tsx scripts/smoke/scan.ts          # onboarding repo scan
 npx tsx scripts/smoke/codex-tools.ts   # tools a real Codex CLI offers a review (after npm run build)
+npx tsx scripts/smoke/native-sandbox.ts claude|codex  # a real review of a hostile checkout (needs model creds)
 ```
 
 ## License

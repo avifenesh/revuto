@@ -166,7 +166,9 @@ test('the re-review note names the range and files and keeps open findings faili
   assert.match(mcp, /still unresolved, post it again/, 'an open finding is posted again so the review does not pass');
   assert.match(mcp, /### Revuto's earlier findings \(1\)\n- "other\.ts":7\n  \[P1\] Open bug\n  with detail/);
   assert.match(renderReReview(context(inc), 'git'), new RegExp(`git diff ${sha('d')}\\.\\.${sha('a')}`));
-  assert.match(buildAgyReviewPrompt(context(inc), '', 'codex'), /new_changes, which returns what changed since the last review/);
-  assert.doesNotMatch(buildAgyReviewPrompt(context(), '', 'codex'), /new_changes/);
-  assert.match(buildAgyReviewPrompt(context(inc), '', 'claude'), /mcp__revuto__new_changes/);
+  // Native reviewers read the new changes with git, at the range since the last review.
+  for (const runner of ['codex', 'claude'] as const) {
+    assert.match(buildAgyReviewPrompt(context(inc), '', runner), new RegExp(`git diff ${sha('d')}\\.\\.${sha('a')} -- <path>`));
+    assert.doesNotMatch(buildAgyReviewPrompt(context(), '', runner), /## Re-review/);
+  }
 });

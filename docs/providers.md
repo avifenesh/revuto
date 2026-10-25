@@ -41,11 +41,8 @@ environment as `CLAUDE_CODE_OAUTH_TOKEN`. A subscription run gets that token and
 nothing else from the provider environment: an `ANTHROPIC_API_KEY` or a
 `CLAUDE_CODE_USE_BEDROCK` set for something else cannot redirect it.
 
-Bare mode never reads OAuth, so a subscription run is isolated another way.
-`--restricted` and empty setting sources keep the checkout's `.claude` settings,
-hooks and `CLAUDE.md` out. Each run also gets a private, empty `CLAUDE_CONFIG_DIR`
-that is removed afterwards: no user settings, plugins, memory or stored login.
-`CLAUDE.md` loading, auto-memory and nonessential traffic are off as well.
+A subscription run is isolated the same way as every Claude run; see
+[What Claude can touch](#what-claude-can-touch).
 
 ### On an Anthropic API key or a cloud provider
 
@@ -60,7 +57,7 @@ that is removed afterwards: no user settings, plugins, memory or stored login.
 }
 ```
 
-With `auth: "none"` revuto runs Claude in `--bare` mode and forwards the provider
+With `auth: "none"` revuto forwards the provider
 settings Claude Code already understands: `ANTHROPIC_API_KEY`, or the Bedrock,
 Vertex or Foundry variables (`CLAUDE_CODE_USE_BEDROCK=1` and its AWS credentials,
 for example). Use the model ID your provider expects, such as
@@ -71,20 +68,38 @@ project and local settings.
 
 ### What Claude can touch
 
-An isolated MCP server exposes workspace-guarded read/grep/glob tools and the
-fixed PR diff, excluding sensitive paths. Search honors the workspace's own
-ignore files only: ignore files and `.git` directories above the workspace and
-the global gitignore do not apply. A directory the workspace's rules hide is
-searched directly when the scoped search finds nothing, and the result says so.
-A `.ignore` or `.rgignore` in the checkout is not honored either, so a PR cannot
-hide its own files; `.gitignore` still applies. AGY gets the same scope through
-`RIPGREP_CONFIG_PATH` (`agents/common/rg/`). Claude gets no shell, arbitrary Git,
-LSP, write, or network tools. Hooks, plugins and project memory never load;
-revuto supplies the PR and repository knowledge.
+The reviewer is trusted; the checkout is not. A Claude review gets the shell
+(Bash), Read, Grep, Glob, Write and Edit, and runs in auto mode, where a
+classifier reviews each action. What the checkout could do without asking is
+closed off:
 
-A review counts as inspected only once the reviewer read PR evidence: a file,
-the PR diff, or the re-review diff. A search or a listing alone does not count,
-so a reviewer that runs one grep and calls `skip_review` fails the check.
+- Nothing from the checkout or `~/.claude` loads: no setting sources, a private
+  `CLAUDE_CONFIG_DIR` removed after the run, no MCP servers, no `CLAUDE.md`,
+  `AGENTS.md`, project skills, agents, commands, hooks or `.mcp.json`, no
+  bundled skills, no auto-memory.
+- Every shell command runs in Claude Code's sandbox (`failIfUnavailable`, no
+  unsandboxed retry): no network; writes only to the checkout and the run's
+  scratch directory, never to `.git` or the shared git cache; reads of the home
+  directory blocked apart from the run's directories and the git cache;
+  credential variables and `~/.aws`, `~/.ssh` and `~/.config` denied; the
+  session bus, container sockets, X11 and agents hidden. Claude Code's
+  Unix-socket filter cannot start on some kernels (anthropics/claude-code#81799),
+  so sockets are allowed and those paths are denied instead.
+- Read, Write and Edit follow permission rules: reads stay in the working
+  directories, writes to `.git` and the git cache are denied.
+- `PYTHONSAFEPATH` keeps Python from importing a planted module from the
+  directory it runs in; `GIT_NO_LAZY_FETCH` keeps git offline.
+- The prompt says not to run repository code (builds, tests, installs, scripts).
+
+The checkout comes from a blobless cache, so commits and trees for the whole
+history are local: `git log -- <path>`, `--stat` and `git show` work offline.
+Each run also gets a copy of the repository's revuto skills and textbook to read.
+`scripts/smoke/native-sandbox.ts` runs a real review against a hostile checkout
+to check all of this.
+
+A review counts as inspected only once the reviewer ran a command or read or
+searched a file. A file listing alone does not count, so a reviewer that lists
+files and calls `skip_review` fails the check.
 
 Valid effort values are `low`, `medium`, `high`, `xhigh`, and `max`. Claude
 receives `review.maxSteps` as `--max-turns` and the configured review output cap
@@ -94,8 +109,12 @@ as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. A turn-limit exit fails the review.
 
 ## Codex
 
-Revuto runs `codex exec --json` with `--ignore-user-config --ignore-rules`, the shell
-tool disabled, web search off, a read-only sandbox and `--ephemeral`. Project docs
+Revuto runs `codex exec --json` with `--ignore-user-config --ignore-rules`, web
+search off and `--ephemeral`. A review gets the shell in the `workspace-write`
+sandbox: no network, writes only to the checkout and the run's scratch directory
+(`/tmp` and `$TMPDIR` excluded), `.git` and the gitdir it points to read-only, and
+commands get only core environment variables plus `PYTHONSAFEPATH` and
+`GIT_NO_LAZY_FETCH`. The doctor probe runs read-only with no shell. Project docs
 (`AGENTS.md`) and skill instructions are off, so neither the checkout's nor the
 operator's reach the model, and the operator's `~/.codex` config and sessions are
 never read. Codex also gets a scratch `HOME`, so `~/.agents` skills and dotfiles
@@ -109,7 +128,7 @@ removes. Before each run revuto reads the catalog with `codex debug models`, in
 the same home and on the same provider, sets every model to direct tools with
 sub-agents, tool search, `apply_patch` and experimental tools off, and passes it
 as `model_catalog_json`. If the catalog cannot be read, the run fails. The model
-then sees the revuto tools and Codex's three MCP resource tools, which only
+then sees only the sandboxed shell (`exec_command`, `write_stdin`), which only
 reach the revuto server. Any tool item Codex still reports counts toward
 `review.maxSteps`. Codex runs the review tiers only.
 
@@ -140,8 +159,8 @@ with the command to run.
 
 The login is the `auth.json` in that home, and it holds live ChatGPT tokens.
 OpenAI advises against a ChatGPT login for public repositories in CI, where the
-repository's own code runs beside that file. Revuto runs no repository code and
-Codex gets no shell; its file tools are revuto's, scoped to the checkout. For
+repository's own code runs beside that file. Revuto runs no repository code, and
+Codex's sandboxed shell has no network. For
 reviews of repositories whose contributors you do not trust, an API key limits
 what a leaked credential can do.
 
@@ -185,8 +204,8 @@ bundled catalog has no entry for the Bedrock IDs.
 
 ### What Codex can touch
 
-The inspection surface is the same guarded revuto MCP server the Claude runner
-gets, and the verdict comes back through `--output-schema` with a strict schema.
+Codex reads the diff and history with git in its sandbox, like the Claude runner,
+and the verdict comes back through `--output-schema` with a strict schema.
 The prompt goes over stdin. Codex has no turn limit, so revuto stops the run after
 `review.maxSteps` tool calls. Codex compacts at 250K tokens, so no request crosses
 the 272K-input price step. Codex has no output-token setting, so
@@ -231,9 +250,9 @@ permission bypass. HTTP models such as GLM can follow AGY in `fallbacks`.
 ## HTTP models: GLM, Grok, OpenAI-compatible and local
 
 Any OpenAI-compatible endpoint works for every role. Tool calling is required (the
-reviewer and curator drive tools). An HTTP reviewer gets the same guarded tools as
-Claude and Codex (read, grep, glob, `pr_diff`, `new_changes`) plus the posting
-tools; there is no shell, Git, LSP or GitHub API tool. `review.allowWrite` adds
+reviewer and curator drive tools). An HTTP reviewer gets workspace-guarded read,
+grep, glob, `pr_diff` and `new_changes` plus the posting tools; there is no shell,
+Git, LSP or GitHub API tool. `review.allowWrite` adds
 write and edit, confined to the worktree.
 
 ```jsonc
