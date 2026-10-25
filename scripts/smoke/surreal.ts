@@ -83,7 +83,8 @@ await new Promise((r) => setTimeout(r, 5));
 assert.equal(await store.claim('k3', 1), true, 'an expired lease is stealable');
 assert.equal(await store.claim('k1', 1), false, 'a done key is never stealable');
 
-// graduation writes a markdown skill in the vault + removes the concern
+// graduation writes a markdown skill in the vault + removes the concern (at the threshold)
+for (let i = 0; i < 2; i++) await store.bumpConcern(a.recordId);
 const note = await graduate(store, { subject: 'reconnect backoff', description: 'Use when reviewing src/net reconnect.', skillMd: '## Use when\nreconnect changes.\n## Patterns\n### x\nSkip unless: y.', sourceRecordId: a.recordId });
 assert.equal(note.status, 'draft', 'graduates draft');
 assert.equal(await store.getConcern(a.recordId), null, 'concern removed after graduation');

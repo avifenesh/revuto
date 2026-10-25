@@ -55,6 +55,7 @@ const rec2 = await store.createConcern({
   concern: 'Preserve eviction ordering invariants when touching cache cleanup.',
   context: '',
 });
+for (let i = 0; i < 3; i++) await store.bumpConcern(rec2.recordId);
 const activeNote = await graduate(store, {
   subject: 'cache eviction ordering',
   description: 'Use when reviewing PRs that touch src/cache eviction cleanup.',

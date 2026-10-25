@@ -55,14 +55,19 @@ export interface RunCuratorOptions {
 
 export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcome> {
   let guardTokens = 0;
+  let guardFailure: string | undefined;
   const guard: KnowledgeGuard = async (item) => {
     const verdict = await opts.guard(item);
     guardTokens += verdict.tokens;
-    if (!verdict.approve) console.warn(`[guard] ${item.repo} ${opts.feedback.feedbackId}: rejected ${item.kind}: ${verdict.reason}`);
+    if (verdict.failed) guardFailure ??= verdict.reason;
+    if (!verdict.approve) console.warn(`[guard] ${item.repo} ${opts.feedback.feedbackId}: ${verdict.failed ? 'could not judge' : 'rejected'} ${item.kind}: ${verdict.reason}`);
     return verdict;
   };
-  const prompt = renderFeedback(opts.feedback);
-  const admitted = await guard({ kind: 'feedback', repo: opts.feedback.repo, text: prompt });
+  // The guard and the concern tools see the feedback itself, never the curator's instructions.
+  const facts = renderFeedbackFacts(opts.feedback);
+  const prompt = `${facts}\n${renderCuratorTask(opts.feedback)}`;
+  const admitted = await guard({ kind: 'feedback', repo: opts.feedback.repo, text: facts });
+  if (admitted.failed) throw new GuardUnavailableError(admitted.reason);
   if (!admitted.approve) return { decision: 'guard_rejected', summary: admitted.reason, tokens: guardTokens };
 
   const tools = toAiSdkTools(assembleCuratorTools({
@@ -71,7 +76,7 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
     autoActivate: opts.autoActivate,
     guard,
     repo: opts.feedback.repo,
-    source: prompt,
+    source: facts,
   }));
 
   const model = buildChatModel(opts.config.models.curator);
@@ -126,7 +131,17 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
       } catch { /* leave defaults */ }
     }
   }
+  // A write the guard could not judge was blocked. Throwing keeps the feedback unmarked, so it is retried.
+  if (guardFailure) throw new GuardUnavailableError(guardFailure);
   return { decision, summary, tokens: tokens + guardTokens };
+}
+
+/** The knowledge guard could not judge a write; the feedback must be retried, not marked done. */
+export class GuardUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`knowledge guard unavailable, feedback kept for retry: ${reason}`);
+    this.name = 'GuardUnavailableError';
+  }
 }
 
 /** Whether any step called the curator's terminal tool. */
@@ -134,7 +149,8 @@ function hasCuratorDone(steps: ReadonlyArray<{ toolResults?: Array<{ toolName: s
   return steps.some((s) => (s.toolResults ?? []).some((tr) => tr.toolName === 'curator_done'));
 }
 
-function renderFeedback(f: FeedbackEvent): string {
+/** The feedback as data: metadata and the comment, no instructions. */
+function renderFeedbackFacts(f: FeedbackEvent): string {
   const lines: string[] = [];
   lines.push(`# Review feedback ${f.feedbackId}`);
   lines.push('');
@@ -149,8 +165,14 @@ function renderFeedback(f: FeedbackEvent): string {
     lines.push('## The reply', '', f.body.trim() || '(empty)', '');
   } else {
     lines.push('## Review comment', '', f.body.trim() || '(empty)', '');
-    lines.push('Treat this as observed institutional signal: does it reveal a durable concern, invariant, or intentional carve-out the reviewer should remember? Most comments are routine and should be dropped.', '');
   }
+  return lines.join('\n');
+}
+
+/** The curator's task for this feedback. */
+function renderCuratorTask(f: FeedbackEvent): string {
+  const lines: string[] = [];
+  if (!f.inReplyToBot) lines.push('Treat this as observed institutional signal: does it reveal a durable concern, invariant, or intentional carve-out the reviewer should remember? Most comments are routine and should be dropped.', '');
   lines.push('---', '');
   lines.push(`Decide bump / merge / create / drop / graduation / noop. Graduation threshold is ${GRADUATION_THRESHOLD} reinforcements. Call \`curator_done\` once when finished.`);
   return lines.join('\n');

@@ -33,13 +33,16 @@ export interface GuardVerdict {
   readonly approve: boolean;
   readonly reason: string;
   readonly tokens: number;
+  /** The guard could not judge (provider down, oversized input): the write is blocked, but the input should be retried, not dropped. */
+  readonly failed?: boolean;
 }
 
 export type KnowledgeGuard = (item: GuardItem) => Promise<GuardVerdict>;
 
 // Reasoning models spend output on thinking before the JSON; 1K left GLM with an empty answer.
 const GUARD_MAX_OUTPUT_TOKENS = 4096;
-const GUARD_MAX_INPUT_CHARS = 80_000;
+/** Larger candidates are rejected whole: approving a prefix would admit an unseen suffix. */
+export const GUARD_MAX_INPUT_CHARS = 80_000;
 
 const KIND_LABEL: Record<GuardKind, string> = {
   feedback: 'a review comment the learn loop wants to learn from',
@@ -90,8 +93,7 @@ export function guardModelSpec(config: ReviewerConfig): ModelSpec | null {
 /** Fence untrusted text with a nonce marker the text cannot contain or close. */
 export function fenceUntrusted(text: string): { open: string; close: string; body: string } {
   const nonce = randomBytes(12).toString('hex');
-  const body = text.length > GUARD_MAX_INPUT_CHARS ? `${text.slice(0, GUARD_MAX_INPUT_CHARS)}\n[truncated]` : text;
-  return { open: `<<<UNTRUSTED-${nonce}>>>`, close: `<<<END-UNTRUSTED-${nonce}>>>`, body };
+  return { open: `<<<UNTRUSTED-${nonce}>>>`, close: `<<<END-UNTRUSTED-${nonce}>>>`, body: text };
 }
 
 export function renderGuardRequest(item: GuardItem): string {
@@ -132,6 +134,11 @@ export function buildKnowledgeGuard(config: ReviewerConfig): KnowledgeGuard {
   if (!spec) throw new Error('knowledge guard: no HTTP model available; set models.guard');
   const model = buildChatModel(spec);
   return async (item) => {
+    // The whole candidate must be judged. Its source is evidence only, so a long one may be cut.
+    if (item.text.length > GUARD_MAX_INPUT_CHARS) {
+      return { approve: false, reason: `candidate is ${item.text.length} characters; the guard judges at most ${GUARD_MAX_INPUT_CHARS}`, tokens: 0 };
+    }
+    if (item.source && item.source.length > GUARD_MAX_INPUT_CHARS) item = { ...item, source: `${item.source.slice(0, GUARD_MAX_INPUT_CHARS)}\n[source truncated]` };
     try {
       const prompt = renderGuardRequest(item);
       let tokens = 0;
@@ -145,7 +152,7 @@ export function buildKnowledgeGuard(config: ReviewerConfig): KnowledgeGuard {
       }
       return { ...parseGuardAnswer(answer), tokens };
     } catch (err) {
-      return { approve: false, reason: `guard failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500), tokens: 0 };
+      return { approve: false, failed: true, reason: `guard failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500), tokens: 0 };
     }
   };
 }
