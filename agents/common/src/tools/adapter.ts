@@ -1,8 +1,8 @@
 /**
- * Bridge @agent-sh/harness-tools ToolDefinitions into the engine's neutral
+ * Bridge @agent-sh/harness-* ToolDefinitions into the engine's neutral
  * ToolDef (see ../tool-def.ts), which `toAiSdkTools` then hands to the AI SDK.
  *
- * harness-tools exposes each tool as:
+ * Each harness tool package exposes its tool as:
  *   - xxxToolDefinition: { name, description, inputSchema (JSON Schema) }
  *   - xxx(input, session) -> Promise<Result>
  *
@@ -35,7 +35,7 @@ interface FormatResult {
 
 /**
  * jsonSchemaToZod: a narrow, best-effort converter from the subset of JSON
- * Schema that harness-tools uses. harness-tools' schemas are valibot-derived
+ * Schema that the harness tools use. Their schemas are valibot-derived
  * and flat (string/number/boolean/object with required) so we handle only
  * those. The AI SDK validates tool input against this Zod schema before
  * calling `execute`, so a permissive `z.any()` leaf is a safe fallback for

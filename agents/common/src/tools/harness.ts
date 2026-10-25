@@ -1,15 +1,13 @@
 /**
- * Wire the harness-tools read/grep/glob (and, behind allowWrite, write/edit)
+ * Wire the harness read/grep/glob (and, behind allowWrite, write/edit)
  * tools with a permission policy scoped to the workspace. There is no shell or
  * LSP tool: a reviewer reads an attacker-controlled checkout, and a command
  * runner or a checkout-supplied .lsp.json would let that checkout execute code.
  */
-import {
-  read, readToolDefinition,
-  write, writeToolDefinition, edit, editToolDefinition,
-  grep, grepToolDefinition,
-  glob, globToolDefinition,
-} from '@agent-sh/harness-tools';
+import { read, readToolDefinition } from '@agent-sh/harness-read';
+import { write, writeToolDefinition, edit, editToolDefinition } from '@agent-sh/harness-write';
+import { grep, grepToolDefinition } from '@agent-sh/harness-grep';
+import { glob, globToolDefinition } from '@agent-sh/harness-glob';
 import {
   defaultNodeOperations,
   defaultNodeWriteOperations,
