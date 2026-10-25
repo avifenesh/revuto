@@ -169,3 +169,25 @@ test("revuto's own comment is quoted without its signature", () => {
   assert.equal(unsignReviewBody('<!-- revuto-signed -->\nlegacy'), 'legacy');
   assert.equal(unsignReviewBody('plain'), 'plain');
 });
+
+test('a guard failure after a non-JSON answer keeps that answer\'s tokens', async () => {
+  let calls = 0;
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (calls++ === 0) {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ id: 'x', object: 'chat.completion', created: 0, model: 'g',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'thinking...' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+      } else { res.statusCode = 400; res.end('{"error":{"message":"bad"}}'); }
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const { port } = server.address() as AddressInfo;
+    const verdict = await buildKnowledgeGuard(guardConfig({ baseURL: `http://127.0.0.1:${port}/v1`, model: 'g' }))(item);
+    assert.equal(verdict.failed, true);
+    assert.equal(verdict.tokens, 15);
+  } finally { await new Promise<void>((r) => server.close(() => r())); }
+});

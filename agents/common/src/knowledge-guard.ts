@@ -139,9 +139,9 @@ export function buildKnowledgeGuard(config: ReviewerConfig): KnowledgeGuard {
       return { approve: false, reason: `candidate is ${item.text.length} characters; the guard judges at most ${GUARD_MAX_INPUT_CHARS}`, tokens: 0 };
     }
     if (item.source && item.source.length > GUARD_MAX_INPUT_CHARS) item = { ...item, source: `${item.source.slice(0, GUARD_MAX_INPUT_CHARS)}\n[source truncated]` };
+    let tokens = 0;
     try {
       const prompt = renderGuardRequest(item);
-      let tokens = 0;
       let answer = '';
       // One retry when the answer is not JSON: an unparseable answer would reject good knowledge.
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -152,7 +152,8 @@ export function buildKnowledgeGuard(config: ReviewerConfig): KnowledgeGuard {
       }
       return { ...parseGuardAnswer(answer), tokens };
     } catch (err) {
-      return { approve: false, failed: true, reason: `guard failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500), tokens: 0 };
+      // Usage from an attempt that answered before a later one failed still counts.
+      return { approve: false, failed: true, reason: `guard failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500), tokens };
     }
   };
 }
