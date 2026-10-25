@@ -138,6 +138,13 @@ from your own `~/.codex`. Every login review runs in this one home, so a token
 refresh lands where the next review reads it. A review with no login there fails
 with the command to run.
 
+The login is the `auth.json` in that home, and it holds live ChatGPT tokens.
+OpenAI advises against a ChatGPT login for public repositories in CI, where the
+repository's own code runs beside that file. Revuto runs no repository code and
+Codex gets no shell; its file tools are revuto's, scoped to the checkout. For
+reviews of repositories whose contributors you do not trust, an API key limits
+what a leaked credential can do.
+
 ### On an OpenAI API key
 
 ```json
