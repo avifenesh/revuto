@@ -77,7 +77,9 @@ function requireReviewer(config: ReviewerConfig, repo: string) {
 async function cmdAdd(config: ReviewerConfig, repo: string): Promise<void> {
   if (!isRepositorySlug(repo)) throw new Error('usage: revuto add <owner/repo>');
   const auth = await githubAuthForRepo(config.github, repo);
-  const botLogin = auth.login ?? (await auth.octokit.users.getAuthenticated()).data.login;
+  // Keep an existing login: reviews posted under it (a personal token, before the App) stay revuto's.
+  const botLogin = readReviewer(config, repo)?.botLogin
+    ?? auth.login ?? (await auth.octokit.users.getAuthenticated()).data.login;
   writeReviewer(config, { ...(readReviewer(config, repo) ?? {}), repo, botLogin });
   console.log(`registered ${repo} (botLogin=${botLogin}). Skills + memory will live in ${config.vaultPath}.`);
 }

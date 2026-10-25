@@ -264,7 +264,9 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const maxPRs = opts.maxPRs ?? 1000;
   const auth = await githubAuthForRepo(config.github, repo);
   const { octokit, token } = auth;
-  const botLogin = auth.login ?? (await octokit.users.getAuthenticated()).data.login;
+  // Keep an existing login: reviews posted under it (a personal token, before the App) stay revuto's.
+  const botLogin = readReviewer(config, repo)?.botLogin
+    ?? auth.login ?? (await octokit.users.getAuthenticated()).data.login;
 
   // Fail fast if the store backend is unreachable, before the expensive backfill + LLM work.
   // The store is closed on every path: an open SurrealDB connection keeps the process alive.

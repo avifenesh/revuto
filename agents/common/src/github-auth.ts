@@ -24,6 +24,8 @@ export interface GithubAuth {
   token(): Promise<string>;
   /** Login used for comments/reviews, when known. */
   readonly login?: string;
+  /** Set for a GitHub App installation token; absent for a personal token. */
+  readonly installation?: true;
 }
 
 let cached: GithubAuth | null = null;
@@ -196,6 +198,7 @@ export async function getInstallationOctokit(config: GithubAppConfig, installati
     // The same mint (and auth-app's cache), so git/gh subprocesses get a live token too.
     token: mint,
     login: await getAppBotLogin(config),
+    installation: true,
   };
 }
 

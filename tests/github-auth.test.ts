@@ -124,3 +124,31 @@ test("with the App, revuto's own logins come from the App, not from /user", asyn
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+import { appBehindAuth } from '../daemon/src/jobs.js';
+
+test('App checks run only on the App installation token, never on a fallback personal token', () => {
+  const app = { appId: 1, privateKeyPath: 'unused.pem', allowedOwners: ['owner'] } as never;
+  const config = { github: { tokenEnv: 'REVUTO_TEST_TOKEN', app } } as never;
+  const octokit = {} as never;
+  assert.equal(appBehindAuth(config, 'owner/repo', { octokit, token: async () => 'ghs', installation: true }), app);
+  assert.equal(appBehindAuth(config, 'owner/repo', { octokit, token: async () => 'pat' }), undefined);
+  assert.equal(appBehindAuth(config, 'elsewhere/repo', { octokit, token: async () => 'ghs', installation: true }), undefined);
+});
+
+test('a fallback personal token still names its own user next to the App bot', async () => {
+  const { dir, app } = appConfig(9005, ['owner']);
+  const github = fakeGithub({ installed: true });
+  try {
+    const config = { github: { tokenEnv: 'REVUTO_TEST_TOKEN', app } } as never;
+    const pat = {
+      token: async () => 'pat',
+      octokit: { users: { getAuthenticated: async () => ({ data: { login: 'operator' } }) } },
+    } as never;
+    const logins = await reviewerIdentities(config, { repo: 'owner/repo' }, pat);
+    assert.deepEqual(logins.sort(), ['operator', 'revuto-test[bot]']);
+  } finally {
+    github.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

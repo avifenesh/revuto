@@ -125,7 +125,7 @@ test('--final reaches past the done marker of a capped head, and only there', as
   const cfg = { vaultPath: root, review: { workspaceDir: join(root, 'workspaces'), maxConcurrent: 4, maxConcurrentPerRepo: 2, maxRounds: 2 },
     github: { tokenEnv: 'TEST_UNUSED' }, models: { embedder: null }, limits: { dailyReviews: 0, dailyTokens: 0 }, store: { backend: 'sqlite' } } as ReviewerConfig;
   let signed = 2;
-  const auth = { login: 'reviewer', token: async () => 'unused', octokit: {
+  const auth = { login: 'reviewer', installation: true as const, token: async () => 'unused', octokit: {
     pulls: { get: async () => ({ data: { head: { sha: HEAD_A }, state: 'open', draft: false, html_url: 'https://example.test/pr' } }), listReviews: () => {} },
     paginate: async () => Array.from({ length: signed }, (_, i) => ({ id: i + 1, submitted_at: 'now', user: { login: 'reviewer' }, body: '<!-- revuto-signed -->' })),
   } } as unknown as GithubAuth;
@@ -166,7 +166,7 @@ function appHarness(root: string) {
   const created: number[] = [];
   const updates: Array<{ conclusion: string; title: string }> = [];
   const approvals: string[] = [];
-  const auth = { login: 'reviewer', token: async () => 'unused', octokit: {
+  const auth = { login: 'reviewer', installation: true as const, token: async () => 'unused', octokit: {
     pulls: {
       get: async () => ({ data: { head: { sha: HEAD_A }, state: 'open', draft: false, html_url: 'https://example.test/pr' } }),
       listReviews: () => {},

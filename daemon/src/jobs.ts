@@ -46,6 +46,15 @@ export interface LearnJobResult { curated: number; seen: number; initialized?: b
 
 const dayKey = (): string => new Date().toISOString().slice(0, 10);
 
+/**
+ * The App whose behavior (check runs, App-mode cursors) applies to this job:
+ * only when the credential is the App's installation token. A personal token
+ * used as a fallback for a repo the App does not reach cannot create checks.
+ */
+export function appBehindAuth(config: ReviewerConfig, repo: string, auth: GithubAuth) {
+  return auth.installation ? githubAppForRepo(config.github, repo) : undefined;
+}
+
 export interface ReviewJobDependencies {
   readonly githubAuth?: GithubAuth;
   readonly openStore?: typeof openStore;
@@ -61,8 +70,9 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
 }
 
 async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean }, deps: ReviewJobDependencies): Promise<ReviewJobResult> {
-  const app = githubAppForRepo(config.github, settings.repo);
-  const { octokit } = deps.githubAuth ?? await githubAuthForRepo(config.github, settings.repo);
+  const auth = deps.githubAuth ?? await githubAuthForRepo(config.github, settings.repo);
+  const { octokit } = auth;
+  const app = appBehindAuth(config, settings.repo, auth);
   const store = await (deps.openStore ?? openStore)(config, settings.repo);
   try {
     const cursor = await store.getCursor('review');
@@ -132,12 +142,13 @@ export function isServiceOutage(err: unknown): boolean {
  */
 export async function reviewerIdentities(config: ReviewerConfig, settings: ReviewerSettings, auth: GithubAuth): Promise<string[]> {
   const logins = [settings.botLogin, auth.login].filter((l): l is string => !!l);
+  // A personal token posts as its user; ask for it unless the credential already says.
+  if (!auth.installation && !auth.login) logins.push((await auth.octokit.users.getAuthenticated()).data.login);
   const app = githubAppForRepo(config.github, settings.repo);
   if (app) {
     try { logins.push(await getAppBotLogin(app)); }
     catch (err) { console.warn(`[learn] ${settings.repo}: App login unavailable: ${err instanceof Error ? err.message : String(err)}`); }
   }
-  if (!logins.length) logins.push((await auth.octokit.users.getAuthenticated()).data.login);
   return [...new Set(logins)];
 }
 
@@ -250,8 +261,8 @@ export async function reviewOnePr(config: ReviewerConfig, repo: string, prNumber
 }
 
 async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumber: number, opts: ReviewOnePrOptions): Promise<ReviewOutcome> {
-  const githubApp = githubAppForRepo(config.github, repo);
   const auth = opts.githubAuth ?? await githubAuthForRepo(config.github, repo);
+  const githubApp = appBehindAuth(config, repo, auth);
   const { octokit } = auth;
   const parts = repo.split('/');
   const [owner, name] = parts;
