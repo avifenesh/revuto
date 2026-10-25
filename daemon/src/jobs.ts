@@ -9,7 +9,7 @@ import { getOctokit, getRepositoryInstallationOctokit, type GithubAuth } from '.
 import { openStore } from '../../agents/common/src/store/open.js';
 import { maybeEmbedder } from '../../agents/common/src/memory/embedder.js';
 import { runReview, unreviewedOutcome, describeOutcome, type ReviewOutcome } from '../../agents/common/src/run-agent.js';
-import { runCurator } from '../../agents/curator/src/run-curator.js';
+import { GuardUnavailableError, runCurator } from '../../agents/curator/src/run-curator.js';
 import { buildKnowledgeGuard } from '../../agents/common/src/knowledge-guard.js';
 import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollReviewCandidates, pollFeedback } from './poller.js';
@@ -135,7 +135,14 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
       if (await store.seen(fb.feedbackId)) continue;
       if (dailyLearn && learnedToday >= dailyLearn) { limited = 'daily-learn'; break; }
       if (dailyTokens && tokensToday >= dailyTokens) { limited = 'daily-tokens'; break; }
-      const out = await runCurator({ config, store, embedder, feedback: fb, autoActivate: settings.autoActivate, guard });
+      let out: Awaited<ReturnType<typeof runCurator>>;
+      try {
+        out = await runCurator({ config, store, embedder, feedback: fb, autoActivate: settings.autoActivate, guard });
+      } catch (err) {
+        // The feedback stays pending for the next tick, but what the run spent still counts.
+        if (err instanceof GuardUnavailableError && dailyTokens && err.tokens) await store.incrCounter(counterKey('tokens', day), err.tokens);
+        throw err;
+      }
       await store.mark(fb.feedbackId);
       curated++;
       if (dailyLearn) learnedToday = await store.incrCounter(counterKey('learn', day));

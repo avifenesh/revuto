@@ -9,6 +9,7 @@ import type { Octokit } from '@octokit/rest';
 import type { GithubAppConfig } from '../../agents/common/src/config.js';
 import { classifyCommentBody } from '../../agents/common/src/heuristics.js';
 import type { FeedbackEvent } from '../../agents/curator/src/run-curator.js';
+import { unsignReviewBody } from '../../agents/common/src/tools/gh.js';
 
 export interface OpenPR {
   readonly number: number;
@@ -163,7 +164,8 @@ export async function pollFeedback(
           )).data;
         } catch { /* parent gone — treat as a standalone maintainer comment */ }
       }
-      if (parent && (parent.user?.login ?? '') === botLogin) inReplyToBot = parent.body ?? '';
+      // Quote revuto's own comment without its attribution header and hidden marker.
+      if (parent && (parent.user?.login ?? '') === botLogin) inReplyToBot = unsignReviewBody(parent.body ?? '');
     }
 
     out.push({

@@ -67,7 +67,7 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
   const facts = renderFeedbackFacts(opts.feedback);
   const prompt = `${facts}\n${renderCuratorTask(opts.feedback)}`;
   const admitted = await guard({ kind: 'feedback', repo: opts.feedback.repo, text: facts });
-  if (admitted.failed) throw new GuardUnavailableError(admitted.reason);
+  if (admitted.failed) throw new GuardUnavailableError(admitted.reason, guardTokens);
   if (!admitted.approve) return { decision: 'guard_rejected', summary: admitted.reason, tokens: guardTokens };
 
   const tools = toAiSdkTools(assembleCuratorTools({
@@ -132,13 +132,14 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
     }
   }
   // A write the guard could not judge was blocked. Throwing keeps the feedback unmarked, so it is retried.
-  if (guardFailure) throw new GuardUnavailableError(guardFailure);
+  if (guardFailure) throw new GuardUnavailableError(guardFailure, tokens + guardTokens);
   return { decision, summary, tokens: tokens + guardTokens };
 }
 
 /** The knowledge guard could not judge a write; the feedback must be retried, not marked done. */
 export class GuardUnavailableError extends Error {
-  constructor(reason: string) {
+  /** Tokens the run spent before it stopped, still owed to the daily budget. */
+  constructor(reason: string, readonly tokens = 0) {
     super(`knowledge guard unavailable, feedback kept for retry: ${reason}`);
     this.name = 'GuardUnavailableError';
   }

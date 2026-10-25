@@ -16,6 +16,7 @@ import { SqliteStore } from '../agents/common/src/store/sqlite-store.js';
 import { buildConcernsStoreTools } from '../agents/curator/src/tools/concerns-store.js';
 import { buildSubmitSkillTool, graduate } from '../agents/curator/src/tools/submit-skill.js';
 import { GuardUnavailableError, runCurator } from '../agents/curator/src/run-curator.js';
+import { signReviewBody, unsignReviewBody } from '../agents/common/src/tools/gh.js';
 
 /** A chat-completions endpoint that answers with fixed text and records request bodies. */
 async function fakeChat(answer: string): Promise<{ url: string; bodies: any[]; close(): Promise<void> }> {
@@ -155,8 +156,16 @@ test('rejected feedback never reaches the curator model', async () => {
       config: { models: { curator: { baseURL: curator.url, model: 'c' } }, limits: { maxOutputTokens: { curator: 64 } } } as unknown as ReviewerConfig,
       store: {} as never, embedder: null,
       feedback: { feedbackId: 'rc-2', kind: 'review_comment', body: 'Keep ids stable.', repo: 'o/r', prNumber: 1, touchedFiles: [] },
-      guard: async () => ({ approve: false, failed: true, reason: 'guard failed: down', tokens: 0 }),
-    }), (err: unknown) => err instanceof GuardUnavailableError, 'a guard outage throws so the feedback is not marked done');
+      guard: async () => ({ approve: false, failed: true, reason: 'guard failed: down', tokens: 3 }),
+    }), (err: unknown) => err instanceof GuardUnavailableError && err.tokens === 3, 'a guard outage throws so the feedback is not marked done, carrying the tokens spent');
     assert.equal(curator.bodies.length, 0);
   } finally { await curator.close(); }
+});
+
+test("revuto's own comment is quoted without its signature", () => {
+  const posted = signReviewBody('Retry count is unbounded here.');
+  assert.match(posted, /revuto-signed/);
+  assert.equal(unsignReviewBody(posted), 'Retry count is unbounded here.');
+  assert.equal(unsignReviewBody('<!-- revuto-signed -->\nlegacy'), 'legacy');
+  assert.equal(unsignReviewBody('plain'), 'plain');
 });
