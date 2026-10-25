@@ -153,6 +153,11 @@ export class SurrealStore implements KnowledgeStore {
     `);
   }
 
+  /** Drop this repo's database (`revuto remove --purge`). */
+  async dropDatabase(): Promise<void> {
+    await this.query(`REMOVE DATABASE IF EXISTS \`${ident(this.database)}\``);
+  }
+
   private async query(sql: string, vars?: Record<string, unknown>, opts: { retryRead?: boolean } = {}): Promise<unknown[]> {
     const execute = (): Promise<unknown[]> => this.queryWithConflictRetry(sql, vars);
     try {

@@ -127,7 +127,8 @@ export function getAppOctokit(config: GithubAppConfig): Octokit {
   });
 }
 
-async function getAppBotLogin(config: GithubAppConfig): Promise<string> {
+/** The App's `<slug>[bot]` login, the identity App-mode reviews post as. */
+export async function getAppBotLogin(config: GithubAppConfig): Promise<string> {
   const key = appCacheKey(config);
   const existing = appLoginCache.get(key);
   if (existing) return existing;

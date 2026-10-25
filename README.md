@@ -111,7 +111,8 @@ flowchart LR
 
 - **init** clones the repo, scans its structure, backfills up to 1,000 PRs,
   distills what maintainers care about and writes
-  `<vault>/skills/<repo>/_textbook.md`.
+  `<vault>/skills/<repo>/_textbook.md`. Only feedback from people with write
+  access counts, never the PR author's own comments or bots.
 - **review** claims the exact PR head, checks it out, picks the textbook and the
   relevant skills, runs the reviewer, then posts a review or skips. A webhook
   triggers it; a cron pass catches anything missed.
@@ -126,6 +127,10 @@ flowchart LR
 
 New skills land as `draft` and load only after `revuto approve`. Repos with
 `autoActivate` graduate them as `active` right away, once the guard approves them.
+Revising a skill keeps the old version under `_history/`, and a draft revision of
+an active skill is written beside it as `<slug>-revision` instead of replacing it.
+Skill and reviewer notes must use YAML front matter; a note in any other front
+matter language is skipped, never evaluated.
 
 ## Review on push
 
@@ -156,7 +161,7 @@ revuto daemon                        # start scheduler + configured GitHub App w
 
 # lifecycle
 revuto add <owner/repo>              # register without onboarding
-revuto remove <owner/repo> [--purge] # unregister (--purge also deletes skills + sqlite memory)
+revuto remove <owner/repo> [--purge] # unregister (--purge also deletes its skills and memory)
 revuto pause <owner/repo>            # stop scheduling (until resume / restart)
 revuto resume <owner/repo>           # re-enable scheduling
 revuto cron <owner/repo> <job> <expr>  # per-repo cron for review|learn|decay ("clear" resets to default)

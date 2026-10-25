@@ -37,6 +37,8 @@ import {
   type CheckResult,
   type ReviewCheckTarget,
 } from './review-check.js';
+import { getAppBotLogin } from '../../agents/common/src/github-auth.js';
+import type { Octokit } from '@octokit/rest';
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -111,6 +113,19 @@ async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSett
   } finally { await store.close(); }
 }
 
+/** Attempts at one feedback event before the learn loop drops it (a guard outage does not count). */
+const LEARN_MAX_ATTEMPTS = 3;
+
+/** Every login revuto posts as on this repo: the personal token's user and the App's bot. */
+export async function reviewerIdentities(config: ReviewerConfig, settings: ReviewerSettings, octokit: Octokit): Promise<string[]> {
+  const logins = [settings.botLogin ?? (await octokit.users.getAuthenticated()).data.login];
+  if (config.github.app) {
+    try { logins.push(await getAppBotLogin(config.github.app)); }
+    catch (err) { console.warn(`[learn] ${settings.repo}: App login unavailable: ${err instanceof Error ? err.message : String(err)}`); }
+  }
+  return logins;
+}
+
 export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettings): Promise<LearnJobResult> {
   const { octokit } = getOctokit(config.github);
   const store = await openStore(config, settings.repo);
@@ -121,9 +136,16 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
       await store.setCursor('learn', nowIso());
       return { curated: 0, seen: 0, initialized: true };
     }
-    const botLogin = settings.botLogin ?? (await octokit.users.getAuthenticated()).data.login;
-    let feedback = await pollFeedback(octokit, settings.repo, botLogin, cursor);
+    const identities = await reviewerIdentities(config, settings, octokit);
+    // The cursor moves to when this poll started, not when it finished: comments posted during a long run come next time.
+    const pollStarted = nowIso();
+    let feedback = await pollFeedback(octokit, settings.repo, identities, cursor);
     if (config.limits.learnBatch) feedback = feedback.slice(0, config.limits.learnBatch);       // per-batch cap
+    /** The cursor that re-polls `feedback[i]` and everything after it. */
+    const resumeBefore = (i: number): string => {
+      const times = feedback.slice(i).map((f) => Date.parse(f.updatedAt ?? '')).filter(Number.isFinite);
+      return times.length ? new Date(Math.min(...times) - 1).toISOString() : cursor;
+    };
     const day = dayKey();
     const { dailyLearn, dailyTokens } = config.limits;
     let learnedToday = dailyLearn ? await store.getCounter(counterKey('learn', day)) : 0;
@@ -131,24 +153,34 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
     let curated = 0;
     let limited: string | undefined;
     const guard = buildKnowledgeGuard(config);
-    for (const fb of feedback) {
+    let resumeAt: string | undefined;
+    for (const [i, fb] of feedback.entries()) {
       if (await store.seen(fb.feedbackId)) continue;
-      if (dailyLearn && learnedToday >= dailyLearn) { limited = 'daily-learn'; break; }
-      if (dailyTokens && tokensToday >= dailyTokens) { limited = 'daily-tokens'; break; }
+      // A limit stops the pass, but the cursor stays before what was not processed, so nothing is skipped for good.
+      if (dailyLearn && learnedToday >= dailyLearn) { limited = 'daily-learn'; resumeAt = resumeBefore(i); break; }
+      if (dailyTokens && tokensToday >= dailyTokens) { limited = 'daily-tokens'; resumeAt = resumeBefore(i); break; }
       let out: Awaited<ReturnType<typeof runCurator>>;
       try {
         out = await runCurator({ config, store, embedder, feedback: fb, autoActivate: settings.autoActivate, guard });
       } catch (err) {
         // The feedback stays pending for the next tick, but what the run spent still counts.
         if (err instanceof GuardUnavailableError && dailyTokens && err.tokens) await store.incrCounter(counterKey('tokens', day), err.tokens);
-        throw err;
+        const failures = err instanceof GuardUnavailableError ? 0 : await store.incrCounter(`learn-fail:${fb.feedbackId}`);
+        if (failures < LEARN_MAX_ATTEMPTS) {
+          await store.setCursor('learn', resumeBefore(i));
+          throw err;
+        }
+        // One comment that always breaks the curator must not stall the repo's learning.
+        console.warn(`[learn] ${settings.repo} ${fb.feedbackId}: dropped after ${failures} failed attempts: ${err instanceof Error ? err.message : String(err)}`);
+        await store.mark(fb.feedbackId);
+        continue;
       }
       await store.mark(fb.feedbackId);
       curated++;
       if (dailyLearn) learnedToday = await store.incrCounter(counterKey('learn', day));
       if (dailyTokens) tokensToday = await store.incrCounter(counterKey('tokens', day), out.tokens);        // shared daily token budget
     }
-    await store.setCursor('learn', nowIso());
+    await store.setCursor('learn', resumeAt ?? pollStarted);
     return { curated, seen: feedback.length, ...(limited ? { limited } : {}) };
   } finally {
     await store.close();

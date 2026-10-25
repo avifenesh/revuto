@@ -31,6 +31,8 @@ export interface FeedbackEvent {
   /** The reviewer's comment being replied to — present only for review_comment_reply. */
   readonly inReplyToBot?: string;
   readonly actor?: string;
+  /** When the comment was last updated: the learn cursor resumes before an unprocessed one. */
+  readonly updatedAt?: string;
   /** The author's GitHub author_association (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...). */
   readonly association?: string;
   readonly touchedFiles: readonly string[];

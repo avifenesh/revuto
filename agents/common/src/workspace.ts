@@ -88,13 +88,19 @@ function run(cmd: string, args: readonly string[], opts: { cwd?: string; env?: N
  * we clone the target repo on first use and reuse the checkout after that.
  */
 async function ensureClone(owner: string, repoName: string, workspaceRoot: string, token: string): Promise<void> {
-  const env = { GIT_TERMINAL_PROMPT: '0' };
-  const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repoName}.git`;
+  // The token goes in a per-command header, never in the remote URL: a URL lands in
+  // .git/config (inside the vault), in argv, and in clone error text.
+  const env = { GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` };
+  const remoteUrl = `https://github.com/${owner}/${repoName}.git`;
   if (!existsSync(`${workspaceRoot}/.git`)) {
     await mkdir(dirname(workspaceRoot), { recursive: true });
     await run('git', ['clone', '--filter=tree:0', remoteUrl, workspaceRoot], { env });
   } else {
+    // Also scrubs a token an older revuto wrote into the remote, and brings the scan up to date.
     await run('git', ['remote', 'set-url', 'origin', remoteUrl], { cwd: workspaceRoot, env });
+    await run('git', ['fetch', '--quiet', 'origin'], { cwd: workspaceRoot, env });
+    await run('git', ['reset', '--quiet', '--hard', '@{upstream}'], { cwd: workspaceRoot, env });
   }
 }
 

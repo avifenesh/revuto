@@ -3,6 +3,7 @@ import { tool } from '../../../common/src/tool-def.js';
 import type { KnowledgeStore } from '../../../common/src/store/store.js';
 import { type Embedder, concernEmbeddingText, embedOne } from '../../../common/src/memory/embedder.js';
 import type { KnowledgeGuard } from '../../../common/src/knowledge-guard.js';
+import { validAreaGlobs } from '../../../common/src/skills/select.js';
 
 /**
  * Curator concerns-store tools, backed by the per-repo KnowledgeStore.
@@ -46,6 +47,8 @@ export function buildConcernsStoreTools(deps: ConcernsStoreDeps) {
   const { store, embedder } = deps;
   /** null when approved (or no guard), else the tool's error result. */
   const guardRejects = async (tool: string, record: ConcernText, source = deps.source) => {
+    const badArea = validAreaGlobs(record.area);
+    if (badArea) return `ERROR ${tool}: ${badArea}`;
     if (!deps.guard) return null;
     const verdict = await deps.guard({ kind: 'concern', repo: deps.repo ?? '', text: renderConcernForGuard(record), ...(source ? { source } : {}) });
     return verdict.approve ? null : `ERROR ${tool}: rejected by the knowledge guard: ${verdict.reason}`;
