@@ -72,7 +72,20 @@ export function codexReviewSchema(allowEscalation = false): string {
 
 export const CODEX_REVIEW_SCHEMA = codexReviewSchema();
 
-const PASSTHROUGH_KEYS = ['HOME', 'USER', 'PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR'] as const;
+const PASSTHROUGH_KEYS = ['USER', 'PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR'] as const;
+
+/**
+ * Codex features that add tools or load state beyond the revuto MCP server:
+ * images from anywhere on disk, sub-agents and code mode (which get around
+ * review.maxSteps), browsers, apps, plugins, hooks, memories and skills. Set
+ * through -c features.<name>=false, which ignores names a Codex build lacks.
+ */
+export const CODEX_DISABLED_FEATURES = [
+  'view_image', 'image_generation', 'multi_agent', 'code_mode', 'code_mode_host', 'goals', 'unified_exec',
+  'apps', 'plugins', 'remote_plugin', 'hooks', 'memories', 'skill_search', 'skill_mcp_dependency_install',
+  'browser_use', 'browser_use_external', 'browser_use_full_cdp_access', 'browser_annotation_api', 'in_app_browser',
+  'computer_use', 'tool_suggest', 'workspace_dependencies', 'worktrees', 'shell_snapshot', 'sleep_tool',
+] as const;
 // Bedrock authentication on the Bedrock provider only. No GitHub token, no shell settings.
 const AWS_KEYS = [
   'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
@@ -102,12 +115,16 @@ export function revutoCodexHome(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * The environment a Codex review runs with: its CODEX_HOME plus the credentials
- * of its provider. Bedrock gets the AWS keys, an OpenAI API key reaches Codex as
- * CODEX_API_KEY, and a ChatGPT login needs nothing beyond the home.
+ * The environment a Codex review runs with: its CODEX_HOME, a scratch HOME (so
+ * the operator's ~/.agents skills and dotfiles never load), plus the credentials
+ * of its provider. Bedrock gets the AWS keys, with the shared AWS files pinned to
+ * the operator's real ones; an OpenAI API key reaches Codex as CODEX_API_KEY, and
+ * a ChatGPT login needs nothing beyond the home.
  */
-export function codexEnvironment(codexHome: string, spec: ModelSpec, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function codexEnvironment(codexHome: string, spec: ModelSpec, env: NodeJS.ProcessEnv = process.env, scratchHome?: string): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = { CODEX_HOME: codexHome };
+  if (scratchHome) result.HOME = scratchHome;
+  else if (env.HOME !== undefined) result.HOME = env.HOME;
   for (const key of PASSTHROUGH_KEYS) {
     if (env[key] !== undefined) result[key] = env[key];
   }
@@ -115,6 +132,9 @@ export function codexEnvironment(codexHome: string, spec: ModelSpec, env: NodeJS
     for (const key of AWS_KEYS) {
       if (env[key] !== undefined) result[key] = env[key];
     }
+    const realHome = env.HOME ?? homedir();
+    result.AWS_CONFIG_FILE ??= join(realHome, '.aws', 'config');
+    result.AWS_SHARED_CREDENTIALS_FILE ??= join(realHome, '.aws', 'credentials');
   } else if (!codexUsesLogin(spec)) {
     const keyEnv = spec.apiKeyEnv?.trim() || 'OPENAI_API_KEY';
     const key = env[keyEnv]?.trim();
@@ -146,6 +166,10 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
     // operator's HOME, must not reach the model as instructions.
     '-c', 'project_doc_max_bytes=0',
     '-c', 'skills.include_instructions=false',
+    ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['-c', `features.${feature}=false`]),
+    // Sub-agents would run outside revuto's step count: one thread, no depth.
+    '-c', 'agents.max_concurrent_threads_per_session=1',
+    '-c', 'agents.max_depth=0',
     '-c', `model_provider=${toml(provider)}`,
   ];
   if (provider === 'amazon-bedrock') {
@@ -186,6 +210,9 @@ export interface CodexStreamState {
   lastMessage?: string;
 }
 
+/** `codex exec --json` item types that are not tool calls. */
+const CODEX_NON_TOOL_ITEMS = new Set(['agent_message', 'reasoning', 'error', 'todo_list']);
+
 /** Adapt `codex exec --json` events to the native runner contract (`step_update` / `result`). */
 export function normalizeCodexEvents(record: Record<string, unknown>, state: CodexStreamState): Record<string, unknown>[] {
   if (record.type === 'thread.started') {
@@ -206,7 +233,12 @@ export function normalizeCodexEvents(record: Record<string, unknown>, state: Cod
       return [{ event: 'step_update', step_update: { step_type: 'tool', tool_name: CODEX_INSPECTION_TOOLS.get(raw) ?? raw,
         tool_info: { output, ...(failed ? { error: item.error ?? output } : {}) } } }];
     }
-    // Reasoning summaries, config warnings and other items are not inspection evidence.
+    // Any other tool-like item (a command, a sub-agent, code mode, a file change)
+    // is not evidence, but it is a tool call: it counts toward review.maxSteps.
+    if (typeof item.type === 'string' && !CODEX_NON_TOOL_ITEMS.has(item.type)) {
+      return [{ event: 'step_update', step_update: { step_type: 'tool', tool_name: `codex.${item.type}`, tool_info: { output: '' } } }];
+    }
+    // Reasoning summaries, config warnings and plans are not tool calls.
     return [];
   }
   if (record.type === 'turn.completed') {

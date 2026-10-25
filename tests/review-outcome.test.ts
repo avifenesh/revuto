@@ -41,14 +41,15 @@ const step = (results: Array<{ toolName: string; output?: unknown }>, content?: 
   ...(content ? { content } : {}),
 });
 
-test('summarizeReviewSteps counts inspection tool calls', () => {
+test('summarizeReviewSteps counts reads of PR evidence, not searches', () => {
   const s = summarizeReviewSteps([
     step([{ toolName: 'read', output: 'file contents' }, { toolName: 'grep', output: 'match' }]),
-    step([{ toolName: 'bash', output: 'ok' }]),
+    step([{ toolName: 'pr_diff', output: '{"total_characters":120,"text":"diff"}' }, { toolName: 'glob', output: 'a.ts' }]),
+    step([{ toolName: 'pr_diff', output: '{"total_characters":0,"text":""}' }]),
     step([{ toolName: 'skip_review', output: '{"skipped":true}' }]),
   ]);
   assert.equal(s.terminal, 'skip_review');
-  assert.equal(s.inspections, 3);
+  assert.equal(s.inspections, 2, 'read and a non-empty pr_diff count; grep, glob and an empty diff do not');
   assert.equal(s.toolErrors, 0);
   assert.equal(s.hasFindings, false);
 });
@@ -110,8 +111,8 @@ test('a review that could not be posted fails the check instead of approving', (
 test('summarizeReviewSteps counts failed tool calls as errors, not inspection', () => {
   const s = summarizeReviewSteps([
     step([{ toolName: 'read', output: 'ERROR INVALID_PARAM: Invalid key: Expected "path"' }]),
-    step([{ toolName: 'bash', output: 'ERROR: permission denied' }]),
-    step([{ toolName: 'glob', output: 'src/main.rs' }]),
+    step([{ toolName: 'read', output: 'ERROR: permission denied' }]),
+    step([{ toolName: 'read', output: 'fn main() {}' }]),
     step([{ toolName: 'skip_review', output: '{"skipped":true}' }], [{ type: 'tool-error' }]),
   ]);
   assert.equal(s.inspections, 1);

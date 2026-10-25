@@ -181,11 +181,37 @@ export interface RunAgyCliOptions {
 
 type NativeRunner = 'agy' | 'claude' | 'codex';
 
+const AGY_PASSTHROUGH_KEYS = ['USER', 'PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+  // AGY's Google OAuth lives in the desktop keyring, reached over the session bus.
+  'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'] as const;
+
+/**
+ * AGY settings for a review home: tools run without prompts (headless), but only
+ * inside the workspace. The operator's own settings (which may allow access
+ * outside the workspace and trust their whole home) are never read.
+ */
+export const AGY_REVIEW_SETTINGS = { toolPermission: 'always-proceed', allowNonWorkspaceAccess: false, trustedWorkspaces: [] };
+
+/**
+ * The environment an AGY run gets: a private HOME holding only revuto's AGY
+ * settings, locale, TLS and the session bus for its keyring login. No GitHub
+ * token, model keys, webhook secret or other daemon credentials.
+ */
+export function agyEnvironment(home: string, cwd: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = { HOME: home, AGY_CLI_HIDE_LOGO: 'true', RIPGREP_CONFIG_PATH: rgScopeConfigPath(cwd) };
+  for (const key of AGY_PASSTHROUGH_KEYS) {
+    if (env[key] !== undefined) result[key] = env[key];
+  }
+  return result;
+}
+
 function runnerOf(spec: ModelSpec): NativeRunner {
   return spec.api === 'claude' ? 'claude' : spec.api === 'codex' ? 'codex' : 'agy';
 }
 
 const INSPECTION_TOOLS = ['mcp__revuto__read', 'mcp__revuto__grep', 'mcp__revuto__glob', 'mcp__revuto__pr_diff', 'mcp__revuto__new_changes'];
+/** The inspection tools whose success means PR evidence was read; grep and glob alone are not. */
+const EVIDENCE_TOOLS = ['mcp__revuto__read', 'mcp__revuto__pr_diff', 'mcp__revuto__new_changes'];
 
 function reviewMcpServer(cwd: string, diffRange?: string, sinceRange?: string): { command: string; args: string[] } {
   return { command: process.execPath, args: [fileURLToPath(new URL('./claude-review-mcp.js', import.meta.url)), cwd, diffRange ?? '', ...(sinceRange ? [sinceRange] : [])] };
@@ -202,14 +228,22 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
   opts.signal?.throwIfAborted();
   const runner = runnerOf(opts.spec);
   const claudeSubscription = runner === 'claude' && opts.spec.auth === 'subscription';
-  if (runner !== 'codex' && !claudeSubscription) return spawnNativeCli(opts);
-  const dir = await mkdtemp(join(tmpdir(), runner === 'codex' ? 'revuto-codex-' : 'revuto-claude-'));
+  if (runner === 'claude' && !claudeSubscription) return spawnNativeCli(opts);
+  const dir = await mkdtemp(join(tmpdir(), `revuto-${runner}-`));
   try {
     const home = join(dir, 'home');
     if (claudeSubscription) {
       await mkdir(home);
       return await spawnNativeCli(opts, undefined, home);
     }
+    if (runner === 'agy') {
+      const settings = join(home, '.gemini', 'antigravity-cli');
+      await mkdir(settings, { recursive: true });
+      await writeFile(join(settings, 'settings.json'), `${JSON.stringify(AGY_REVIEW_SETTINGS)}\n`);
+      return await spawnNativeCli(opts, undefined, undefined, home);
+    }
+    const scratchHome = join(dir, 'user-home');
+    await mkdir(scratchHome);
     let codexHome = home;
     if (codexUsesLogin(opts.spec)) {
       codexHome = revutoCodexHome();
@@ -224,13 +258,13 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       schemaPath = join(dir, 'schema.json');
       await writeFile(schemaPath, opts.schema);
     }
-    return await spawnNativeCli(opts, { codexHome, schemaPath });
+    return await spawnNativeCli(opts, { codexHome, schemaPath, scratchHome });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string }, claudeConfigDir?: string): Promise<AgyCliRun> {
+function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string }, claudeConfigDir?: string, agyHome?: string): Promise<AgyCliRun> {
   const runner = runnerOf(opts.spec);
   const claude = runner === 'claude';
   const label = runner === 'claude' ? 'Claude CLI' : runner === 'codex' ? 'Codex CLI' : 'AGY';
@@ -269,7 +303,8 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
       '--allowedTools', opts.probe ? '' : INSPECTION_TOOLS.join(','));
     if (opts.spec.reasoningEffort) args.push('--effort', opts.spec.reasoningEffort);
   } else if (runner === 'agy') {
-    args.push('--print-timeout', timeoutArg(timeoutMs));
+    // Terminal restrictions on top of the workspace-only settings in its private home.
+    args.push('--print-timeout', timeoutArg(timeoutMs), '--sandbox');
     if (opts.structuredOnly) args.push('--mode', 'plan', '--disable-slash-commands');
   }
   if (runner !== 'codex' && opts.schema) args.push('--json-schema', opts.schema);
@@ -282,7 +317,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
         ...(claudeConfigDir ? claudeSubscriptionIsolation(claudeConfigDir) : {}),
         CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens),
       }
-      : runner === 'codex' ? codexEnvironment(codex!.codexHome, opts.spec) : { ...process.env, AGY_CLI_HIDE_LOGO: 'true', RIPGREP_CONFIG_PATH: rgScopeConfigPath(opts.cwd) };
+      : runner === 'codex' ? codexEnvironment(codex!.codexHome, opts.spec, process.env, codex!.scratchHome) : agyEnvironment(agyHome!, opts.cwd);
   } catch (err) {
     return Promise.reject(err);
   }
@@ -371,8 +406,9 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
         if (runner !== 'agy' && !INSPECTION_TOOLS.includes(name)) return;
         const error = info?.error;
         toolSteps.push({ name, output: info?.output, error });
-        if (error === undefined || error === null) inspections++;
-        else toolErrors++;
+        if (error !== undefined && error !== null) toolErrors++;
+        // AGY reports its own tool names, so any successful AGY tool counts; it runs sandboxed.
+        else if (runner === 'agy' || EVIDENCE_TOOLS.includes(name)) inspections++;
         return;
       }
       if (record.event === 'refusal') {

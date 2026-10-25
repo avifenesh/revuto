@@ -230,7 +230,7 @@ export function renderPrOverview(ctx: PrContext): string {
   lines.push(`Head: ${ctx.headRef} @ ${ctx.headSha}`);
   lines.push(`Base: ${ctx.baseRef} @ ${ctx.baseSha}`);
   lines.push(`Merge-base: ${ctx.mergeBaseSha}`);
-  lines.push(`Diff range: \`${ctx.diffRefSpec}\` (use this with \`git diff\` / \`git log\`)`);
+  lines.push(`Diff range: \`${ctx.diffRefSpec}\` (read it with the \`pr_diff\` tool)`);
   lines.push(`Workspace: \`${ctx.workspacePath}\` (HEAD is already checked out at the PR tip)`);
   lines.push(`Size: +${ctx.additions} / -${ctx.deletions} across ${ctx.changedFiles} files`);
   lines.push('');

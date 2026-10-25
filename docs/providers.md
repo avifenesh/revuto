@@ -76,10 +76,15 @@ fixed PR diff, excluding sensitive paths. Search honors the workspace's own
 ignore files only: ignore files and `.git` directories above the workspace and
 the global gitignore do not apply. A directory the workspace's rules hide is
 searched directly when the scoped search finds nothing, and the result says so.
-Shells given to open-model and AGY reviewers set `RIPGREP_CONFIG_PATH` to the
-same scope (`agents/common/rg/`). Claude gets no shell, arbitrary Git, LSP,
-write, or network tools. Hooks, plugins and project memory never load; revuto
-supplies the PR and repository knowledge.
+A `.ignore` or `.rgignore` in the checkout is not honored either, so a PR cannot
+hide its own files; `.gitignore` still applies. AGY gets the same scope through
+`RIPGREP_CONFIG_PATH` (`agents/common/rg/`). Claude gets no shell, arbitrary Git,
+LSP, write, or network tools. Hooks, plugins and project memory never load;
+revuto supplies the PR and repository knowledge.
+
+A review counts as inspected only once the reviewer read PR evidence: a file,
+the PR diff, or the re-review diff. A search or a listing alone does not count,
+so a reviewer that runs one grep and calls `skip_review` fails the check.
 
 Valid effort values are `low`, `medium`, `high`, `xhigh`, and `max`. Claude
 receives `review.maxSteps` as `--max-turns` and the configured review output cap
@@ -93,7 +98,11 @@ Revuto runs `codex exec --json` with `--ignore-user-config --ignore-rules`, the 
 tool disabled, web search off, a read-only sandbox and `--ephemeral`. Project docs
 (`AGENTS.md`) and skill instructions are off, so neither the checkout's nor the
 operator's reach the model, and the operator's `~/.codex` config and sessions are
-never read. Codex runs the review tiers only.
+never read. Codex also gets a scratch `HOME`, so `~/.agents` skills and dotfiles
+stay out, and its other built-in tools are switched off: images, code mode,
+sub-agents (one thread, no depth), apps, plugins, browsers, hooks and memories.
+Any tool item Codex still reports counts toward `review.maxSteps`. Codex runs
+the review tiers only.
 
 ### On a ChatGPT plan
 
@@ -185,7 +194,11 @@ the review moves to the spec's next `fallbacks` entry, as Claude refusals do.
 ```
 
 `api: "agy"` uses the Antigravity CLI and its cached Google OAuth session; no API
-key. `agy://local` is a marker and is not contacted. For reviews, AGY inspects the
+key. `agy://local` is a marker and is not contacted. Each run gets a private
+`HOME` with revuto's own AGY settings (tools only inside the workspace, nothing
+trusted outside it), `--sandbox` terminal restrictions, and an environment with
+no daemon credentials: locale, TLS and the session bus for the keyring login.
+The operator's AGY settings are never read. For reviews, AGY inspects the
 prepared worktree in headless `stream-json` mode and returns a strict review
 object; revuto performs the one GitHub `post_review` or `skip_review` action. Set
 `permissionMode: "bypass"` only for a fully trusted review environment; it passes
@@ -202,7 +215,10 @@ permission bypass. HTTP models such as GLM can follow AGY in `fallbacks`.
 ## HTTP models: GLM, Grok, OpenAI-compatible and local
 
 Any OpenAI-compatible endpoint works for every role. Tool calling is required (the
-reviewer and curator drive tools).
+reviewer and curator drive tools). An HTTP reviewer gets the same guarded tools as
+Claude and Codex (read, grep, glob, `pr_diff`, `new_changes`) plus the posting
+tools; there is no shell, Git, LSP or GitHub API tool. `review.allowWrite` adds
+write and edit, confined to the worktree.
 
 ```jsonc
 // GLM on the Z.ai coding plan

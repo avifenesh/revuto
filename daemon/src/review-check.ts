@@ -5,6 +5,8 @@ import type { GithubAuth } from '../../agents/common/src/github-auth.js';
 import type { ReviewOutcome } from '../../agents/common/src/run-agent.js';
 import { signReviewBody, withReviewHeading } from '../../agents/common/src/tools/gh.js';
 import { FINAL_REVIEW_HEADING } from './review-rounds.js';
+import { homedir } from 'node:os';
+import { redactSecrets } from '../../agents/common/src/outbound.js';
 
 export interface ReviewCheckTarget {
   readonly repo: string;
@@ -138,12 +140,28 @@ export function checkResultForOutcome(outcome: ReviewOutcome): CheckResult {
 
 export function checkResultForError(err: unknown, config?: Pick<ReviewerConfig, 'models'>): CheckResult {
   const raw = err instanceof Error ? err.message : String(err);
-  const message = redactModels(raw, config).replaceAll('```', "'''").slice(0, 6000);
+  const message = publicErrorText(redactModels(raw, config)).replaceAll('```', "'''");
   return {
     conclusion: 'failure',
     title: 'Revuto review failed',
     summary: `Revuto could not complete this review.\n\n\`\`\`\n${message}\n\`\`\``,
   };
+}
+
+/**
+ * Error text bound for a public check: a few short lines, with credentials, AWS
+ * ARNs and account ids, and the operator's home path removed. CLI stderr tails
+ * and stack traces stay in the daemon log.
+ */
+export function publicErrorText(text: string): string {
+  const lines = redactSecrets(text)
+    .replace(/arn:aws[a-z-]*:[^\s'"]*/g, '[arn]')
+    .replace(/\b\d{12}\b/g, '[account]')
+    .replaceAll(homedir(), '~')
+    .split('\n').map((line) => line.trim()).filter(Boolean);
+  const kept = lines.slice(0, 8).map((line) => (line.length > 300 ? `${line.slice(0, 300)}…` : line));
+  if (lines.length > kept.length) kept.push(`(${lines.length - kept.length} more lines in the daemon log)`);
+  return kept.join('\n');
 }
 
 // Model ids as providers and the CLI print them: Bedrock prefixes, Claude, GPT and

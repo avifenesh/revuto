@@ -2,8 +2,8 @@ import type { Octokit } from '@octokit/rest';
 import type { PrContext } from '../workspace.js';
 import type { ToolDef } from '../tool-def.js';
 import { buildHarnessTools } from './harness.js';
-import { buildGitTool } from './git.js';
-import { buildGhApiReadTool, buildPostReviewTool, buildPostIssueCommentTool, buildSkipTool } from './gh.js';
+import { buildPostReviewTool, buildPostIssueCommentTool, buildSkipTool } from './gh.js';
+import { claudeInspectionTools } from '../claude-review-mcp.js';
 
 export interface CommonToolsOpts {
   readonly ctx: PrContext;
@@ -13,25 +13,22 @@ export interface CommonToolsOpts {
 }
 
 /**
- * Build the review-agent-agnostic tool set: harness read/grep/glob/bash/lsp
- * + allowlisted git + GitHub REST read + post_review / post_issue_comment
- * / skip_review.
- *
- * A per-repo reviewer can compose this with its own build/run tools (make,
- * cargo, mvn, pytest, …) before the run loop hands them to the model.
+ * The HTTP reviewer's tool set: the same guarded inspection tools the Claude
+ * and Codex runners get (read/grep/glob confined to the PR worktree, the fixed
+ * PR diff, the re-review diff), plus post_review / post_issue_comment /
+ * skip_review. No shell, git, network or GitHub read access: the PR checkout
+ * and its context are all a review needs, and the model reads attacker text.
+ * `allowWrite` adds write/edit, still confined to the worktree.
  */
 export async function assembleCommonTools(opts: CommonToolsOpts): Promise<readonly ToolDef[]> {
-  const harness = await buildHarnessTools({
-    workspaceRoot: opts.ctx.workspacePath,
-    allowWrite: opts.allowWrite ?? false,
-  });
-
   const ghDeps = { ctx: opts.ctx, octokit: opts.octokit, token: opts.token };
-
+  const inspection = await claudeInspectionTools(opts.ctx.workspacePath, opts.ctx.diffRefSpec, opts.ctx.incremental?.range);
+  const writes = opts.allowWrite
+    ? (await buildHarnessTools({ workspaceRoot: opts.ctx.workspacePath, allowWrite: true })).tools.filter((t) => t.name === 'write' || t.name === 'edit')
+    : [];
   return [
-    ...harness.tools,
-    buildGitTool({ workspaceRoot: opts.ctx.workspacePath }),
-    buildGhApiReadTool(ghDeps),
+    ...inspection,
+    ...writes,
     buildPostReviewTool(ghDeps),
     buildPostIssueCommentTool(ghDeps),
     buildSkipTool(ghDeps),
@@ -40,5 +37,4 @@ export async function assembleCommonTools(opts: CommonToolsOpts): Promise<readon
 
 // Re-exports so agents can import everything through the common barrel.
 export { buildHarnessTools } from './harness.js';
-export { buildGitTool } from './git.js';
-export { buildGhApiReadTool, buildPostReviewTool, buildPostIssueCommentTool, buildSkipTool } from './gh.js';
+export { buildPostReviewTool, buildPostIssueCommentTool, buildSkipTool } from './gh.js';

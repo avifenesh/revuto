@@ -78,9 +78,6 @@ for (const layout of layouts) {
         const run = async (name: string, input: object) => String(await harness.tools.find(t => t.name === name)!.callback(input as any));
         assert.match(await run('grep', { pattern: 'SCOPE_SENTINEL' }), /src\/a\.ts/);
         assert.match(await run('glob', { pattern: '**/*.ts' }), /src\/a\.ts/);
-        const bash = await run('bash', { command: 'rg -l SCOPE_SENTINEL' });
-        assert.match(bash, /src\/a\.ts/); assert.doesNotMatch(bash, /gen\/b\.ts/);
-        if (layout.kind === 'worktree') assert.doesNotMatch(bash, /localonly/);
       } finally { process.env.PATH = path; }
       assert.deepEqual(readFileSync(rgScopeConfigPath(root), 'utf8').trim().split('\n'), rgScopeFlags(root));
     } finally { rmSync(parent, { recursive: true, force: true }); }

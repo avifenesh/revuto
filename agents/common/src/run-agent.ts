@@ -359,7 +359,8 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
 
     const userMessage = [
       renderPrOverview(ctx),
-      renderReReview(ctx, 'git'),
+      // HTTP reviewers share the guarded tool set with Claude and Codex, new_changes included.
+      renderReReview(ctx, 'mcp'),
       renderEscalation(escalationNote ? { note: escalationNote } : escalateTo ? { allow: true, via: 'tool' } : {}),
       '',
       '---',
@@ -523,6 +524,12 @@ export type StepLike = {
 const TERMINAL_TOOLS = new Set(['post_review', 'skip_review']);
 /** Tools that put something on the PR. Findings, not inspection. */
 const POSTING_TOOLS = new Set(['post_review', 'post_issue_comment']);
+/**
+ * Tools whose success means the reviewer read PR evidence: a file, the PR diff,
+ * or the re-review diff. A search or a listing alone is not an inspection, so a
+ * single grep or glob followed by skip_review cannot turn into an approval.
+ */
+export const EVIDENCE_TOOLS = new Set(['read', 'pr_diff', 'new_changes']);
 
 /**
  * Pull the terminal decision, any non-terminal findings, and how much the run
@@ -616,7 +623,7 @@ export function summarizeReviewSteps(
         if (posting && !refusedEmptyReview(payload)) postFailures++;
         continue;
       }
-      if (!isTerminal && !posting) inspections++;
+      if (EVIDENCE_TOOLS.has(tr.toolName) && !emptyEvidence(payload)) inspections++;
       if (posting) hasFindings = true;
       if (isTerminal) {
         terminal = tr.toolName as ReviewOutcome['terminal'];
@@ -628,6 +635,12 @@ export function summarizeReviewSteps(
     for (const part of step.content ?? []) if (part?.type === 'tool-error') toolErrors++;
   }
   return { terminal, result, hasFindings, inspections, toolErrors, postFailures };
+}
+
+/** A diff page with nothing in it read no evidence. */
+function emptyEvidence(payload: unknown): boolean {
+  if (typeof payload !== 'string') return false;
+  try { return JSON.parse(payload).total_characters === 0; } catch { return payload.trim() === ''; }
 }
 
 const defaultAssembleTools: AssembleTools = async (opts) =>

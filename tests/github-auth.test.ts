@@ -13,44 +13,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-import { buildGhApiReadTool, type GhToolsDeps } from '../agents/common/src/tools/gh.js';
 import { getOctokit } from '../agents/common/src/github-auth.js';
-
-/** A `gh` on PATH that reports the token it was handed, so this needs no network. */
-function fakeGh(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'revuto-gh-'));
-  const bin = join(dir, 'gh');
-  writeFileSync(bin, '#!/bin/sh\nprintf %s "$GH_TOKEN"\n');
-  chmodSync(bin, 0o755);
-  return dir;
-}
-
-test('gh_api_read passes the current token to the subprocess, not the one it started with', async () => {
-  const dir = fakeGh();
-  const path = process.env.PATH;
-  try {
-    process.env.PATH = dir;
-    let issued = 0;
-    const gh = buildGhApiReadTool({
-      token: async () => `token-${++issued}`,
-      ctx: {},
-      octokit: {},
-    } as unknown as GhToolsDeps);
-
-    assert.equal(await gh.callback({ path: 'repos/o/r/pulls/1' }), 'token-1');
-    // Same tool object, a later call: a captured token would replay 'token-1'
-    // here, which is the expired-credential failure this guards against.
-    assert.equal(await gh.callback({ path: 'repos/o/r/pulls/1/files' }), 'token-2');
-    assert.equal(issued, 2, 'one resolve per call');
-  } finally {
-    process.env.PATH = path;
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
 
 test('a personal token is served through the same getter', async () => {
   process.env.REVUTO_TEST_TOKEN = 'pat-abc';

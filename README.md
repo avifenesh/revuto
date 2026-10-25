@@ -26,9 +26,9 @@ becomes a reusable skill.
   for review-on-push.
 - **Knowledge you can read.** Skills are markdown notes in an Obsidian vault, or
   any folder. Nothing is written into the reviewed repo.
-- **Careful with your code.** Claude and Codex reviewers get read-only tools over
-  the PR checkout: no shell, no network tools, no GitHub token. Revuto posts the
-  review itself.
+- **Careful with your code.** Every reviewer gets read-only tools over the PR
+  checkout: no shell, no network tools, no GitHub token, no daemon credentials.
+  Revuto posts the review itself, after stripping mentions, HTML and secrets.
 
 ## Quick start
 
