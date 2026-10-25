@@ -121,9 +121,18 @@ const LEARN_MAX_ATTEMPTS = 3;
  * network failures, timeouts, rate limits and 5xx, and a fallback chain where
  * every model failed that way.
  */
+const OUTAGE = /fetch failed|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|timed? ?out|\b429\b|rate.?limit|overloaded|\b5\d\d\b|service unavailable/i;
+const FALLBACK_PREFIX = 'all model fallbacks failed: ';
+
 export function isServiceOutage(err: unknown): boolean {
-  const text = err instanceof Error ? `${err.name} ${err.message} ${String((err as { cause?: unknown }).cause ?? '')}` : String(err);
-  return /fetch failed|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|timed? ?out|\b429\b|rate.?limit|overloaded|\b5\d\d\b|service unavailable|all model fallbacks failed/i.test(text);
+  const message = err instanceof Error ? err.message : String(err);
+  // An exhausted fallback chain is an outage only when every model in it failed that way;
+  // a 400 for an oversized input fails the same way everywhere and belongs to the event.
+  if (message.startsWith(FALLBACK_PREFIX)) {
+    return message.slice(FALLBACK_PREFIX.length).split(' | ').every((part) => OUTAGE.test(part));
+  }
+  const text = err instanceof Error ? `${err.name} ${message} ${String((err as { cause?: unknown }).cause ?? '')}` : message;
+  return OUTAGE.test(text);
 }
 
 /** Every login revuto posts as on this repo: the personal token's user and the App's bot. */
@@ -149,11 +158,15 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
     const identities = await reviewerIdentities(config, settings, octokit);
     // The cursor moves to when this poll started, not when it finished: comments posted during a long run come next time.
     const pollStarted = nowIso();
-    let feedback = await pollFeedback(octokit, settings.repo, identities, cursor);
-    if (config.limits.learnBatch) feedback = feedback.slice(0, config.limits.learnBatch);       // per-batch cap
-    /** The cursor that re-polls `feedback[i]` and everything after it. */
+    const polled = await pollFeedback(octokit, settings.repo, identities, cursor);
+    const feedback = config.limits.learnBatch ? polled.slice(0, config.limits.learnBatch) : polled;       // per-batch cap
+    /**
+     * The cursor that re-polls `polled[i]` and everything after it, the batch's capped
+     * tail included. Comments are listed by creation, the cursor filters by update, so
+     * the earliest update among them is the bound.
+     */
     const resumeBefore = (i: number): string => {
-      const times = feedback.slice(i).map((f) => Date.parse(f.updatedAt ?? '')).filter(Number.isFinite);
+      const times = polled.slice(i).map((f) => Date.parse(f.updatedAt ?? '')).filter(Number.isFinite);
       return times.length ? new Date(Math.min(...times) - 1).toISOString() : cursor;
     };
     const day = dayKey();
@@ -191,7 +204,8 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
       if (dailyLearn) learnedToday = await store.incrCounter(counterKey('learn', day));
       if (dailyTokens) tokensToday = await store.incrCounter(counterKey('tokens', day), out.tokens);        // shared daily token budget
     }
-    await store.setCursor('learn', resumeAt ?? pollStarted);
+    // A batch cut short by learnBatch leaves its tail for the next pass.
+    await store.setCursor('learn', resumeAt ?? (polled.length > feedback.length ? resumeBefore(feedback.length) : pollStarted));
     return { curated, seen: feedback.length, ...(limited ? { limited } : {}) };
   } finally {
     await store.close();

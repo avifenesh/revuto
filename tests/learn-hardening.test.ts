@@ -121,4 +121,6 @@ test('a model outage is not counted against the feedback that met it', () => {
   assert.ok(isServiceOutage(Object.assign(new Error('request failed'), { cause: new Error('connect ECONNREFUSED 127.0.0.1:1') })));
   assert.ok(!isServiceOutage(new Error('model refused the request (category=cyber)')));
   assert.ok(!isServiceOutage(new Error('curator_done payload was not valid JSON')));
+  assert.ok(!isServiceOutage(new Error('all model fallbacks failed: a: 400 context length exceeded | b: 503 unavailable')),
+    'a chain where one model rejected the input is not an outage');
 });
