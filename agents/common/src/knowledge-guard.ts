@@ -12,11 +12,11 @@
  * nothing it reads can execute anything. The candidate is fenced with a random
  * nonce it cannot close, and any error or unparseable answer rejects.
  */
-import { randomBytes } from 'node:crypto';
 import { generateText } from 'ai';
 
 import { isNativeRunner, type ModelSpec, type ReviewerConfig } from './config.js';
 import { buildChatModel, tokensFrom } from './model.js';
+import { fenceUntrusted } from './untrusted.js';
 
 export type GuardKind = 'feedback' | 'concern' | 'skill' | 'textbook';
 
@@ -90,11 +90,7 @@ export function guardModelSpec(config: ReviewerConfig): ModelSpec | null {
   return rest.length ? { ...first!, fallbacks: rest } : first!;
 }
 
-/** Fence untrusted text with a nonce marker the text cannot contain or close. */
-export function fenceUntrusted(text: string): { open: string; close: string; body: string } {
-  const nonce = randomBytes(12).toString('hex');
-  return { open: `<<<UNTRUSTED-${nonce}>>>`, close: `<<<END-UNTRUSTED-${nonce}>>>`, body: text };
-}
+export { fenceUntrusted } from './untrusted.js';
 
 export function renderGuardRequest(item: GuardItem): string {
   const candidate = fenceUntrusted(item.text);

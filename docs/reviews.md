@@ -126,6 +126,15 @@ revuto review owner/repo 123 --final
 
 ## Concurrency, workspaces and inspection
 
+A PR head whose files add up to more than `review.maxCheckoutBytes` (default 4 GiB) is
+not checked out, and its review fails: revuto reads every blob size from one GitHub
+tree call first, so a PR of small, compressible files cannot expand to fill the disk.
+0 turns the check off.
+
+The reviewer's prompt keeps facts revuto checked (numbers, SHAs, logins) apart from
+text the PR author and commenters wrote (title, branch names, body, file names,
+comments), which arrives in one fenced block marked as data, never instructions.
+
 Reviews use up to `review.maxConcurrent` slots globally (default 4) and
 `review.maxConcurrentPerRepo` per repository (default 2), with one active run per
 PR. These limits cover the daemon, webhooks and manual CLI processes. Waiting

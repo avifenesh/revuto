@@ -262,7 +262,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     // the tools below get the getter, since they run for the next half hour.
     resolvedToken,
     workspaceRoot,
-    { cacheRoot, signal, incremental: config.review.incremental !== false && !opts.fullReview, reviewerLogins },
+    { cacheRoot, signal, incremental: config.review.incremental !== false && !opts.fullReview, reviewerLogins, maxCheckoutBytes: config.review.maxCheckoutBytes },
   ));
   // The posting tools read the heading from the context, on every runner path.
   const ctx: PrContext = opts.reviewHeading ? { ...prepared, reviewHeading: opts.reviewHeading } : prepared;
@@ -360,7 +360,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     const tools = toAiSdkTools(escalateTo ? [...toolDefs, ESCALATE_TOOL] : toolDefs);
 
     const userMessage = [
-      renderPrOverview(ctx),
+      renderPrOverview(ctx, { diffHint: 'read it with the `pr_diff` tool' }),
       // HTTP reviewers share the guarded tool set with Claude and Codex, new_changes included.
       renderReReview(ctx, 'mcp'),
       renderEscalation(escalationNote ? { note: escalationNote } : escalateTo ? { allow: true, via: 'tool' } : {}),
