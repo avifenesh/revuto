@@ -13,6 +13,7 @@ import { globMatches, validAreaGlobs } from '../agents/common/src/skills/select.
 import { parseFrontMatter } from '../agents/common/src/store/front-matter.js';
 import { MarkdownSkills } from '../agents/common/src/store/markdown-skills.js';
 import { isRevutoComment } from '../daemon/src/poller.js';
+import { isServiceOutage } from '../daemon/src/jobs.js';
 import { backfillReviewCorpus, scanRepo } from '../daemon/src/init.js';
 import { buildConcernsStoreTools } from '../agents/curator/src/tools/concerns-store.js';
 import { SqliteStore } from '../agents/common/src/store/sqlite-store.js';
@@ -62,10 +63,13 @@ test('a revision keeps history, and a draft never replaces an active skill', () 
     assert.equal(skills.readSkill('ack-path')?.description, 'v1', 'the vetted skill keeps serving reviews');
     const active = skills.writeSkill({ subject: 'Ack path', description: 'v3', area: ['src/**'], body: 'three', status: 'active' });
     assert.equal(active.slug, 'ack-path');
-    assert.ok(readdirSync(join(vault, 'skills', 'o__r', '_history')).length >= 2, 'replaced versions are kept');
+    assert.ok(readdirSync(join(vault, 'skills', 'o__r', '_history')).length >= 1, 'replaced versions are kept');
     assert.equal(skills.listSkills().some((s) => s.slug.startsWith('_history')), false, 'history is not loaded as skills');
     assert.ok(skills.setSkillStatus('ack-path-revision', 'active'));
     assert.equal(skills.readSkill('ack-path-revision')?.status, 'active', 'approve keeps the file it was given');
+    const again = skills.writeSkill({ subject: 'Ack path', description: 'v4', area: ['src/**'], body: 'four', status: 'draft' });
+    assert.equal(again.slug, 'ack-path-revision-2', 'an approved revision is not overwritten by the next draft');
+    assert.equal(skills.readSkill('ack-path-revision')?.description, 'v2');
     assert.match(skills.writeSkill({ subject: '!!!', description: 'd', area: [], body: 'b' }).slug, /^skill-[0-9a-f]{8}$/);
     writeFileSync(join(vault, 'skills', 'o__r', 'evil.md'), '---js\n{}\n---\nbody');
     assert.equal(skills.readSkill('evil'), null);
@@ -109,4 +113,12 @@ test('init does not follow a README symlink out of the clone', () => {
     writeFileSync(join(repo, 'README.rst'), 'Real readme');
     assert.equal(scanRepo(repo).readmeExcerpt, 'Real readme');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a model outage is not counted against the feedback that met it', () => {
+  assert.ok(isServiceOutage(new Error('all model fallbacks failed: a: 503 | b: fetch failed')));
+  assert.ok(isServiceOutage(new Error('Too Many Requests (429)')));
+  assert.ok(isServiceOutage(Object.assign(new Error('request failed'), { cause: new Error('connect ECONNREFUSED 127.0.0.1:1') })));
+  assert.ok(!isServiceOutage(new Error('model refused the request (category=cyber)')));
+  assert.ok(!isServiceOutage(new Error('curator_done payload was not valid JSON')));
 });

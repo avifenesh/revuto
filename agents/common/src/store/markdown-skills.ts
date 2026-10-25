@@ -65,17 +65,21 @@ export class MarkdownSkills {
    * it as `<slug>-revision` so the vetted version keeps serving reviews.
    */
   writeSkill(note: NewSkillNote): SkillNote {
-    let slug = skillSlug(note.subject);
+    const base = skillSlug(note.subject);
     const status = note.status ?? 'draft';
-    const existing = this.readSkill(slug);
-    if (existing) {
+    // A draft moves past every active note in its line: <slug>, <slug>-revision, <slug>-revision-2, ...
+    let slug = base;
+    for (let n = 1; status === 'draft' && this.readSkill(slug)?.status === 'active'; n++) {
+      slug = n === 1 ? `${base}-revision` : `${base}-revision-${n}`;
+    }
+    // Whatever the destination held is archived before it is replaced.
+    if (existsSync(join(this.skillsDir, `${slug}.md`))) {
       const history = join(this.skillsDir, '_history');
       mkdirSync(history, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       let n = 0;
       while (existsSync(join(history, `${slug}-${stamp}${n ? `-${n}` : ''}.md`))) n++;
       copyFileSync(join(this.skillsDir, `${slug}.md`), join(history, `${slug}-${stamp}${n ? `-${n}` : ''}.md`));
-      if (existing.status === 'active' && status === 'draft') slug = `${slug}-revision`;
     }
     return this.writeNote(slug, { description: note.description, area: note.area, body: note.body, status, sourceRecord: note.sourceRecord });
   }

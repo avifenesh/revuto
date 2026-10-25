@@ -113,8 +113,18 @@ async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSett
   } finally { await store.close(); }
 }
 
-/** Attempts at one feedback event before the learn loop drops it (a guard outage does not count). */
+/** Attempts at one feedback event before the learn loop drops it (outages do not count). */
 const LEARN_MAX_ATTEMPTS = 3;
+
+/**
+ * A model service that is down or overloaded, not a problem with the feedback:
+ * network failures, timeouts, rate limits and 5xx, and a fallback chain where
+ * every model failed that way.
+ */
+export function isServiceOutage(err: unknown): boolean {
+  const text = err instanceof Error ? `${err.name} ${err.message} ${String((err as { cause?: unknown }).cause ?? '')}` : String(err);
+  return /fetch failed|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|timed? ?out|\b429\b|rate.?limit|overloaded|\b5\d\d\b|service unavailable|all model fallbacks failed/i.test(text);
+}
 
 /** Every login revuto posts as on this repo: the personal token's user and the App's bot. */
 export async function reviewerIdentities(config: ReviewerConfig, settings: ReviewerSettings, octokit: Octokit): Promise<string[]> {
@@ -165,7 +175,8 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
       } catch (err) {
         // The feedback stays pending for the next tick, but what the run spent still counts.
         if (err instanceof GuardUnavailableError && dailyTokens && err.tokens) await store.incrCounter(counterKey('tokens', day), err.tokens);
-        const failures = err instanceof GuardUnavailableError ? 0 : await store.incrCounter(`learn-fail:${fb.feedbackId}`);
+        // Only a failure this event causes counts toward dropping it; an outage just retries.
+        const failures = err instanceof GuardUnavailableError || isServiceOutage(err) ? 0 : await store.incrCounter(`learn-fail:${fb.feedbackId}`);
         if (failures < LEARN_MAX_ATTEMPTS) {
           await store.setCursor('learn', resumeBefore(i));
           throw err;

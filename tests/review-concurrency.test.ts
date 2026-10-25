@@ -162,10 +162,11 @@ child.on('message',()=>writeFileSync(${JSON.stringify(marker)},JSON.stringify([p
     assert.ok(existsSync(marker));pids=JSON.parse(readFileSync(marker,'utf8'));
     abort.abort(new Error('cancelled review'));
     await assert.rejects(Promise.race([pending,delay(5000).then(()=>{throw new Error('Escalation did not settle the review');})]),/cancelled review/);
-    for(const pid of pids) {
-      const stat=`/proc/${pid}/stat`;
-      if(existsSync(stat))assert.equal(readFileSync(stat,'utf8').split(') ')[1]?.[0],'Z','descendant is no longer running');
-    }
+    // The descendant ignores SIGTERM and dies on the follow-up SIGKILL, which can land just
+    // after the review settles: give it a bounded moment instead of sampling once.
+    const running=(pid:number)=>{const stat=`/proc/${pid}/stat`;return existsSync(stat)&&readFileSync(stat,'utf8').split(') ')[1]?.[0]!=='Z';};
+    for(let i=0;pids.some(running)&&i<150;i++)await delay(20);
+    for(const pid of pids)assert.equal(running(pid),false,`descendant ${pid} is no longer running`);
   } finally {
     abort.abort();
     if(pids[0])try{process.kill(-pids[0],'SIGKILL');}catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}

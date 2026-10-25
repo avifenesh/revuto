@@ -211,12 +211,13 @@ async function main(): Promise<void> {
       if (!repo?.includes('/')) throw new Error('usage: revuto remove <owner/repo> [--purge]');
       const purge = args.includes('--purge');
       const cfg = config();
-      const ok = removeReviewer(cfg, repo, { purge });
-      // SurrealDB memory lives in the server, so --purge drops the repo's database there too.
-      if (ok && purge && cfg.store.backend === 'surreal') {
+      // SurrealDB memory lives in the server. Drop it before unregistering, so a failed
+      // drop leaves the repo registered and `remove --purge` can simply be run again.
+      if (purge && cfg.store.backend === 'surreal' && readReviewer(cfg, repo)) {
         const store = await openStore(cfg, repo);
         try { await (store as SurrealStore).dropDatabase(); } finally { await store.close(); }
       }
+      const ok = removeReviewer(cfg, repo, { purge });
       console.log(ok ? `removed ${repo}${purge ? ' (skills and memory purged)' : ''}` : `not registered: ${repo}`);
       break;
     }
