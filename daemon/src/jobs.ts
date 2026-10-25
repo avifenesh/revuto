@@ -145,6 +145,9 @@ export async function reviewerIdentities(config: ReviewerConfig, settings: Revie
   return logins;
 }
 
+/** Authors with write access to the repository. */
+const MAINTAINER_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
 export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettings): Promise<LearnJobResult> {
   const { octokit } = getOctokit(config.github);
   const store = await openStore(config, settings.repo);
@@ -239,6 +242,8 @@ export interface ReviewOnePrOptions {
   readonly expectedHeadSha?: string;
   /** Called after this exact PR head is claimed and before the model run begins. */
   readonly onClaimed?: (headSha: string) => Promise<void>;
+  /** The delivery reported a base change (pull_request.edited with changes.base). */
+  readonly retarget?: boolean;
   /** The model run; replaceable in tests. */
   readonly runReview?: typeof runReview;
 }
@@ -288,9 +293,33 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
     }
     writeReviewer(config, { repo, ...(botLogin ? { botLogin } : {}) });
   }
+  // The webhook path reaches here too, so the repo's pause and author allowlist apply to it.
+  const reviewer = readReviewer(config, repo);
+  if (!opts.force && reviewer?.paused) return unreviewedOutcome(`${repo} is paused; ignoring the review request`, pr.head.sha);
+  if (!opts.force && reviewer?.authorAllowlist?.length && !reviewer.authorAllowlist.includes(pr.user?.login ?? '')) {
+    return unreviewedOutcome(`#${prNumber} by ${pr.user?.login ?? 'unknown'} is not on ${repo}'s author allowlist`, pr.head.sha);
+  }
   const store = await openStore(config, repo);
   const embedder = maybeEmbedder(config);
-  const key = `${repo}#${prNumber}@${pr.head.sha}`;
+  // A PR is reviewed against its base. The base of the PR's last completed review is
+  // recorded (only once that review finished), so a later base change is seen on
+  // any head: the same head, a new push, or a retry after a failed or refused run.
+  // A retarget means a full review (no incremental baseline from the old base), and
+  // a head whose review is already done gets a new claim generation, so the done
+  // marker of a review against another base cannot stand for this one. A webhook
+  // that reports the base change counts even for heads reviewed before this record
+  // existed.
+  const baseRef = pr.base?.ref ?? '';
+  const baseMarker = `reviewed-base:${prNumber}`;
+  const reviewedBase = baseRef ? await store.getCursor(baseMarker) : null;
+  const retargeted = !!baseRef && (opts.retarget === true || (reviewedBase !== null && reviewedBase !== baseRef));
+  const generationKey = `retarget:${prNumber}@${pr.head.sha}`;
+  const keyFor = (g: number): string => `${repo}#${prNumber}@${pr.head.sha}${g ? `~base${g}` : ''}`;
+  let generation = await store.getCounter(generationKey);
+  // Only a finished generation moves on: one still claimed (in progress) dedupes as usual.
+  if (retargeted && await store.seen(keyFor(generation))) generation = await store.incrCounter(generationKey);
+  const key = keyFor(generation);
+  if (retargeted) console.log(`[review] ${key}: base is ${baseRef}, last reviewed against ${reviewedBase ?? 'another base'}; full review`);
   const managedTarget: ReviewCheckTarget = {
     repo,
     prNumber,
@@ -349,12 +378,16 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
       day,
       dailyReviews: config.limits.dailyReviews,
       dailyTokens: config.limits.dailyTokens,
+      dailyReviewsPerAuthor: config.limits.dailyReviewsPerAuthor,
+      ...(pr.user?.login ? { author: pr.user.login } : {}),
+      maintainer: MAINTAINER_ASSOCIATIONS.has(pr.author_association ?? ''),
       historical,
     }));
     finalRun = round.allowed && round.final;
     if (finalRun) console.log(`[review] ${key}: ${round.reason}`);
     const ran = round.allowed
       ? await (opts.runReview ?? runReview)({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth,
+          ...(retargeted ? { fullReview: true } : {}),
           reviewerLogins: [auth.login, readReviewer(config, repo)?.botLogin].filter((l): l is string => !!l),
           ...(finalRun ? { reviewHeading: FINAL_REVIEW_HEADING } : {}) })
       : unreviewedOutcome(round.reason, pr.head.sha);
@@ -367,7 +400,11 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
       throw new Error(`review of ${repo}#${prNumber}@${pr.head.sha} ended without a terminal decision`);
     }
     if (round.daily) await store.unclaim(claimKey);
-    else await store.mark(claimKey);
+    else {
+      await store.mark(claimKey);
+      // The PR now stands reviewed against this base; until then a retarget stays pending.
+      if (baseRef && outcome.ranModel) await store.setCursor(baseMarker, baseRef);
+    }
     if (finalRun && claimKey !== finalKey) await store.mark(finalKey);
     if (githubApp && managedCheckRunId !== undefined) {
       try {

@@ -143,26 +143,50 @@ export async function getAppBotLogin(config: GithubAppConfig): Promise<string> {
 }
 
 /** Create an installation-scoped client from the installation ID in a webhook payload. */
-export async function getInstallationOctokit(config: GithubAppConfig, installationId: number): Promise<GithubAuth> {
-  // authStrategy rather than a token string: the strategy's hook re-authenticates
-  // on every request, so a request made after the cached installation token aged
-  // out mints a new one instead of sending a dead credential. Handing
-  // `new Octokit({ auth: <token> })` a token captured at claim time is what made
-  // long reviews fail at the finish line with "Bad credentials".
-  const octokit = new Octokit({
-    authStrategy: createAppAuth,
-    auth: { appId: config.appId, privateKey: readPrivateKey(config), installationId },
-    request: { fetch: githubFetchWithDeadline() },
-  });
+/**
+ * An installation client. With `repo`, its tokens are minted for that repository
+ * only: a review then holds no credential for the installation's other repos.
+ */
+export async function getInstallationOctokit(config: GithubAppConfig, installationId: number, repo?: string): Promise<GithubAuth> {
+  // A hook rather than a token string: every request asks for the current token,
+  // so a request made after the cached installation token aged out mints a new one
+  // instead of sending a dead credential. Handing `new Octokit({ auth: <token> })`
+  // a token captured at claim time is what made long reviews fail at the finish
+  // line with "Bad credentials".
+  const plain = new Octokit({ request: { fetch: githubFetchWithDeadline() } });
+  const appAuth = createAppAuth({ appId: config.appId, privateKey: readPrivateKey(config), installationId, request: plain.request });
+  // auth-app's own request hook mints tokens with no per-call options, so a scope set
+  // in the strategy never reaches the token. Every mint here names the repository.
+  const mint = scopedInstallationToken(appAuth, repo);
+  const octokit = new Octokit({ authStrategy: () => tokenHookAuth(mint), request: { fetch: githubFetchWithDeadline() } });
   return {
     octokit,
-    // Same hook, same cache - so git/gh subprocesses get a live token too.
-    token: async () => {
-      const installation = (await octokit.auth({ type: 'installation' })) as { token: string };
-      return installation.token;
-    },
+    // The same mint (and auth-app's cache), so git/gh subprocesses get a live token too.
+    token: mint,
     login: await getAppBotLogin(config),
   };
+}
+
+type HookRequest = ((options: any) => Promise<any>) & { endpoint: { merge: (route: any, parameters?: any) => any } };
+
+type InstallationAuth = (options: { type: 'installation'; repositoryNames?: string[] }) => Promise<{ token: string }>;
+
+/** A token getter for one installation, scoped to `repo` when given. */
+export function scopedInstallationToken(appAuth: InstallationAuth, repo?: string): () => Promise<string> {
+  const repositoryNames = repo ? [repo.split('/')[1]!] : undefined;
+  return async () => (await appAuth({ type: 'installation', ...(repositoryNames ? { repositoryNames } : {}) })).token;
+}
+
+/** An Octokit auth strategy that sets `token <mint()>` on every request. */
+export function tokenHookAuth(mint: () => Promise<string>) {
+  const auth = async () => ({ type: 'token', tokenType: 'installation', token: await mint() });
+  // Octokit's hook contract: (request, route, parameters) => response.
+  auth.hook = async (request: HookRequest, route: unknown, parameters?: Record<string, unknown>) => {
+    const endpoint = request.endpoint.merge(route, parameters);
+    endpoint.headers.authorization = `token ${await mint()}`;
+    return request(endpoint);
+  };
+  return auth;
 }
 
 /** Resolve the App installation for a repository, used by the polling fallback. */
@@ -184,5 +208,5 @@ export async function getRepositoryInstallationOctokit(config: GithubAppConfig, 
     }
     installationIdCache.set(key, installationId);
   }
-  return getInstallationOctokit(config, installationId);
+  return getInstallationOctokit(config, installationId, repo);
 }

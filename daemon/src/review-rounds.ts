@@ -13,12 +13,16 @@ export const counterKey = (name: 'reviews' | 'learn' | 'tokens', day: string): s
 /** Count signed reviews by the configured reviewer, including earlier commits. */
 export async function historicalReviewRounds(auth: GithubAuth, repo: string, prNumber: number, previousLogin?: string): Promise<number> {
   const login = auth.login ?? (await auth.octokit.users.getAuthenticated()).data.login;
-  const normalize = (value: string) => value.replace(/\[bot\]$/, '').toLowerCase();
-  const logins = new Set([login, previousLogin].filter((s): s is string => !!s).map(normalize));
+  // Exact logins: a plain account named like the App (without "[bot]") must not count as it.
+  const logins = new Set([login, previousLogin].filter((s): s is string => !!s).map((l) => l.toLowerCase()));
   const [owner, name] = repo.split('/');
   const reviews = await auth.octokit.paginate(auth.octokit.pulls.listReviews, { owner: owner!, repo: name!, pull_number: prNumber, per_page: 100 });
-  return new Set(reviews.filter(r => r.submitted_at && r.user?.login && logins.has(normalize(r.user.login))
-    && r.body?.includes('<!-- revuto-signed -->')).map(r => r.id)).size;
+  const ours = (r: (typeof reviews)[number]): boolean => {
+    const who = r.user?.login?.toLowerCase();
+    if (!who || !logins.has(who)) return false;
+    return !who.endsWith('[bot]') || r.user?.type === 'Bot';
+  };
+  return new Set(reviews.filter(r => r.submitted_at && ours(r) && r.body?.includes('<!-- revuto-signed -->')).map(r => r.id)).size;
 }
 
 function assertLimit(limit: number): void {
@@ -112,6 +116,15 @@ export interface ReviewBudgetRequest {
   readonly day: string;
   readonly dailyReviews?: number;
   readonly dailyTokens?: number;
+  /** Max review runs per PR author per day (0 or unset = unlimited). */
+  readonly dailyReviewsPerAuthor?: number;
+  /** The PR author's login, for the per-author cap. */
+  readonly author?: string;
+  /**
+   * The author has write access. Their PRs are counted but never refused by a daily
+   * cap, so someone without access who spends the budget cannot block maintainers.
+   */
+  readonly maintainer?: boolean;
   readonly historical: () => Promise<number>;
 }
 
@@ -121,15 +134,22 @@ export interface ReviewBudgetRequest {
  * daily limits come first, so a refusal there spends no round and no final review.
  */
 export async function reserveReviewBudget(store: CounterStore, req: ReviewBudgetRequest): Promise<ReviewReservation> {
-  if (req.dailyReviews && await store.getCounter(counterKey('reviews', req.day)) >= req.dailyReviews) {
-    return { allowed: false, round: 0, reason: 'Daily review limit reached', final: false, daily: true };
-  }
-  if (req.dailyTokens && await store.getCounter(counterKey('tokens', req.day)) >= req.dailyTokens) {
-    return { allowed: false, round: 0, reason: 'Daily token limit reached', final: false, daily: true };
+  const authorKey = req.author ? `reviews-author:${req.author.toLowerCase()}:${req.day}` : undefined;
+  if (!req.maintainer) {
+    if (req.dailyReviews && await store.getCounter(counterKey('reviews', req.day)) >= req.dailyReviews) {
+      return { allowed: false, round: 0, reason: 'Daily review limit reached', final: false, daily: true };
+    }
+    if (req.dailyTokens && await store.getCounter(counterKey('tokens', req.day)) >= req.dailyTokens) {
+      return { allowed: false, round: 0, reason: 'Daily token limit reached', final: false, daily: true };
+    }
+    if (req.dailyReviewsPerAuthor && authorKey && await store.getCounter(authorKey) >= req.dailyReviewsPerAuthor) {
+      return { allowed: false, round: 0, reason: `Daily review limit for ${req.author} reached`, final: false, daily: true };
+    }
   }
   const reserved = req.final
     ? await reserveFinalReview(store, req.prNumber, req.headSha, req.maxRounds, req.historical)
     : { ...(await reserveReviewRound(store, req.prNumber, req.maxRounds, req.historical)), final: false };
   if (reserved.allowed && req.dailyReviews) await store.incrCounter(counterKey('reviews', req.day));
+  if (reserved.allowed && req.dailyReviewsPerAuthor && authorKey) await store.incrCounter(authorKey);
   return { ...reserved, daily: false };
 }

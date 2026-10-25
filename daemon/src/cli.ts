@@ -284,6 +284,12 @@ async function main(): Promise<void> {
   }
 }
 
+// A stray rejection (a webhook handler, a timer) is logged, not fatal: one bad
+// request must not take down the daemon and every in-flight review with it.
+process.on('unhandledRejection', (reason) => {
+  console.error(`[revuto] unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}`);
+});
+
 main().catch((err) => {
   console.error(err instanceof Error ? err.message : String(err));
   process.exitCode = 1;

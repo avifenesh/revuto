@@ -187,6 +187,8 @@ export interface ReviewerConfig {
     readonly dailyLearn: number;
     /** Shared daily token budget across ALL agents (review + curator + distill), per repo. */
     readonly dailyTokens: number;
+    /** Max review runs per PR author per repo per day. 0 = unlimited. Maintainers are never refused. */
+    readonly dailyReviewsPerAuthor?: number;
   };
   /** Memory backend. Skills are always Obsidian markdown; this is concerns/cursors/vectors. */
   readonly store: {
@@ -582,6 +584,7 @@ export function loadConfig(path?: string): ReviewerConfig {
     learnBatch: Math.max(0, raw.limits?.learnBatch ?? 0),
     dailyLearn: Math.max(0, raw.limits?.dailyLearn ?? 0),
     dailyTokens: Math.max(0, raw.limits?.dailyTokens ?? 0),
+    dailyReviewsPerAuthor: Math.max(0, raw.limits?.dailyReviewsPerAuthor ?? 0),
   };
 
   const store = {

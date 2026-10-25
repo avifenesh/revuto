@@ -40,13 +40,13 @@ test('Concurrent reservations cannot start more than three runs', async () => {
 
 test('History counts only submitted signed reviews from configured identities', async () => {
   const reviews=[
-    {id:1,submitted_at:'now',user:{login:'revuto-review[bot]'},body:'<!-- revuto-signed --> reviewed'},
-    {id:1,submitted_at:'now',user:{login:'revuto-review[bot]'},body:'<!-- revuto-signed --> duplicate id'},
+    {id:1,submitted_at:'now',user:{login:'revuto-review[bot]',type:'Bot'},body:'<!-- revuto-signed --> reviewed'},
+    {id:1,submitted_at:'now',user:{login:'revuto-review[bot]',type:'Bot'},body:'<!-- revuto-signed --> duplicate id'},
     {id:2,submitted_at:'now',user:{login:'owner'},body:'<!-- revuto-signed --> legacy review'},
     {id:3,submitted_at:'now',user:{login:'stranger'},body:'<!-- revuto-signed --> quoted footer'},
-    {id:4,submitted_at:null,user:{login:'revuto-review[bot]'},body:'<!-- revuto-signed --> pending'},
+    {id:4,submitted_at:null,user:{login:'revuto-review[bot]',type:'Bot'},body:'<!-- revuto-signed --> pending'},
     {id:5,submitted_at:'now',user:{login:'owner'},body:'manual review'},
   ];
-  const auth={login:'revuto-review',octokit:{pulls:{listReviews:()=>{}},paginate:async()=>reviews}} as unknown as GithubAuth;
+  const auth={login:'revuto-review[bot]',octokit:{pulls:{listReviews:()=>{}},paginate:async()=>reviews}} as unknown as GithubAuth;
   assert.equal(await historicalReviewRounds(auth,'owner/repo',7,'owner'),2);
 });
