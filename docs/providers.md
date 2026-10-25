@@ -122,7 +122,7 @@ revuto's ChatGPT login too, is out of reach; `/tmp` is a private empty tmpfs;
 there is no network. Commands get only core environment variables plus
 `PYTHONSAFEPATH` and `GIT_NO_LAZY_FETCH`. The sandbox re-runs the Codex
 executable inside it, so the Codex command must be the npm package's bin or the
-native binary; a wrapper script is refused. The doctor probe runs read-only with no shell. Project docs
+native binary; a wrapper script is refused, and `revuto doctor` reports it. The doctor probe runs read-only with no shell. Project docs
 (`AGENTS.md`) and skill instructions are off, so neither the checkout's nor the
 operator's reach the model, and the operator's `~/.codex` config and sessions are
 never read. Codex also gets a scratch `HOME`, so `~/.agents` skills and dotfiles
