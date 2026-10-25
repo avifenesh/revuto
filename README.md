@@ -174,7 +174,7 @@ Config, skills and reviewer notes live together in the vault (`~/revuto`, or
 stored there: API keys and the webhook secret are referenced by environment
 variable name. Optional daily caps on reviews, learn passes and tokens bound the spend.
 
-Config keys, storage backends, limits, the local dashboard and systemd units:
+Config keys, storage backends, limits and systemd units:
 [docs/configuration.md](docs/configuration.md).
 
 ## Development

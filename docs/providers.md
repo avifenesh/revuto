@@ -83,8 +83,7 @@ supplies the PR and repository knowledge.
 Valid effort values are `low`, `medium`, `high`, `xhigh`, and `max`. Claude
 receives `review.maxSteps` as `--max-turns` and the configured review output cap
 as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. A turn-limit exit fails the review.
-Automatic dashboard probes skip native CLI models. Explicit `revuto doctor` opts
-in; its Claude probe has no tools or MCP servers, one turn, low effort and a
+`revuto doctor` probes native CLI models too; its Claude probe has no tools or MCP servers, one turn, low effort and a
 32-token output cap, and checks the exact expected response.
 
 ## Codex

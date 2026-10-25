@@ -246,7 +246,7 @@ process.stdout.write(output.subarray(split));
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
-test('Automatic model probes never launch native agents; explicit Claude probes are limited', async () => {
+test('Doctor probes native agents with a limited Claude turn', async () => {
   const dir=mkdtempSync(join(tmpdir(),'revuto-probe-'));const command=join(dir,'fake.mjs');const marker=join(dir,'called');
   const server=await startFakeOpenAI(()=>({text:'pong'}));
   try {
@@ -266,17 +266,15 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
     const native={api:'claude' as const,baseURL:'claude-cli://local',model:'probe',command};
     const http={baseURL:server.url,model:'fake'};
     const config={models:{review:native,curator:http,distill:http,embedder:null}} as ReviewerConfig;
-    const automatic=await runModelProbes(config);
-    assert.equal(existsSync(marker),false);assert.equal(automatic.length,1);assert.ok(automatic[0]?.ok);
-    const explicit=await runModelProbes(config,{includeNative:true});
+    const explicit=await runModelProbes(config);
     assert.ok(existsSync(marker));assert.equal(explicit.length,2);assert.ok(explicit.every(p=>p.ok));
-    const bad=await runModelProbes({...config,models:{...config.models,review:{...native,model:'wrong'}}},{includeNative:true});
+    const bad=await runModelProbes({...config,models:{...config.models,review:{...native,model:'wrong'}}});
     assert.match(bad.find(p=>p.api==='claude')?.error??'',/unexpected response/);
     // Same model on another credential path is its own probe, and a missing login fails it.
     const home=process.env.HOME, token=process.env.CLAUDE_CODE_OAUTH_TOKEN;
     process.env.HOME=dir; delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     try {
-      const mixed=await runModelProbes({...config,models:{...config.models,reviewSmall:{...native,auth:'subscription' as const}}},{includeNative:true});
+      const mixed=await runModelProbes({...config,models:{...config.models,reviewSmall:{...native,auth:'subscription' as const}}});
       assert.equal(mixed.length,3);
       assert.match(mixed.find(p=>p.roles.includes('reviewSmall'))?.error??'',/CLAUDE_CODE_OAUTH_TOKEN/);
       assert.ok(mixed.find(p=>p.roles.includes('review'))?.ok);
