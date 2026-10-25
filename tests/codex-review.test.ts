@@ -240,6 +240,9 @@ test('the explicit Codex doctor probe runs at low effort with no shell, no MCP s
     assert.ok(last.args.includes('model_reasoning_effort="low"'), 'the probe runs at low effort');
     assert.ok(!last.args.some((a: string) => a.startsWith('mcp_servers.')), 'no MCP server on the probe');
     assert.equal(last.schema, null);
+    // A wrapper script hides which binary the sandbox must read: doctor reports it.
+    rmSync(join(dir, 'package.json'));
+    await assert.rejects(probeAgy(spec, dir), /is a wrapper script/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

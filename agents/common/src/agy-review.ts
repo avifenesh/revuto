@@ -276,7 +276,12 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     }
     const catalogPath = join(dir, 'models.json');
     await writeFile(catalogPath, await restrictedCodexCatalog(opts, codexHome, scratchHome));
-    if (opts.probe) return await spawnNativeCli(opts, { codexHome, schemaPath, scratchHome, catalogPath });
+    // The probe has no shell, but it checks the command a review's sandbox needs,
+    // so `revuto doctor` reports a wrapper script before a review fails on it.
+    if (opts.probe) {
+      await codexExecutableRoots(nativeCommand(opts.spec));
+      return await spawnNativeCli(opts, { codexHome, schemaPath, scratchHome, catalogPath });
+    }
     const git = await checkoutGitDir(opts.cwd);
     const readableDirs = [...new Set([git?.gitDir, git?.commonDir].filter((d): d is string => !!d)),
       ...(existsSync(layout.skills) ? [layout.skills] : []), ...await codexExecutableRoots(nativeCommand(opts.spec))];
