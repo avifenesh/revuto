@@ -62,7 +62,7 @@ test('a Bedrock region must be a region name before it reaches an endpoint', () 
   const parsed = extractModelOverrideArgs(['--review-model', 'opus', '--bedrock-region', 'evil.example/x?']);
   assert.throws(() => applyModelOverrides(config, parsed), /invalid Bedrock region/);
   const ok = applyModelOverrides(config, extractModelOverrideArgs(['--review-model', 'opus', '--bedrock-region', 'us-west-2']));
-  assert.match((ok as any).models.review.baseURL, /bedrock-runtime\.us-west-2\.amazonaws\.com/);
+  assert.match((ok as any).models.review.baseURL, /^https:\/\/bedrock-runtime\.us-west-2\.amazonaws\.com(\/|$)/);
 });
 
 test('traces are private to the operator', () => {

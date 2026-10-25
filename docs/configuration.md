@@ -46,8 +46,15 @@ cursors, idempotency) has two backends, set in `store.backend`:
   ```
 
   A store first started with the old `root`/`root` login keeps it until you
-  change it: `DEFINE USER root ON ROOT PASSWORD '<new>' ROLES OWNER`, then put
-  the new password in `REVUTO_SURREAL_PASSWORD`.
+  change it, and the start script refuses to guess a password for it. To move
+  one over:
+
+  1. Remove `username` and `password` from `store.surreal` in the config (an
+     explicit value there wins over the environment).
+  2. Pick a password and change the store's root user to it:
+     `DEFINE USER root ON ROOT PASSWORD '<new>' ROLES OWNER;`
+  3. Put `REVUTO_SURREAL_PASSWORD=<new>` in `~/.config/revuto/env` (one line,
+     mode 0600), then restart the store and revuto.
 
 - `sqlite`: opt-in, zero dependency; a per-repo SQLite file under `<vault>/memory/`
   (no server to run). Set `"store": { "backend": "sqlite" }`.

@@ -4,19 +4,49 @@
 #   scripts/surreal-start.sh                 # 127.0.0.1:8000, data under the vault
 #   PORT=8000 SURREAL_DATA=~/revuto/memory/surreal scripts/surreal-start.sh
 #
-# The root password is REVUTO_SURREAL_PASSWORD. When it is unset and not in
-# ~/.config/revuto/env, a random one is generated and saved there (mode 0600);
-# revuto reads the same file. Browsers are refused (--allow-origin), and embedded
+# The root password is REVUTO_SURREAL_PASSWORD, read the way revuto reads it: the
+# environment first, else the first REVUTO_SURREAL_PASSWORD= line of
+# ~/.config/revuto/env (trimmed, surrounding quotes removed). A new store with no
+# password gets a random one, saved there (mode 0600). An existing store with no
+# password stops here: see "Storage backend" in docs/configuration.md to move it
+# off the old root/root login. Browsers are refused (--allow-origin) and embedded
 # scripting is off: revuto uses neither.
 set -euo pipefail
 PORT="${PORT:-8000}"
 SUSER="${SURREAL_USER:-root}"
 DATA="${SURREAL_DATA:-$HOME/revuto/memory/surreal}"
 ENV_FILE="${REVUTO_ENV_FILE:-$HOME/.config/revuto/env}"
-if [[ -z "${REVUTO_SURREAL_PASSWORD:-}" && -f "$ENV_FILE" ]]; then
-  REVUTO_SURREAL_PASSWORD="$(sed -n 's/^REVUTO_SURREAL_PASSWORD=//p' "$ENV_FILE" | tail -n 1)"
+
+# Same rules as loadRevutoEnv in agents/common/src/config.ts.
+read_env_value() {
+  local file=$1 want=$2 line key val
+  [[ -f "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    key="${key%"${key##*[![:space:]]}"}"
+    [[ "$key" == "$want" ]] || continue
+    val="${line#*=}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    if [[ ${#val} -ge 2 && ( ( "$val" == \"*\" ) || ( "$val" == \'*\' ) ) ]]; then val="${val:1:${#val}-2}"; fi
+    printf '%s' "$val"
+    return 0
+  done < "$file"
+  return 1
+}
+
+if [[ -z "${REVUTO_SURREAL_PASSWORD:-}" ]]; then
+  REVUTO_SURREAL_PASSWORD="$(read_env_value "$ENV_FILE" REVUTO_SURREAL_PASSWORD || true)"
 fi
 if [[ -z "${REVUTO_SURREAL_PASSWORD:-}" ]]; then
+  if [[ -e "$DATA" ]]; then
+    echo "surreal-start: $DATA exists but REVUTO_SURREAL_PASSWORD is not set." >&2
+    echo "A store created before this script generated passwords still has its old root login;" >&2
+    echo "follow the migration in docs/configuration.md, then put the password in $ENV_FILE." >&2
+    exit 1
+  fi
   REVUTO_SURREAL_PASSWORD="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   mkdir -p "$(dirname "$ENV_FILE")"
   umask 077

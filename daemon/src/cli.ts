@@ -10,7 +10,7 @@
  *   revuto approve <owner/repo> <skill-slug>   activate a draft skill
  */
 import cron from 'node-cron';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
@@ -88,11 +88,18 @@ async function cmdAdd(config: ReviewerConfig, repo: string): Promise<void> {
  */
 function ensureSurrealPassword(): string | null {
   const envFile = join(homedir(), '.config', 'revuto', 'env');
-  const current = existsSync(envFile) ? readFileSync(envFile, 'utf8') : '';
-  if (process.env.REVUTO_SURREAL_PASSWORD || /^REVUTO_SURREAL_PASSWORD=./m.test(current)) return null;
+  if (process.env.REVUTO_SURREAL_PASSWORD) return null;
   mkdirSync(dirname(envFile), { recursive: true, mode: 0o700 });
-  appendFileSync(envFile, `${current && !current.endsWith('\n') ? '\n' : ''}REVUTO_SURREAL_PASSWORD=${randomBytes(24).toString('hex')}\n`, { mode: 0o600 });
-  chmodSync(envFile, 0o600);
+  // One descriptor for the read and the append, so nothing can swap the file in between.
+  const fd = openSync(envFile, 'a+', 0o600);
+  try {
+    const current = readFileSync(fd, 'utf8');
+    if (/^\s*REVUTO_SURREAL_PASSWORD\s*=\s*\S/m.test(current)) return null;
+    writeSync(fd, `${current && !current.endsWith('\n') ? '\n' : ''}REVUTO_SURREAL_PASSWORD=${randomBytes(24).toString('hex')}\n`);
+    fchmodSync(fd, 0o600);
+  } finally {
+    closeSync(fd);
+  }
   return envFile;
 }
 
