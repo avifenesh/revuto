@@ -31,6 +31,10 @@ const output = !request.tools.length ? {text:'Textbook from Gemini', toolCalls:[
   : !toolResults.length ? {text:'', toolCalls:[{name:'list_concerns', input:{area_bucket:'src'}}]}
   : {text:'', toolCalls:[{name:'curator_done', input:{decision:'noop', summary:'No durable concern; none touched.'}}]};
 if (toolResults.length) assert.match(JSON.stringify(toolResults), /records/);
+// AGY delivers the structured answer through its finish tool; a run_command would be real native use.
+const { existsSync } = await import('node:fs');
+const tool = existsSync(process.argv[1] + '.tool') ? readFileSync(process.argv[1] + '.tool', 'utf8') : 'finish';
+console.log(JSON.stringify({event:'step_update',step_update:{step_type:'tool',tool_name:tool,tool_info:{output:'done'}}}));
 console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',structured_output:output,usage:{input_tokens:10,output_tokens:2,total_tokens:12}}}));
 `, { mode: 0o755 });
   const spec: ModelSpec = { api: 'agy', auth: 'agy-oauth', baseURL: 'agy://local', model: 'gemini-4-argon-high', command };
@@ -83,4 +87,20 @@ test('AGY can compose text for curator textbook initialization', async () => {
     const result = await generateText({ model: buildChatModel(fake.spec), prompt: 'Compose a textbook. ' + 'x'.repeat(140 * 1024) });
     assert.equal(result.text, 'Textbook from Gemini');
   } finally { rmSync(fake.dir, { recursive: true, force: true }); }
+});
+
+test('AGY finish delivers the answer; any other native tool fails the completion', async () => {
+  const fake = fakeAgy();
+  try {
+    writeFileSync(join(fake.dir, 'agy.mjs.tool'), 'run_command');
+    await assert.rejects(runCurator({
+      config: curatorConfig(fake.spec),
+      store: { listConcerns: async () => [] } as never,
+      embedder: null,
+      feedback: { feedbackId: 'test', kind: 'review_comment', body: 'Looks good.', repo: 'owner/repo', prNumber: 1, touchedFiles: [] },
+      guard: approveAll,
+    }), /native tools \(run_command\)/);
+  } finally {
+    rmSync(fake.dir, { recursive: true, force: true });
+  }
 });
