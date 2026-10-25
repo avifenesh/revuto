@@ -94,7 +94,7 @@ async function ensureClone(owner: string, repoName: string, workspaceRoot: strin
     GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` };
   const remoteUrl = `https://github.com/${owner}/${repoName}.git`;
   if (!existsSync(`${workspaceRoot}/.git`)) {
-    await mkdir(dirname(workspaceRoot), { recursive: true });
+    await mkdir(dirname(workspaceRoot), { recursive: true, mode: 0o700 });
     await run('git', ['clone', '--filter=tree:0', remoteUrl, workspaceRoot], { env });
   } else {
     // Also scrubs a token an older revuto wrote into the remote, and brings the scan up to date.
@@ -145,7 +145,7 @@ export async function prepareWorkspace(
     const git = (args: string[], cwd = cache, discard = false) => reviewGit(args, { cwd, env, signal: options.signal, discard });
     repoGit = (args, discard = false) => git(args, cache, discard);
     if (!existsSync(`${cache}/HEAD`)) {
-      await mkdir(dirname(cache), { recursive: true });
+      await mkdir(dirname(cache), { recursive: true, mode: 0o700 });
       // A killed first clone may leave a non-repository directory in this owned cache slot.
       await rm(cache, { recursive: true, force: true });
       await reviewGit(['clone', '--bare', '--filter=tree:0', `https://github.com/${owner}/${repoName}.git`, cache], { env, signal: options.signal });

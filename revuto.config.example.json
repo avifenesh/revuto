@@ -16,5 +16,5 @@
     "dailyLearn": 0,
     "dailyTokens": 0
   },
-  "store": { "backend": "surreal", "surreal": { "url": "http://127.0.0.1:8000/rpc", "namespace": "reviewer", "username": "root", "password": "root" } }
+  "store": { "backend": "surreal", "surreal": { "url": "http://127.0.0.1:8000/rpc", "namespace": "reviewer" } }
 }

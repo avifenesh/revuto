@@ -5,9 +5,16 @@
 **Config lives in the vault by default.** `init-config` writes
 `<vault>/revuto.config.json`, where `<vault>` is `$REVUTO_VAULT` or `~/revuto`, so
 config + skills + reviewer notes all sit in one Obsidian-editable place. `loadConfig`
-resolves in order: `$REVUTO_CONFIG` → `./revuto.config.json` (local override) →
-`<vault>/revuto.config.json` → `./reviewer.config.json`. Use `init-config --local` to
-drop the config in the current dir instead (it still points `vaultPath` at the vault).
+reads `$REVUTO_CONFIG` when it is set, else `<vault>/revuto.config.json`. The working
+directory is never searched: a config names endpoints, key variables and CLI
+binaries, so a `revuto.config.json` in a cloned repo must not redirect credentials.
+`init-config --local` writes the config to the current directory; point
+`REVUTO_CONFIG` at it to use it.
+
+Environment comes from `~/.config/revuto/env` and `<vault>/env`, whole. Other
+tools' files (`~/.hermes/.env`, `~/.config/gh-shared/token.env`) supply only the
+variables the config names: model key variables, the GitHub token and the
+webhook secret.
 
 Config keys: `vaultPath`, `github.tokenEnv`, optional `github.app`, per-role
 `models`, `schedules`, `limits`, and `store`. Model specs require `baseURL` and
@@ -26,15 +33,28 @@ cursors, idempotency) has two backends, set in `store.backend`:
 
 - `surreal` (**default**): SurrealDB, with native vector search
   (`vector::similarity::cosine`) for concern dedup. Start it first with
-  `scripts/surreal-start.sh` (persistent surrealkv under the vault):
+  `scripts/surreal-start.sh` (persistent surrealkv under the vault). The root
+  password is `REVUTO_SURREAL_PASSWORD`: `init-config` or the start script
+  generates one into `~/.config/revuto/env`, and revuto reads it from there. The
+  store refuses browser origins and embedded scripting.
 
   ```jsonc
   "store": {
     "backend": "surreal",
-    "surreal": { "url": "http://127.0.0.1:8000/rpc", "namespace": "reviewer",
-                 "username": "root", "password": "root" }
+    "surreal": { "url": "http://127.0.0.1:8000/rpc", "namespace": "reviewer" }
   }
   ```
+
+  A store first started with the old `root`/`root` login keeps it until you
+  change it, and the start script refuses to guess a password for it. To move
+  one over:
+
+  1. Remove `username` and `password` from `store.surreal` in the config (an
+     explicit value there wins over the environment).
+  2. Pick a password and change the store's root user to it:
+     `DEFINE USER root ON ROOT PASSWORD '<new>' ROLES OWNER;`
+  3. Put `REVUTO_SURREAL_PASSWORD=<new>` in `~/.config/revuto/env` (one line,
+     mode 0600), then restart the store and revuto.
 
 - `sqlite`: opt-in, zero dependency; a per-repo SQLite file under `<vault>/memory/`
   (no server to run). Set `"store": { "backend": "sqlite" }`.

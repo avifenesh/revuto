@@ -144,7 +144,8 @@ export function startReviewTrace(opts: StartTraceOptions): TraceWriter {
   };
 
   try {
-    mkdirSync(dir, { recursive: true });
+    // Traces hold PR text and tool output: private to the operator whatever the umask.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     // "wx" so a second run never truncates a first one's trace. The stamp is whole
     // seconds and `revuto review --force` bypasses the per-head claim, so two runs
     // of the same head can land on the same name; they get -2, -3, ... instead of
@@ -189,7 +190,7 @@ function openFresh(dir: string, base: string): string {
   for (let suffix = 1; suffix <= MAX_TRACES_PER_REPO; suffix++) {
     const candidate = join(dir, suffix === 1 ? `${base}.jsonl` : `${base}-${suffix}.jsonl`);
     try {
-      writeFileSync(candidate, '', { encoding: 'utf8', flag: 'wx' });
+      writeFileSync(candidate, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
       return candidate;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
