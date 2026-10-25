@@ -58,8 +58,13 @@ export interface RunCuratorOptions {
 export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcome> {
   let guardTokens = 0;
   let guardFailure: string | undefined;
+  let guardCalls = 0;
+  let guardMs = 0;
   const guard: KnowledgeGuard = async (item) => {
+    const started = Date.now();
     const verdict = await opts.guard(item);
+    guardCalls++;
+    guardMs += Date.now() - started;
     guardTokens += verdict.tokens;
     if (verdict.failed) guardFailure ??= verdict.reason;
     if (!verdict.approve) console.warn(`[guard] ${item.repo} ${opts.feedback.feedbackId}: ${verdict.failed ? 'could not judge' : 'rejected'} ${item.kind}: ${verdict.reason}`);
@@ -87,6 +92,7 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
   // Tool-shy models (GLM, etc.) tend to end with prose instead of calling curator_done.
   if (needsToolUseEnforcement(opts.config.models.curator)) system += TOOL_USE_ENFORCEMENT;
 
+  const curatorStarted = Date.now();
   const main = await generateText({
     model,
     system,
@@ -133,6 +139,8 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
       } catch { /* leave defaults */ }
     }
   }
+  // Where a pass spends its time: model steps against guard calls.
+  console.log(`[curator] ${opts.feedback.repo} ${opts.feedback.feedbackId}: ${decision ?? 'no decision'} steps=${steps.length}${steps.length > main.steps.length ? ' (forced)' : ''} model=${Date.now() - curatorStarted - guardMs}ms guard=${guardCalls} (${guardMs}ms)`);
   // A write the guard could not judge was blocked. Throwing keeps the feedback unmarked, so it is retried.
   if (guardFailure) throw new GuardUnavailableError(guardFailure, tokens + guardTokens);
   return { decision, summary, tokens: tokens + guardTokens };
