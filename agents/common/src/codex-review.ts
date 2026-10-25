@@ -86,6 +86,39 @@ export const CODEX_DISABLED_FEATURES = [
   'browser_use', 'browser_use_external', 'browser_use_full_cdp_access', 'browser_annotation_api', 'in_app_browser',
   'computer_use', 'tool_suggest', 'workspace_dependencies', 'worktrees', 'shell_snapshot', 'sleep_tool',
 ] as const;
+/**
+ * Model catalog fields that add tools no feature flag removes. GPT-6 entries ask
+ * for code mode only (a JavaScript `exec` tool that calls every other tool) and
+ * the v2 sub-agent tools, and defer MCP tools behind `tool_search`. Every run
+ * gets its catalog with these set, so the model sees the revuto MCP tools
+ * directly and nothing else that runs or spawns.
+ */
+export const CODEX_DIRECT_TOOL_FIELDS = {
+  tool_mode: 'direct',
+  multi_agent_version: 'disabled',
+  supports_search_tool: false,
+  apply_patch_tool_type: null,
+  experimental_supported_tools: [],
+} as const;
+
+/** `codex debug models` arguments: the catalog the review's provider would load. */
+export function codexCatalogArgs(spec: ModelSpec): string[] {
+  const provider = codexProvider(spec);
+  const args = ['debug', 'models', '-c', `model_provider=${JSON.stringify(provider)}`];
+  if (provider === 'amazon-bedrock') {
+    args.push('-c', `model_providers.amazon-bedrock.aws.region=${JSON.stringify(spec.awsRegion?.trim() || CODEX_DEFAULT_REGION)}`);
+  }
+  return args;
+}
+
+/** The `codex debug models` output with every model set to direct tools only. */
+export function restrictCodexCatalog(output: string): string {
+  const start = output.indexOf('{');
+  const catalog = start < 0 ? undefined : JSON.parse(output.slice(start)) as { models?: unknown };
+  if (!catalog || !Array.isArray(catalog.models)) throw new Error('Codex model catalog has no models list');
+  return JSON.stringify({ ...catalog, models: catalog.models.map((model) => ({ ...(model as object), ...CODEX_DIRECT_TOOL_FIELDS })) });
+}
+
 // Bedrock authentication on the Bedrock provider only. No GitHub token, no shell settings.
 const AWS_KEYS = [
   'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
@@ -150,6 +183,8 @@ export interface CodexArgsOptions {
   /** Path of the guarded MCP server script; omitted for the doctor probe. */
   readonly mcpServer?: { readonly command: string; readonly args: readonly string[] };
   readonly schemaPath?: string;
+  /** The restricted model catalog (`restrictCodexCatalog`). */
+  readonly catalogPath?: string;
 }
 
 /** `codex exec` arguments for one review turn. The prompt is read from stdin (`-`). */
@@ -170,8 +205,11 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
     // Sub-agents would run outside revuto's step count: one thread, no depth.
     '-c', 'agents.max_concurrent_threads_per_session=1',
     '-c', 'agents.max_depth=0',
+    // Exec has nobody to answer a question.
+    '-c', 'tools.experimental_request_user_input.enabled=false',
     '-c', `model_provider=${toml(provider)}`,
   ];
+  if (opts.catalogPath) args.push('-c', `model_catalog_json=${toml(opts.catalogPath)}`);
   if (provider === 'amazon-bedrock') {
     const region = opts.spec.awsRegion?.trim() || CODEX_DEFAULT_REGION;
     args.push('-c', `model_providers.amazon-bedrock.aws.region=${toml(region)}`);
