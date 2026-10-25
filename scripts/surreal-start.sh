@@ -5,7 +5,7 @@
 #   PORT=8000 SURREAL_DATA=~/revuto/memory/surreal scripts/surreal-start.sh
 #
 # The root password is REVUTO_SURREAL_PASSWORD, read the way revuto reads it: the
-# environment first, else the first REVUTO_SURREAL_PASSWORD= line of
+# environment first, else the first non-empty REVUTO_SURREAL_PASSWORD= line of
 # ~/.config/revuto/env (trimmed, surrounding quotes removed). A new store with no
 # password gets a random one, saved there (mode 0600). An existing store with no
 # password stops here: see "Storage backend" in docs/configuration.md to move it
@@ -31,6 +31,8 @@ read_env_value() {
     val="${line#*=}"
     val="${val#"${val%%[![:space:]]*}"}"
     if [[ ${#val} -ge 2 && ( ( "$val" == \"*\" ) || ( "$val" == \'*\' ) ) ]]; then val="${val:1:${#val}-2}"; fi
+    # An empty value does not count: revuto lets a later line fill it, and so does this.
+    [[ -n "$val" ]] || continue
     printf '%s' "$val"
     return 0
   done < "$file"
