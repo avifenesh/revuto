@@ -17,7 +17,7 @@
  * - Python never imports from the directory it runs in.
  */
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { parseFrontMatter } from './store/front-matter.js';
 
@@ -70,10 +70,20 @@ export async function copySkills(from: string | undefined, to: string): Promise<
  */
 export async function checkoutGitDir(checkout: string): Promise<{ readonly gitDir: string; readonly commonDir: string } | undefined> {
   const dotGit = join(checkout, '.git');
-  const info = await lstat(dotGit).catch(() => undefined);
-  if (!info) return undefined;
-  if (info.isDirectory()) return { gitDir: dotGit, commonDir: dotGit };
-  const pointer = (await readFile(dotGit, 'utf8')).match(/^gitdir:\s*(.+)\s*$/m)?.[1];
+  // One open, never following a link: the entry checked is the one read.
+  const file = await open(dotGit, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!file) return undefined;
+  let raw: string;
+  try {
+    if ((await file.stat()).isDirectory()) return { gitDir: dotGit, commonDir: dotGit };
+    raw = await file.readFile('utf8');
+  } finally {
+    await file.close();
+  }
+  const pointer = raw.match(/^gitdir:\s*(.+)\s*$/m)?.[1];
   if (!pointer) throw new Error('checkout .git is neither a directory nor a gitdir pointer');
   const gitDir = isAbsolute(pointer) ? pointer : resolve(checkout, pointer);
   const common = (await readFile(join(gitDir, 'commondir'), 'utf8').catch(() => '')).trim();
