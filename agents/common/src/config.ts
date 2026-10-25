@@ -128,6 +128,12 @@ export interface ReviewerConfig {
     readonly reviewMedium?: ModelSpec;
     readonly curator: ModelSpec;
     readonly distill: ModelSpec;
+    /**
+     * Knowledge guard: approves feedback, concerns, skills and the textbook before
+     * they are stored. HTTP models only (no tools). Absent = the HTTP models of the
+     * distill, then curator, chains.
+     */
+    readonly guard?: ModelSpec;
     /** null = no embedder; dedup + skill selection fall back to LLM-judge / area-glob. */
     readonly embedder: ModelSpec | null;
   };
@@ -510,8 +516,16 @@ export function loadConfig(path?: string): ReviewerConfig {
     ...(raw.models?.reviewMedium ? { reviewMedium: checkModel(raw.models.reviewMedium, 'reviewMedium') } : {}),
     curator: checkModel(raw.models?.curator, 'curator'),
     distill: checkModel(raw.models?.distill, 'distill'),
+    ...(raw.models?.guard ? { guard: checkModel(raw.models.guard, 'guard') } : {}),
     embedder: raw.models?.embedder ? checkModel(raw.models.embedder, 'embedder') : null,
   };
+  // The guard judges untrusted text, so it must be a plain model with no tools.
+  if (models.guard && modelChain(models.guard).some(isNativeRunner)) {
+    throw new Error('config: models.guard must be HTTP models only (chat, responses or converse); native CLIs have tools');
+  }
+  if (!models.guard && ![...modelChain(models.distill), ...modelChain(models.curator)].some((spec) => !isNativeRunner(spec))) {
+    throw new Error('config: set models.guard to an HTTP model; distill and curator have none for the knowledge guard');
+  }
   const schedules = { ...DEFAULT_SCHEDULES, ...(raw.schedules ?? {}) };
   const review = {
     ...DEFAULT_REVIEW,

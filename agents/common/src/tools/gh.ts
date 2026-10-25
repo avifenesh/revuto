@@ -89,6 +89,12 @@ export function signReviewBody(body: string): string {
   return body.trim() ? `${SIGNATURE}\n\n---\n\n${body}` : SIGNATURE;
 }
 
+/** The body revuto posted, without its attribution header (for quoting it back as context). */
+export function unsignReviewBody(body: string): string {
+  if (!body.startsWith(SIGNATURE)) return body.replaceAll(SIGNATURE_MARK, '').trim();
+  return body.slice(SIGNATURE.length).replace(/^\s*---\s*/, '').trim();
+}
+
 /** Put `heading` in bold on top of a review summary; the body is unchanged without one. */
 export function withReviewHeading(body: string, heading?: string): string {
   const title = heading?.trim();

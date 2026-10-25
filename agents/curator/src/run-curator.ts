@@ -12,8 +12,10 @@ import type { Embedder } from '../../common/src/memory/embedder.js';
 import { CURATOR_SYSTEM_PROMPT } from './prompts/curator-system.js';
 import { assembleCuratorTools } from './tools/index.js';
 import { toAiSdkTools } from '../../common/src/tool-def.js';
+import type { KnowledgeGuard } from '../../common/src/knowledge-guard.js';
+import { GRADUATION_THRESHOLD } from './tools/submit-skill.js';
 
-export const GRADUATION_THRESHOLD = 4;
+export { GRADUATION_THRESHOLD };
 const CURATOR_MAX_STEPS = 40;
 
 export interface FeedbackEvent {
@@ -29,6 +31,8 @@ export interface FeedbackEvent {
   /** The reviewer's comment being replied to — present only for review_comment_reply. */
   readonly inReplyToBot?: string;
   readonly actor?: string;
+  /** The author's GitHub author_association (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...). */
+  readonly association?: string;
   readonly touchedFiles: readonly string[];
 }
 
@@ -45,13 +49,34 @@ export interface RunCuratorOptions {
   readonly embedder: Embedder | null;
   readonly feedback: FeedbackEvent;
   readonly autoActivate?: boolean;
+  /** Approves the feedback, and every concern and skill the run writes. */
+  readonly guard: KnowledgeGuard;
 }
 
 export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcome> {
+  let guardTokens = 0;
+  let guardFailure: string | undefined;
+  const guard: KnowledgeGuard = async (item) => {
+    const verdict = await opts.guard(item);
+    guardTokens += verdict.tokens;
+    if (verdict.failed) guardFailure ??= verdict.reason;
+    if (!verdict.approve) console.warn(`[guard] ${item.repo} ${opts.feedback.feedbackId}: ${verdict.failed ? 'could not judge' : 'rejected'} ${item.kind}: ${verdict.reason}`);
+    return verdict;
+  };
+  // The guard and the concern tools see the feedback itself, never the curator's instructions.
+  const facts = renderFeedbackFacts(opts.feedback);
+  const prompt = `${facts}\n${renderCuratorTask(opts.feedback)}`;
+  const admitted = await guard({ kind: 'feedback', repo: opts.feedback.repo, text: facts });
+  if (admitted.failed) throw new GuardUnavailableError(admitted.reason, guardTokens);
+  if (!admitted.approve) return { decision: 'guard_rejected', summary: admitted.reason, tokens: guardTokens };
+
   const tools = toAiSdkTools(assembleCuratorTools({
     store: opts.store,
     embedder: opts.embedder,
     autoActivate: opts.autoActivate,
+    guard,
+    repo: opts.feedback.repo,
+    source: facts,
   }));
 
   const model = buildChatModel(opts.config.models.curator);
@@ -59,7 +84,6 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
   let system = CURATOR_SYSTEM_PROMPT;
   // Tool-shy models (GLM, etc.) tend to end with prose instead of calling curator_done.
   if (needsToolUseEnforcement(opts.config.models.curator)) system += TOOL_USE_ENFORCEMENT;
-  const prompt = renderFeedback(opts.feedback);
 
   const main = await generateText({
     model,
@@ -107,7 +131,18 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
       } catch { /* leave defaults */ }
     }
   }
-  return { decision, summary, tokens };
+  // A write the guard could not judge was blocked. Throwing keeps the feedback unmarked, so it is retried.
+  if (guardFailure) throw new GuardUnavailableError(guardFailure, tokens + guardTokens);
+  return { decision, summary, tokens: tokens + guardTokens };
+}
+
+/** The knowledge guard could not judge a write; the feedback must be retried, not marked done. */
+export class GuardUnavailableError extends Error {
+  /** Tokens the run spent before it stopped, still owed to the daily budget. */
+  constructor(reason: string, readonly tokens = 0) {
+    super(`knowledge guard unavailable, feedback kept for retry: ${reason}`);
+    this.name = 'GuardUnavailableError';
+  }
 }
 
 /** Whether any step called the curator's terminal tool. */
@@ -115,23 +150,30 @@ function hasCuratorDone(steps: ReadonlyArray<{ toolResults?: Array<{ toolName: s
   return steps.some((s) => (s.toolResults ?? []).some((tr) => tr.toolName === 'curator_done'));
 }
 
-function renderFeedback(f: FeedbackEvent): string {
+/** The feedback as data: metadata and the comment, no instructions. */
+function renderFeedbackFacts(f: FeedbackEvent): string {
   const lines: string[] = [];
   lines.push(`# Review feedback ${f.feedbackId}`);
   lines.push('');
-  lines.push(`- Kind: ${f.kind === 'review_comment_reply' ? 'reply to the reviewer\'s comment' : 'maintainer review comment'}`);
+  lines.push(`- Kind: ${f.kind === 'review_comment_reply' ? 'reply to the reviewer\'s comment' : 'review comment'}`);
   lines.push(`- Repo / PR: ${f.repo} / #${f.prNumber}`);
   if (f.anchorPath) lines.push(`- Anchor: ${f.anchorPath}:${f.anchorLine ?? '?'}`);
-  if (f.actor) lines.push(`- Author: ${f.actor}`);
+  if (f.actor) lines.push(`- Author: ${f.actor}${f.association ? ` (${f.association})` : ''}`);
   if (f.touchedFiles.length) lines.push(`- Touched files (up to 20): ${f.touchedFiles.slice(0, 20).join(', ')}`);
   lines.push('');
   if (f.inReplyToBot) {
     lines.push("## The reviewer's comment being replied to", '', f.inReplyToBot.trim() || '(empty)', '');
     lines.push('## The reply', '', f.body.trim() || '(empty)', '');
   } else {
-    lines.push('## Maintainer review comment', '', f.body.trim() || '(empty)', '');
-    lines.push('Treat this as observed institutional signal: does it reveal a durable concern, invariant, or intentional carve-out the reviewer should remember? Most comments are routine and should be dropped.', '');
+    lines.push('## Review comment', '', f.body.trim() || '(empty)', '');
   }
+  return lines.join('\n');
+}
+
+/** The curator's task for this feedback. */
+function renderCuratorTask(f: FeedbackEvent): string {
+  const lines: string[] = [];
+  if (!f.inReplyToBot) lines.push('Treat this as observed institutional signal: does it reveal a durable concern, invariant, or intentional carve-out the reviewer should remember? Most comments are routine and should be dropped.', '');
   lines.push('---', '');
   lines.push(`Decide bump / merge / create / drop / graduation / noop. Graduation threshold is ${GRADUATION_THRESHOLD} reinforcements. Call \`curator_done\` once when finished.`);
   return lines.join('\n');

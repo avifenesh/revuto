@@ -17,7 +17,7 @@ export function assembleCuratorTools(deps: ConcernsStoreDeps & { autoActivate?: 
     ...buildConcernsStoreTools(deps),
     buildListSkillsTool(deps.store),
     buildSkillAuthoringTool(),
-    buildSubmitSkillTool(deps.store, { autoActivate: deps.autoActivate }),
+    buildSubmitSkillTool(deps.store, { autoActivate: deps.autoActivate, ...(deps.guard ? { guard: deps.guard } : {}), ...(deps.repo ? { repo: deps.repo } : {}) }),
     buildCuratorDoneTool(),
   ];
 }
