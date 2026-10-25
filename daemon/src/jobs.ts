@@ -9,7 +9,7 @@ import { getOctokit, getRepositoryInstallationOctokit, type GithubAuth } from '.
 import { openStore } from '../../agents/common/src/store/open.js';
 import { maybeEmbedder } from '../../agents/common/src/memory/embedder.js';
 import { runReview, unreviewedOutcome, describeOutcome, type ReviewOutcome } from '../../agents/common/src/run-agent.js';
-import { GuardUnavailableError, runCurator } from '../../agents/curator/src/run-curator.js';
+import { GuardUnavailableError, runCurator, type FeedbackEvent } from '../../agents/curator/src/run-curator.js';
 import { buildKnowledgeGuard } from '../../agents/common/src/knowledge-guard.js';
 import { runDecay, type DecayStats } from '../../ops/src/decay.js';
 import { pollReviewCandidates, pollFeedback } from './poller.js';
@@ -158,7 +158,9 @@ export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettin
     const identities = await reviewerIdentities(config, settings, octokit);
     // The cursor moves to when this poll started, not when it finished: comments posted during a long run come next time.
     const pollStarted = nowIso();
-    const polled = await pollFeedback(octokit, settings.repo, identities, cursor);
+    // Already-processed comments come back when the cursor rewinds; they never take a batch slot.
+    const polled: FeedbackEvent[] = [];
+    for (const f of await pollFeedback(octokit, settings.repo, identities, cursor)) if (!(await store.seen(f.feedbackId))) polled.push(f);
     const feedback = config.limits.learnBatch ? polled.slice(0, config.limits.learnBatch) : polled;       // per-batch cap
     /**
      * The cursor that re-polls `polled[i]` and everything after it, the batch's capped
