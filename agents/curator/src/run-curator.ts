@@ -93,6 +93,7 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
   if (needsToolUseEnforcement(opts.config.models.curator)) system += TOOL_USE_ENFORCEMENT;
 
   const curatorStarted = Date.now();
+  const admissionMs = guardMs;
   const main = await generateText({
     model,
     system,
@@ -140,7 +141,7 @@ export async function runCurator(opts: RunCuratorOptions): Promise<CuratorOutcom
     }
   }
   // Where a pass spends its time: model steps against guard calls.
-  console.log(`[curator] ${opts.feedback.repo} ${opts.feedback.feedbackId}: ${decision ?? 'no decision'} steps=${steps.length}${steps.length > main.steps.length ? ' (forced)' : ''} model=${Date.now() - curatorStarted - guardMs}ms guard=${guardCalls} (${guardMs}ms)`);
+  console.log(`[curator] ${opts.feedback.repo} ${opts.feedback.feedbackId}: ${decision ?? 'no decision'} steps=${steps.length}${steps.length > main.steps.length ? ' (forced)' : ''} model=${Date.now() - curatorStarted - (guardMs - admissionMs)}ms guard=${guardCalls} (${guardMs}ms)`);
   // A write the guard could not judge was blocked. Throwing keeps the feedback unmarked, so it is retried.
   if (guardFailure) throw new GuardUnavailableError(guardFailure, tokens + guardTokens);
   return { decision, summary, tokens: tokens + guardTokens };
