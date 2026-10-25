@@ -226,7 +226,11 @@ test('Codex events map to tool steps, failures and a parsed verdict', () => {
 test('Codex environment carries only its provider credentials', () => {
   const env = { HOME: '/h', PATH: '/bin', GH_TOKEN: 'x', OPENAI_API_KEY: 'y', TEAM_OPENAI_KEY: 't', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p' };
   const bedrock = { baseURL: 'codex://bedrock', api: 'codex' as const, model: 'openai.gpt-6.1-sol' };
-  assert.deepEqual(codexEnvironment('/tmp/home', bedrock, env), { CODEX_HOME: '/tmp/home', HOME: '/h', PATH: '/bin', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p' });
+  assert.deepEqual(codexEnvironment('/tmp/home', bedrock, env), { CODEX_HOME: '/tmp/home', HOME: '/h', PATH: '/bin', AWS_BEARER_TOKEN_BEDROCK: 'z', AWS_PROFILE: 'p',
+    AWS_CONFIG_FILE: '/h/.aws/config', AWS_SHARED_CREDENTIALS_FILE: '/h/.aws/credentials' });
+  const scratch = codexEnvironment('/tmp/home', bedrock, env, '/scratch');
+  assert.equal(scratch.HOME, '/scratch', 'Codex never sees the operator HOME (~/.agents skills, dotfiles)');
+  assert.equal(scratch.AWS_SHARED_CREDENTIALS_FILE, '/h/.aws/credentials', 'but the AWS files stay the real ones');
   const apiKey = { baseURL: 'codex://openai', api: 'codex' as const, auth: 'bearer' as const, model: 'gpt-6.1-sol' };
   assert.deepEqual(codexEnvironment('/tmp/home', apiKey, env), { CODEX_HOME: '/tmp/home', HOME: '/h', PATH: '/bin', CODEX_API_KEY: 'y' });
   assert.equal(codexEnvironment('/tmp/home', { ...apiKey, apiKeyEnv: 'TEAM_OPENAI_KEY' }, env).CODEX_API_KEY, 't');

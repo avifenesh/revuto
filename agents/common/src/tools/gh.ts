@@ -1,70 +1,22 @@
-import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { tool } from '../tool-def.js';
 import type { Octokit } from '@octokit/rest';
 import type { PrContext } from '../workspace.js';
 import { REVUTO_SIGNATURE_MARK } from '../incremental.js';
+import { sanitizeOutbound } from '../outbound.js';
 
-function run(cmd: string, args: readonly string[], opts: { env?: NodeJS.ProcessEnv; input?: string; timeoutMs: number; maxBytes: number }): Promise<{ code: number; out: string; err: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args as string[], { env: { ...process.env, ...opts.env } });
-    let out = Buffer.alloc(0);
-    let err = Buffer.alloc(0);
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 2000);
-    }, opts.timeoutMs);
-    child.stdout.on('data', (b: Buffer) => {
-      if (out.length + b.length > opts.maxBytes) {
-        child.kill('SIGTERM');
-        return;
-      }
-      out = Buffer.concat([out, b]);
-    });
-    child.stderr.on('data', (b: Buffer) => {
-      if (err.length + b.length > 64_000) return;
-      err = Buffer.concat([err, b]);
-    });
-    // Spawn failure (gh not installed, EACCES). Without this listener an 'error'
-    // event on a ChildProcess is unhandled and takes the daemon down; the call
-    // has to come back as a failed call instead.
-    child.on('error', (e: Error) => {
-      clearTimeout(timer);
-      resolve({ code: 127, out: '', err: e.message });
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? 1, out: out.toString('utf8'), err: err.toString('utf8') });
-    });
-    if (opts.input) {
-      // A stdin that breaks (spawn failed, child exited early) is reported through
-      // the 'error'/'close' paths above; an unhandled EPIPE here would be fatal.
-      child.stdin?.on('error', () => {});
-      child.stdin?.write(opts.input);
-      child.stdin?.end();
-    }
-  });
+/** GitHub rejects a review body or comment over 65,536 characters. */
+const MAX_POST_CHARS = 60_000;
+/** More inline comments than this is noise, or a model posting on someone's behalf. */
+const MAX_INLINE_COMMENTS = 50;
+
+/** Model text as it may leave: defused, redacted, within GitHub's size limit. */
+function outbound(text: string): string {
+  const clean = sanitizeOutbound(text);
+  return clean.length > MAX_POST_CHARS ? `${clean.slice(0, MAX_POST_CHARS)}\n\n[truncated]` : clean;
 }
 
-/**
- * Whitelisted `gh api` endpoint patterns. We run `gh api` (not `gh pr
- * view` etc.) and match the path against allowed shapes so the agent
- * can explore the REST surface without being able to mutate arbitrary
- * resources.
- */
-const GH_API_READ_PATTERNS: ReadonlyArray<RegExp> = [
-  /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/,
-  /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/files(\?.*)?$/,
-  /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/reviews(\?.*)?$/,
-  /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/reviews\/\d+$/,
-  /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/comments(\?.*)?$/,
-  /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/commits(\?.*)?$/,
-  /^repos\/[^/]+\/[^/]+\/issues\/\d+\/comments(\?.*)?$/,
-  /^repos\/[^/]+\/[^/]+\/commits\/[a-f0-9]+$/,
-  /^repos\/[^/]+\/[^/]+\/contents\/.+/,
-  /^repos\/[^/]+\/[^/]+\/check-runs\/\d+$/,
-  /^repos\/[^/]+\/[^/]+\/commits\/[a-f0-9]+\/check-runs(\?.*)?$/,
-];
+
 
 export interface GhToolsDeps {
   /** Resolved per call - see GithubAuth.token: a review outlives its token. */
@@ -111,47 +63,6 @@ interface InlineComment {
   body: string;
 }
 
-export function buildGhApiReadTool(deps: GhToolsDeps) {
-  return tool({
-    name: 'gh_api_read',
-    description:
-`Read from the GitHub REST API. Only GET is allowed, and only endpoint paths that match the reviewer's allowlist.
-
-Allowed paths (pattern):
-- repos/OWNER/REPO/pulls/NUMBER                          — PR object
-- repos/OWNER/REPO/pulls/NUMBER/files                    — changed files + patch hunks (paginated)
-- repos/OWNER/REPO/pulls/NUMBER/reviews                  — submitted reviews
-- repos/OWNER/REPO/pulls/NUMBER/reviews/ID               — single review
-- repos/OWNER/REPO/pulls/NUMBER/comments                 — inline review comments
-- repos/OWNER/REPO/pulls/NUMBER/commits                  — PR commits
-- repos/OWNER/REPO/issues/NUMBER/comments                — issue/PR comments
-- repos/OWNER/REPO/commits/SHA                           — commit
-- repos/OWNER/REPO/contents/PATH                         — file at ref
-- repos/OWNER/REPO/commits/SHA/check-runs                — CI status
-- repos/OWNER/REPO/check-runs/ID                         — CI detail
-
-Do NOT include a leading slash. Append query strings inline, e.g. \`repos/OWNER/REPO/pulls/12/files?page=2&per_page=100\`.`,
-    inputSchema: z.object({
-      path: z.string().describe('API path without leading slash, e.g. "repos/OWNER/REPO/pulls/12"'),
-    }),
-    callback: async (input: { path: string }) => {
-      const path = input.path.replace(/^\/+/, '');
-      const matched = GH_API_READ_PATTERNS.some((r) => r.test(path));
-      if (!matched) return `ERROR: path "${path}" is not on the allowlist.`;
-      const token = await deps.token();
-      const r = await run('gh', ['api', path, '--method', 'GET'], {
-        env: { GH_TOKEN: token, GITHUB_TOKEN: token },
-        timeoutMs: 30_000,
-        maxBytes: 2_000_000,
-      });
-      // ERROR prefix: the only signal the engine has that a call failed, and what
-      // keeps a rate-limited or 404 read out of the inspection count (trace.ts
-      // isToolErrorOutput, run-agent.ts summarizeReviewSteps).
-      if (r.code !== 0) return `ERROR gh api failed (${r.code}): ${r.err}\n${r.out}`;
-      return r.out;
-    },
-  });
-}
 
 /**
  * Error code for a `post_review` the empty-review guard turned away. The engine
@@ -170,6 +81,7 @@ export function refusedEmptyReview(payload: unknown): boolean {
  * Mirrors POST /repos/:o/:r/pulls/:n/reviews exactly.
  */
 export function buildPostReviewTool(deps: GhToolsDeps) {
+  let posted = false;
   return tool({
     name: 'post_review',
     description:
@@ -201,6 +113,12 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
       if (input.comments.length === 0) {
         return `ERROR ${POST_REVIEW_NO_COMMENTS_CODE}: post_review needs at least one inline comment. If the diff is clean, call skip_review instead. If a concern cannot be placed exactly, anchor it to the nearest changed line and explain the scope in the comment body.`;
       }
+      if (posted) return 'ERROR post_review: the review is already posted; one review per run.';
+      if (input.comments.length > MAX_INLINE_COMMENTS) {
+        return `ERROR post_review: ${input.comments.length} inline comments; at most ${MAX_INLINE_COMMENTS}. Merge related findings.`;
+      }
+      // Claimed before the request, so two calls in one step cannot both post.
+      posted = true;
       try {
         const resp = await deps.octokit.pulls.createReview({
           owner: deps.ctx.owner,
@@ -208,8 +126,8 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
           pull_number: deps.ctx.prNumber,
           commit_id: deps.ctx.headSha,
           event: 'COMMENT',
-          body: signReviewBody(withReviewHeading(input.body, deps.ctx.reviewHeading)),
-          comments: (input.comments as InlineComment[]).map((c) => ({ ...c, body: signReviewBody(c.body) })),
+          body: signReviewBody(withReviewHeading(outbound(input.body), deps.ctx.reviewHeading)),
+          comments: (input.comments as InlineComment[]).map((c) => ({ ...c, body: signReviewBody(outbound(c.body)) })),
         });
         return JSON.stringify({
           ok: true,
@@ -218,6 +136,7 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
           inline_comments: input.comments.length,
         });
       } catch (err: any) {
+        posted = false;
         const status = err?.status ?? '?';
         const msg = err?.message ?? String(err);
         const errors = err?.response?.data?.errors;
@@ -228,21 +147,25 @@ The review is anchored at the PR head SHA already loaded in the workspace contex
 }
 
 export function buildPostIssueCommentTool(deps: GhToolsDeps) {
+  let posted = false;
   return tool({
     name: 'post_issue_comment',
     description:
 `Post a plain (non-inline) comment on the PR. Use this only for always-on check failures (DCO, commands.def regen missing, etc.) — for all substantive findings, use \`post_review\` with inline comments.`,
     inputSchema: z.object({ body: z.string().min(1) }),
     callback: async (input) => {
+      if (posted) return 'ERROR post_issue_comment: one issue comment per run.';
+      posted = true;
       try {
         const resp = await deps.octokit.issues.createComment({
           owner: deps.ctx.owner,
           repo: deps.ctx.repo,
           issue_number: deps.ctx.prNumber,
-          body: signReviewBody(input.body),
+          body: signReviewBody(outbound(input.body)),
         });
         return JSON.stringify({ ok: true, comment_id: resp.data.id, url: resp.data.html_url });
       } catch (err: any) {
+        posted = false;
         return `ERROR: ${err?.message ?? String(err)}`;
       }
     },

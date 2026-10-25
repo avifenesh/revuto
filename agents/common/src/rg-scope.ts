@@ -15,7 +15,8 @@ import { engineRoot } from './engine-root.js';
  * boundary at a nested repository.
  */
 export function rgScopeFlags(root: string): string[] {
-  return ['--no-ignore-parent', '--no-ignore-global', ...(existsSync(join(root, '.git')) ? [] : ['--no-require-git'])];
+  // --no-ignore-dot: a PR can add .ignore or .rgignore to hide its own files from search; .gitignore still applies.
+  return ['--no-ignore-parent', '--no-ignore-global', '--no-ignore-dot', ...(existsSync(join(root, '.git')) ? [] : ['--no-require-git'])];
 }
 
 /**

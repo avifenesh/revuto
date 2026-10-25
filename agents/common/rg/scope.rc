@@ -1,2 +1,3 @@
 --no-ignore-parent
 --no-ignore-global
+--no-ignore-dot
