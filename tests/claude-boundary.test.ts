@@ -8,6 +8,20 @@ import { claudeInspectionTools } from '../agents/common/src/claude-review-mcp.js
 import { claudeEnvironment } from '../agents/common/src/claude-env.js';
 import { loadConfig } from '../agents/common/src/config.js';
 
+test('a page limit over the maximum is cut to one full page, not rejected', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'revuto-page-'));
+  try {
+    writeFileSync(join(root, 'big.txt'), Array.from({ length: 2000 }, (_, i) => `PAGE_SENTINEL line ${i}`).join('\n'));
+    const grep = (await claudeInspectionTools(root)).find(t => t.name === 'grep')!;
+    const input = grep.inputSchema.parse({ pattern: 'PAGE_SENTINEL', output_mode: 'content', limit: 50000 });
+    const page = JSON.parse(String(await grep.callback(input)));
+    assert.equal(page.text.length, 12000);
+    assert.equal(page.next_offset, 12000, 'the model can keep paging');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Claude inspection tools block outside paths, symlinks, secrets and command access', async () => {
   const root = mkdtempSync(join(tmpdir(), 'revuto-boundary-'));
   const outside = mkdtempSync(join(tmpdir(), 'revuto-outside-'));

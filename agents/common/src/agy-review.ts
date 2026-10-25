@@ -814,7 +814,8 @@ function traceAgyStep(trace: TraceWriter, step: AgyStepUpdate, phase = 'agy'): v
         toolName: toolName || 'agy_tool',
         output: info?.error === undefined || info.error === null
           ? info?.output ?? ''
-          : `ERROR: ${errorText(info.error)}`,
+          // A Codex tool error is the tool's own `ERROR: ...` output.
+          : errorText(info.error).replace(/^(?!ERROR:)/, 'ERROR: '),
       }]
     : undefined;
   trace.step(phase, {

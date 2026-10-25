@@ -57,6 +57,13 @@ async function searchTarget(root: string, target: string): Promise<{ path: strin
  * precede argv, so every glob goes in the file to keep rg's last-glob-wins order.
  * A config line cannot hold a newline; such globs stay on argv.
  */
+/** The largest page a tool returns. A larger request is cut to it rather than rejected: the model gets a page and next_offset instead of a wasted step. */
+const MAX_PAGE_CHARS = 12_000;
+const PAGE_LIMIT_NOTE = `Characters per page, at most ${MAX_PAGE_CHARS}; a larger value returns ${MAX_PAGE_CHARS}.`;
+function pageLimit(limit: number | undefined): number {
+  return Math.min(limit ?? 10_000, MAX_PAGE_CHARS);
+}
+
 async function rgPage(root: string, args: string[], globs: string[], tail: string[], offset: number, limit: number): Promise<string> {
   if (globs.some(g => g.includes('\n'))) return commandPage('rg', root, [...args, ...globs.flatMap(g => ['--glob', g]), '--', ...tail], offset, limit);
   const dir = await mkdtemp(join(tmpdir(), 'revuto-rg-'));
@@ -111,7 +118,7 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
     ...(tool.name === 'read' ? {} : {
       description: `${tool.name === 'grep' ? 'Search contents with ripgrep regex (or fixed_strings). Files over 5 MB are skipped; matching lines over 2000 columns are omitted by rg.' : 'Find paths with ripgrep glob syntax.'} Slash-free globs match basenames at any depth; a glob containing / is relative to the workspace root, not to path. Results are sorted by path, respect ignore files and exclude sensitive paths. Returns {offset,next_offset,total_characters,text}. Offsets and limits are CHARACTER counts, not lines or matches. Keep paging with next_offset until null before claiming a complete result.`,
       inputSchema: z.object({ pattern: z.string(), path: z.string().optional(),
-        offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(12000).optional(),
+        offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).optional().describe(PAGE_LIMIT_NOTE),
         ...(tool.name === 'grep' ? { glob: z.string().optional(), type: z.string().optional(),
           fixed_strings: z.boolean().optional(), case_insensitive: z.boolean().optional(), multiline: z.boolean().optional(),
           output_mode: z.enum(['files_with_matches', 'content', 'count']).optional(),
@@ -140,7 +147,7 @@ export async function claudeInspectionTools(workspaceRoot: string, diffRange?: s
         // Last globs win in rg: keep the mandatory exclusions after user filters.
         for (const excluded of EXCLUDED) globs.push(`!**/${excluded}`);
         const pattern = tool.name === 'grep' ? [input.pattern] : [];
-        const offset = input.offset ?? 0, limit = input.limit ?? 10000;
+        const offset = input.offset ?? 0, limit = pageLimit(input.limit);
         let target = await searchTarget(workspaceRoot, path);
         // A sibling name with a newline cannot be pruned in a config line.
         if (target.globs.some(g => g.includes('\n'))) target = { path, globs: [] };
@@ -181,7 +188,7 @@ function diffTool(workspaceRoot: string, name: string, description: string, rang
   return {
     name, description,
     inputSchema: z.object({ path: z.string().optional(), mode: z.enum(['patch', 'stat']).optional(),
-      offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(12000).optional() }).strict(),
+      offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).optional().describe(PAGE_LIMIT_NOTE) }).strict(),
     callback: async (input: { path?: string; mode?: string; offset?: number; limit?: number }) => {
       let path = '.';
       if (input.path !== undefined) {
@@ -194,7 +201,7 @@ function diffTool(workspaceRoot: string, name: string, description: string, rang
       const page = await commandPage('git', workspaceRoot, [
         '--no-pager', '-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', ...(input.mode === 'stat' ? ['--numstat', '--no-renames'] : []), range, '--', ...selected,
         ...EXCLUDED.map(p => `:(exclude,glob)**/${p}`),
-      ], input.offset ?? 0, input.limit ?? 10000);
+      ], input.offset ?? 0, pageLimit(input.limit));
       if (path && path !== '.' && JSON.parse(page).total_characters === 0) throw new Error(emptyPathError);
       return page;
     },
