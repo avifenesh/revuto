@@ -11,6 +11,9 @@ import { z } from 'zod';
 import type { ModelSpec } from './config.js';
 import { runAgyCli } from './agy-review.js';
 
+/** AGY's terminal tool: it delivers the structured output and runs nothing. */
+const AGY_FINISH_TOOL = 'finish';
+
 const Reply = z.object({
   text: z.string(),
   toolCalls: z.array(z.object({ name: z.string(), input: z.record(z.string(), z.unknown()) })),
@@ -72,7 +75,11 @@ export class AgyLanguageModel implements LanguageModelV4 {
         spec: this.spec, cwd, prompt, schema, structuredOnly: true,
         maxOutputTokens: options.maxOutputTokens, signal: options.abortSignal,
       });
-      if (run.toolSteps.length) throw new Error('AGY completion used native tools instead of returning tool calls');
+      // `finish` is how AGY hands back the structured answer; any other tool ran something.
+      const native = run.toolSteps.filter((t) => t.name !== AGY_FINISH_TOOL);
+      if (native.length) {
+        throw new Error(`AGY completion used native tools (${[...new Set(native.map((t) => t.name))].join(', ')}) instead of returning tool calls`);
+      }
       const parsed = Reply.parse(run.result.structured_output);
       if (required && !parsed.toolCalls.length) throw new Error('AGY completion omitted the required tool call');
       if (parsed.toolCalls.some(call => !tools.some(tool => tool.name === call.name))) {
