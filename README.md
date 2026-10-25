@@ -40,8 +40,8 @@ revuto init-config         # writes ~/revuto/revuto.config.json
 Pick a reviewer from the next section and put it in `models.review`. Then:
 
 ```bash
-export GH_TOKEN=ghp_...    # or: gh auth login
-revuto doctor              # checks models, store and GitHub token
+export GH_TOKEN=ghp_...    # or: gh auth login; not needed with the GitHub App
+revuto doctor              # checks models, store and GitHub access
 revuto init owner/repo     # clone, read PR history, write the textbook
 revuto daemon              # review, learn and decay on schedule
 ```

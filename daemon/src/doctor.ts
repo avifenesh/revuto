@@ -8,7 +8,7 @@ import { generateText, embedMany } from 'ai';
 import { isNativeRunner, type ReviewerConfig, type ModelSpec } from '../../agents/common/src/config.js';
 import { buildChatModel, buildEmbeddingModel } from '../../agents/common/src/model.js';
 import { probeAgy } from '../../agents/common/src/agy-review.js';
-import { getOctokit } from '../../agents/common/src/github-auth.js';
+import { getAppBotLogin, getOctokit } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 
 export interface ModelProbe {
@@ -120,6 +120,8 @@ export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe
 export async function runDoctor(config: ReviewerConfig): Promise<DoctorReport> {
   const githubProbe = async (): Promise<GithubProbe> => {
     try {
+      // With an App, reviews and learning use its installation tokens; no personal token is needed.
+      if (config.github.app) return { ok: true, login: await getAppBotLogin(config.github.app) };
       const { octokit } = getOctokit(config.github);
       const { data } = await octokit.users.getAuthenticated();
       return { ok: true, login: data.login };

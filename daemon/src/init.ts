@@ -15,7 +15,7 @@ import { constants, openSync, readdirSync, readFileSync, existsSync } from 'node
 import { join } from 'node:path';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
-import { getOctokit } from '../../agents/common/src/github-auth.js';
+import { githubAuthForRepo, type GithubAuth } from '../../agents/common/src/github-auth.js';
 import { cloneRepo } from '../../agents/common/src/workspace.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 import { buildChatModel } from '../../agents/common/src/model.js';
@@ -134,7 +134,7 @@ query($owner:String!, $name:String!, $cursor:String) {
 
 /** Pull up to `maxPRs` merged PRs' human review feedback, noise-filtered. */
 export async function backfillReviewCorpus(
-  octokit: ReturnType<typeof getOctokit>['octokit'],
+  octokit: GithubAuth['octokit'],
   repo: string,
   maxPRs: number,
 ): Promise<CorpusItem[]> {
@@ -262,8 +262,9 @@ export interface InitResult {
 export async function runInit(opts: InitOptions): Promise<InitResult> {
   const { config, repo } = opts;
   const maxPRs = opts.maxPRs ?? 1000;
-  const { octokit, token } = getOctokit(config.github);
-  const botLogin = (await octokit.users.getAuthenticated()).data.login;
+  const auth = await githubAuthForRepo(config.github, repo);
+  const { octokit, token } = auth;
+  const botLogin = auth.login ?? (await octokit.users.getAuthenticated()).data.login;
 
   // Fail fast if the store backend is unreachable, before the expensive backfill + LLM work.
   // The store is closed on every path: an open SurrealDB connection keeps the process alive.

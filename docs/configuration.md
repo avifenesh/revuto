@@ -16,7 +16,7 @@ tools' files (`~/.hermes/.env`, `~/.config/gh-shared/token.env`) supply only the
 variables the config names: model key variables, the GitHub token and the
 webhook secret.
 
-Config keys: `vaultPath`, `github.tokenEnv`, optional `github.app`, per-role
+Config keys: `vaultPath`, `github.tokenEnv` (only for repositories a configured `github.app` does not serve), optional `github.app`, per-role
 `models`, `schedules`, `limits`, and `store`. Model specs require `baseURL` and
 `model`; optional keys are `name`, `apiKeyEnv`, `api`, `auth`,
 `reasoningEffort`, `awsRegion`, `command`, `permissionMode`, and `fallbacks`

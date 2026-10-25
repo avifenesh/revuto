@@ -13,7 +13,7 @@ import type { Octokit } from '@octokit/rest';
 import { DEFAULT_RISK_REVIEW, isNativeRunner, reviewOutputTokens, type ModelSpec, type ReviewerConfig } from './config.js';
 import { buildChatModel, tokensFrom, needsToolUseEnforcement, TOOL_USE_ENFORCEMENT } from './model.js';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts/reviewer-system.js';
-import { getOctokit, type GithubAuth } from './github-auth.js';
+import { githubAuthForRepo, type GithubAuth } from './github-auth.js';
 import { prepareWorkspace, renderPrOverview, type PrContext } from './workspace.js';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -248,7 +248,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewOutcome> 
 async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: string, cacheRoot: string, signal: AbortSignal): Promise<ReviewOutcome> {
   const startedAt = new Date();
   let config = opts.config;
-  const auth = opts.githubAuth ?? getOctokit(config.github);
+  const auth = opts.githubAuth ?? await githubAuthForRepo(config.github, opts.repo);
   const { octokit, token } = auth;
 
   const [owner, name] = opts.repo.split('/');
