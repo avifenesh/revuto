@@ -359,7 +359,8 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
 
     const userMessage = [
       renderPrOverview(ctx),
-      renderReReview(ctx, 'git'),
+      // HTTP reviewers share the guarded tool set with Claude and Codex, new_changes included.
+      renderReReview(ctx, 'mcp'),
       renderEscalation(escalationNote ? { note: escalationNote } : escalateTo ? { allow: true, via: 'tool' } : {}),
       '',
       '---',
