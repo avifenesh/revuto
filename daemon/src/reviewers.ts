@@ -19,6 +19,7 @@ import {
 import { dirname, join } from 'node:path';
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
 import type { Job } from './types.js';
+import { parseFrontMatter } from '../../agents/common/src/store/front-matter.js';
 
 export interface ReviewerSettings {
   readonly repo: string;
@@ -65,7 +66,9 @@ function writeFileAtomically(path: string, content: string): void {
 }
 
 function parseNote(raw: string): ReviewerSettings | null {
-  const d = matter(raw).data as Record<string, unknown>;
+  const parsed = parseFrontMatter(raw);
+  if (!parsed) return null;
+  const d = parsed.data;
   if (!d.repo) return null;
   const repo = String(d.repo);
   if (!isRepositorySlug(repo)) return null;

@@ -36,6 +36,7 @@ import { isJob } from './types.js';
 import { applyModelOverrides, extractModelOverrideArgs, modelOverrideUsage } from './model-overrides.js';
 import { reconcileStaleReviewChecks } from './check-reconciliation.js';
 import { REVIEW_EXIT, reviewExitCode } from './review-check.js';
+import type { SurrealStore } from '../../agents/common/src/store/surreal-store.js';
 
 function usage(): void {
   console.log(`revuto <command>
@@ -75,7 +76,7 @@ async function cmdAdd(config: ReviewerConfig, repo: string): Promise<void> {
   if (!isRepositorySlug(repo)) throw new Error('usage: revuto add <owner/repo>');
   const { octokit } = getOctokit(config.github);
   const botLogin = (await octokit.users.getAuthenticated()).data.login;
-  writeReviewer(config, { repo, botLogin });
+  writeReviewer(config, { ...(readReviewer(config, repo) ?? {}), repo, botLogin });
   console.log(`registered ${repo} (botLogin=${botLogin}). Skills + memory will live in ${config.vaultPath}.`);
 }
 
@@ -209,8 +210,15 @@ async function main(): Promise<void> {
       const repo = args[0];
       if (!repo?.includes('/')) throw new Error('usage: revuto remove <owner/repo> [--purge]');
       const purge = args.includes('--purge');
-      const ok = removeReviewer(config(), repo, { purge });
-      console.log(ok ? `removed ${repo}${purge ? ' (skills + sqlite memory purged)' : ''}` : `not registered: ${repo}`);
+      const cfg = config();
+      // SurrealDB memory lives in the server. Drop it before unregistering, so a failed
+      // drop leaves the repo registered and `remove --purge` can simply be run again.
+      if (purge && cfg.store.backend === 'surreal' && readReviewer(cfg, repo)) {
+        const store = await openStore(cfg, repo);
+        try { await (store as SurrealStore).dropDatabase(); } finally { await store.close(); }
+      }
+      const ok = removeReviewer(cfg, repo, { purge });
+      console.log(ok ? `removed ${repo}${purge ? ' (skills and memory purged)' : ''}` : `not registered: ${repo}`);
       break;
     }
     case 'pause':

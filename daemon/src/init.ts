@@ -11,7 +11,7 @@
  * repeats and graduates. Init produces the curated textbook only.
  */
 import { generateText } from 'ai';
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { constants, openSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
@@ -21,8 +21,9 @@ import { openStore } from '../../agents/common/src/store/open.js';
 import { buildChatModel } from '../../agents/common/src/model.js';
 import { engineRoot } from '../../agents/common/src/engine-root.js';
 import { classifyCommentBody } from '../../agents/common/src/heuristics.js';
-import { writeReviewer } from './reviewers.js';
+import { readReviewer, writeReviewer } from './reviewers.js';
 import { buildKnowledgeGuard } from '../../agents/common/src/knowledge-guard.js';
+import { REVUTO_SIGNATURE_MARK } from '../../agents/common/src/incremental.js';
 
 // ---------------------------------------------------------------------------
 // 2. deterministic repo scan
@@ -76,10 +77,9 @@ export function scanRepo(dir: string): RepoFacts {
   for (const r of ['README.md', 'README.rst', 'README.txt', 'README']) {
     const p = join(dir, r);
     try {
-      // Race-free: attempt the read directly; if the file disappears or is unreadable between
-      // directory walk and here, we simply skip it. This eliminates the TOCTOU flagged by
-      // CodeQL js/file-system-race.
-      const content = readFileSync(p, 'utf8');
+      // The repo is untrusted: a README that is a symlink could point at any local file.
+      // O_NOFOLLOW refuses it at open time, with no window between a check and the read.
+      const content = readFileSync(openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW), 'utf8');
       if (content) {
         readmeExcerpt = content.slice(0, 4000);
         break;
@@ -99,14 +99,20 @@ export function scanRepo(dir: string): RepoFacts {
 export interface CorpusComment { readonly author: string; readonly body: string; readonly path?: string; }
 export interface CorpusItem { readonly pr: number; readonly title: string; readonly comments: CorpusComment[]; }
 
+interface GqlAuthor { readonly login: string; readonly __typename?: string }
+
+/** Authors with write access: their review feedback is what the textbook distills. */
+const MAINTAINER_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
 interface GqlResponse {
   repository: {
     pullRequests: {
       pageInfo: { hasNextPage: boolean; endCursor: string | null };
       nodes: Array<{
         number: number; title: string;
-        reviews: { nodes: Array<{ author: { login: string } | null; body: string; comments: { nodes: Array<{ author: { login: string } | null; body: string; path: string | null }> } }> };
-        comments: { nodes: Array<{ author: { login: string } | null; body: string }> };
+        author: { login: string } | null;
+        reviews: { nodes: Array<{ author: GqlAuthor | null; authorAssociation: string; body: string; comments: { nodes: Array<{ author: GqlAuthor | null; authorAssociation: string; body: string; path: string | null }> } }> };
+        comments: { nodes: Array<{ author: GqlAuthor | null; authorAssociation: string; body: string }> };
       }>;
     };
   };
@@ -118,9 +124,9 @@ query($owner:String!, $name:String!, $cursor:String) {
     pullRequests(first:25, states:[MERGED], orderBy:{field:UPDATED_AT, direction:DESC}, after:$cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title
-        reviews(first:30) { nodes { author { login } body comments(first:30) { nodes { author { login } body path } } } }
-        comments(first:30) { nodes { author { login } body } }
+        number title author { login }
+        reviews(first:30) { nodes { author { login __typename } authorAssociation body comments(first:30) { nodes { author { login __typename } authorAssociation body path } } } }
+        comments(first:30) { nodes { author { login __typename } authorAssociation body } }
       }
     }
   }
@@ -131,7 +137,6 @@ export async function backfillReviewCorpus(
   octokit: ReturnType<typeof getOctokit>['octokit'],
   repo: string,
   maxPRs: number,
-  excludeLogin?: string,
 ): Promise<CorpusItem[]> {
   const [owner, name] = repo.split('/');
   const out: CorpusItem[] = [];
@@ -152,17 +157,22 @@ export async function backfillReviewCorpus(
     if (!page) break;
     for (const pr of page.nodes) {
       const comments: CorpusComment[] = [];
-      const consider = (author: string | undefined, body: string, path?: string): void => {
-        if (!body?.trim()) return;
-        if (author && excludeLogin && author === excludeLogin) return;
+      // Maintainers' feedback only: not the PR author defending their own change, not
+      // bots, not revuto itself, and not anyone without write access to the repo.
+      const consider = (author: GqlAuthor | null, association: string, body: string, path?: string): void => {
+        if (!body?.trim() || !author) return;
+        // revuto's own reviews are signed (personal-token mode) or come from its bot account (App mode).
+        if (author.__typename === 'Bot' || body.includes(REVUTO_SIGNATURE_MARK)) return;
+        if (author.login === pr.author?.login) return;
+        if (!MAINTAINER_ASSOCIATIONS.has(association)) return;
         if (classifyCommentBody(body).noise) return;
-        comments.push({ author: author ?? '', body: body.trim(), path });
+        comments.push({ author: author.login, body: body.trim(), path });
       };
       for (const rev of pr.reviews.nodes) {
-        consider(rev.author?.login, rev.body);
-        for (const c of rev.comments.nodes) consider(c.author?.login, c.body, c.path ?? undefined);
+        consider(rev.author, rev.authorAssociation, rev.body);
+        for (const c of rev.comments.nodes) consider(c.author, c.authorAssociation, c.body, c.path ?? undefined);
       }
-      for (const c of pr.comments.nodes) consider(c.author?.login, c.body);
+      for (const c of pr.comments.nodes) consider(c.author, c.authorAssociation, c.body);
       if (comments.length) out.push({ pr: pr.number, title: pr.title, comments });
       if (out.length >= maxPRs) break;
     }
@@ -267,7 +277,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const facts = scanRepo(cloneDir);
 
   console.log(`[init] backfilling up to ${maxPRs} PRs of review history …`);
-  const corpus = await backfillReviewCorpus(octokit, repo, maxPRs, botLogin);
+  const corpus = await backfillReviewCorpus(octokit, repo, maxPRs);
   console.log(`[init] collected feedback from ${corpus.length} PRs`);
 
   console.log('[init] distilling maintainer-essence …');
@@ -288,7 +298,8 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     await store.close();
   }
 
-  writeReviewer(config, { repo, botLogin });
+  // Re-running init keeps the repo's settings (allowlist, pause, autoActivate, schedules).
+  writeReviewer(config, { ...(readReviewer(config, repo) ?? {}), repo, botLogin });
   console.log(`[init] wrote textbook (${textbook.length} chars) and registered ${repo}`);
 
   return { repo, prsScanned: corpus.length, textbookChars: textbook.length, botLogin };

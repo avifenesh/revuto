@@ -10,6 +10,7 @@ import type { GithubAppConfig } from '../../agents/common/src/config.js';
 import { classifyCommentBody } from '../../agents/common/src/heuristics.js';
 import type { FeedbackEvent } from '../../agents/curator/src/run-curator.js';
 import { unsignReviewBody } from '../../agents/common/src/tools/gh.js';
+import { REVUTO_SIGNATURE_MARK } from '../../agents/common/src/incremental.js';
 
 export interface OpenPR {
   readonly number: number;
@@ -128,10 +129,22 @@ function prNumberFromUrl(url: string): number {
  * (when it replies to one of the reviewer's comments) a reply with that context.
  * Replies to the bot still cost one extra API call to fetch the parent.
  */
+/**
+ * Whether a comment is revuto's own: posted by one of its identities and either
+ * from the App's bot account or carrying revuto's signature. In personal-token
+ * mode revuto posts as the operator, so the operator's unsigned comments are
+ * still feedback.
+ */
+export function isRevutoComment(c: { user?: { login?: string } | null; body?: string | null }, identities: readonly string[]): boolean {
+  const login = c.user?.login ?? '';
+  if (!identities.includes(login)) return false;
+  return login.endsWith('[bot]') || (c.body ?? '').includes(REVUTO_SIGNATURE_MARK);
+}
+
 export async function pollFeedback(
   octokit: Octokit,
   repo: string,
-  botLogin: string,
+  identities: readonly string[],
   sinceISO?: string,
 ): Promise<FeedbackEvent[]> {
   const [owner, name] = repo.split('/');
@@ -148,7 +161,7 @@ export async function pollFeedback(
   for (const c of comments) {
     const body: string = c.body ?? '';
     if (!body.trim()) continue;
-    if ((c.user?.login ?? '') === botLogin) continue;        // skip the reviewer's own comments
+    if (isRevutoComment(c, identities)) continue;           // skip the reviewer's own comments
     if (classifyCommentBody(body).noise) continue;            // code filter: drop ack/ditto/emoji/etc.
 
     // If it replies to one of the reviewer's own comments, carry that as context.
@@ -165,7 +178,7 @@ export async function pollFeedback(
         } catch { /* parent gone — treat as a standalone maintainer comment */ }
       }
       // Quote revuto's own comment without its attribution header and hidden marker.
-      if (parent && (parent.user?.login ?? '') === botLogin) inReplyToBot = unsignReviewBody(parent.body ?? '');
+      if (parent && isRevutoComment(parent, identities)) inReplyToBot = unsignReviewBody(parent.body ?? '');
     }
 
     out.push({
@@ -178,6 +191,7 @@ export async function pollFeedback(
       anchorLine: c.line ?? undefined,
       inReplyToBot,
       actor: c.user?.login,
+      ...(c.updated_at ? { updatedAt: String(c.updated_at) } : {}),
       ...(c.author_association ? { association: String(c.author_association) } : {}),
       touchedFiles: c.path ? [c.path] : [],
     });

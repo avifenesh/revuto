@@ -13,29 +13,65 @@ import { skillTextHash } from '../store/markdown-skills.js';
 import type { Embedder } from '../memory/embedder.js';
 import { cosine } from '../memory/vector.js';
 
-/** Minimal glob → RegExp supporting `**`, `*`, `?`. Matches POSIX-style paths. */
-function globToRegExp(glob: string): RegExp {
-  let re = '';
+type GlobToken = { kind: 'lit'; ch: string } | { kind: 'star' } | { kind: 'globstar' } | { kind: 'dirstar' } | { kind: 'one' };
+
+/** Tokens of a glob: `**\/` (zero or more directories), `**`, `*`, `?` and literals. */
+function globTokens(glob: string): GlobToken[] {
+  const out: GlobToken[] = [];
   for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === '*') {
-      if (glob[i + 1] === '*') {
-        i++;
-        if (glob[i + 1] === '/') { i++; re += '(?:.*/)?'; } else { re += '.*'; }
-      } else {
-        re += '[^/]*';
-      }
-    } else if (c === '?') {
-      re += '[^/]';
-    } else {
-      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-    }
+    const c = glob[i]!;
+    if (c === '*' && glob[i + 1] === '*') {
+      i++;
+      if (glob[i + 1] === '/') { i++; out.push({ kind: 'dirstar' }); } else out.push({ kind: 'globstar' });
+    } else if (c === '*') out.push({ kind: 'star' });
+    else if (c === '?') out.push({ kind: 'one' });
+    else out.push({ kind: 'lit', ch: c });
   }
-  return new RegExp(`^${re}$`);
+  return out;
 }
 
+/**
+ * Glob match with `**`, `*`, `?` on POSIX-style paths, in O(path x pattern) time.
+ * Area globs come from learned concerns, so a regex built from them could be
+ * made to backtrack for seconds on a long path and stall the daemon.
+ */
 export function globMatches(pattern: string, path: string): boolean {
-  return globToRegExp(pattern).test(path);
+  const tokens = globTokens(pattern);
+  const n = path.length;
+  // reach[j]: the tokens so far can match path[0..j).
+  let reach = new Array<boolean>(n + 1).fill(false);
+  reach[0] = true;
+  for (const t of tokens) {
+    const next = new Array<boolean>(n + 1).fill(false);
+    if (t.kind === 'lit' || t.kind === 'one') {
+      for (let j = 0; j < n; j++) if (reach[j] && (t.kind === 'one' ? path[j] !== '/' : path[j] === t.ch)) next[j + 1] = true;
+    } else if (t.kind === 'star') {
+      for (let j = 0; j <= n; j++) {
+        if (reach[j] || (j > 0 && next[j - 1] && path[j - 1] !== '/')) next[j] = true;
+      }
+    } else if (t.kind === 'globstar') {
+      for (let j = 0; j <= n; j++) if (reach[j] || (j > 0 && next[j - 1])) next[j] = true;
+    } else {
+      // dirstar: nothing, or any run of characters ending in '/'.
+      let open = false;
+      for (let j = 0; j <= n; j++) {
+        if (reach[j]) { next[j] = true; open = true; }
+        if (j > 0 && open && path[j - 1] === '/') next[j] = true;
+      }
+    }
+    reach = next;
+  }
+  return reach[n]!;
+}
+
+/** Area globs a concern may carry: a few, short, with a bounded number of wildcards. */
+export function validAreaGlobs(area: readonly string[]): string | null {
+  if (area.length > 20) return 'at most 20 area globs';
+  for (const glob of area) {
+    if (glob.length > 200) return `area glob longer than 200 characters: ${glob.slice(0, 40)}…`;
+    if ((glob.match(/\*+|\?/g) ?? []).length > 10) return `area glob with more than 10 wildcards: ${glob.slice(0, 40)}…`;
+  }
+  return null;
 }
 
 /** Query string from touched files: top-level dirs + one-deeper shared roots. */

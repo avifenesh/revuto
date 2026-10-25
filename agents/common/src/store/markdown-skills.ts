@@ -8,9 +8,15 @@
  */
 import matter from 'gray-matter';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { type SkillNote, type NewSkillNote, type SkillStatus, slugify } from './store.js';
+import { parseFrontMatter } from './front-matter.js';
+
+/** A slug for a subject: punctuation-only subjects get a stable hash instead of an empty name. */
+export function skillSlug(subject: string): string {
+  return slugify(subject) || `skill-${createHash('sha256').update(subject).digest('hex').slice(0, 8)}`;
+}
 
 export class MarkdownSkills {
   readonly skillsDir: string;
@@ -36,8 +42,12 @@ export class MarkdownSkills {
   readSkill(slug: string): SkillNote | null {
     const p = join(this.skillsDir, `${slug}.md`);
     if (!existsSync(p)) return null;
-    const parsed = matter(readFileSync(p, 'utf8'));
-    const d = parsed.data as Record<string, unknown>;
+    const parsed = parseFrontMatter(readFileSync(p, 'utf8'));
+    if (!parsed) {
+      console.warn(`[skills] ${p}: front matter is not YAML; the note is skipped`);
+      return null;
+    }
+    const d = parsed.data;
     return {
       slug,
       name: String(d.name ?? slug),
@@ -49,24 +59,44 @@ export class MarkdownSkills {
     };
   }
 
+  /**
+   * Write a graduated skill. Revising an existing skill keeps the old note under
+   * `_history/`, and a draft never replaces an active skill: it is written next to
+   * it as `<slug>-revision` so the vetted version keeps serving reviews.
+   */
   writeSkill(note: NewSkillNote): SkillNote {
-    const slug = slugify(note.subject);
-    const data: Record<string, unknown> = {
-      name: slug,
-      description: note.description,
-      status: note.status ?? 'draft',
-      area: note.area,
-    };
-    if (note.sourceRecord) data.source_record = note.sourceRecord;
-    writeFileSync(join(this.skillsDir, `${slug}.md`), matter.stringify(`${note.body.trim()}\n`, data), 'utf8');
-    return this.readSkill(slug)!;
+    const base = skillSlug(note.subject);
+    const status = note.status ?? 'draft';
+    // A draft moves past every active note in its line: <slug>, <slug>-revision, <slug>-revision-2, ...
+    let slug = base;
+    for (let n = 1; status === 'draft' && this.readSkill(slug)?.status === 'active'; n++) {
+      slug = n === 1 ? `${base}-revision` : `${base}-revision-${n}`;
+    }
+    // Whatever the destination held is archived before it is replaced.
+    if (existsSync(join(this.skillsDir, `${slug}.md`))) {
+      const history = join(this.skillsDir, '_history');
+      mkdirSync(history, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      let n = 0;
+      while (existsSync(join(history, `${slug}-${stamp}${n ? `-${n}` : ''}.md`))) n++;
+      copyFileSync(join(this.skillsDir, `${slug}.md`), join(history, `${slug}-${stamp}${n ? `-${n}` : ''}.md`));
+    }
+    return this.writeNote(slug, { description: note.description, area: note.area, body: note.body, status, sourceRecord: note.sourceRecord });
   }
 
   setSkillStatus(slug: string, status: SkillStatus): boolean {
     const note = this.readSkill(slug);
     if (!note) return false;
-    this.writeSkill({ subject: slug, description: note.description, area: note.area, body: note.body, status, sourceRecord: note.sourceRecord });
+    this.writeNote(slug, { description: note.description, area: note.area, body: note.body, status, sourceRecord: note.sourceRecord });
     return true;
+  }
+
+  /** Write the note file for `slug` exactly, without re-deriving the name. */
+  private writeNote(slug: string, note: { description: string; area: readonly string[]; body: string; status: SkillStatus; sourceRecord?: string }): SkillNote {
+    const data: Record<string, unknown> = { name: slug, description: note.description, status: note.status, area: note.area };
+    if (note.sourceRecord) data.source_record = note.sourceRecord;
+    writeFileSync(join(this.skillsDir, `${slug}.md`), matter.stringify(`${note.body.trim()}\n`, data), 'utf8');
+    return this.readSkill(slug)!;
   }
 
   readTextbook(): string | null {

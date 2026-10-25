@@ -3,6 +3,7 @@ import { tool } from '../../../common/src/tool-def.js';
 import type { KnowledgeStore, SkillNote, SkillStatus } from '../../../common/src/store/store.js';
 import type { KnowledgeGuard } from '../../../common/src/knowledge-guard.js';
 import { renderConcernForGuard } from './concerns-store.js';
+import { skillSlug } from '../../../common/src/store/markdown-skills.js';
 
 /** Reinforcements a concern needs before it may graduate into a skill. */
 export const GRADUATION_THRESHOLD = 4;
@@ -89,11 +90,17 @@ The note lands as ${status} in the vault. When autoActivate is disabled it stays
       try {
         if (opts.guard) {
           const concern = await store.getConcern(input.source_record_id);
+          // A revision replaces a skill that already steers reviews: the guard judges what it removes too.
+          const replaced = (await store.listSkills()).find((s) => s.slug === skillSlug(input.subject));
+          const source = [
+            ...(concern ? [`Source concern:\n${renderConcernForGuard(concern)}`] : []),
+            ...(replaced ? [`This replaces the existing ${replaced.status} skill "${replaced.slug}":\n${replaced.description}\n\n${replaced.body}`] : []),
+          ].join('\n\n');
           const verdict = await opts.guard({
             kind: 'skill',
             repo: opts.repo ?? '',
             text: [`Subject: ${input.subject}`, `Description: ${input.description}`, '', input.skill_md].join('\n'),
-            ...(concern ? { source: renderConcernForGuard(concern) } : {}),
+            ...(source ? { source } : {}),
           });
           if (!verdict.approve) return `ERROR submit_skill: rejected by the knowledge guard: ${verdict.reason}`;
         }
