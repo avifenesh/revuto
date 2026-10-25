@@ -145,6 +145,9 @@ export async function reviewerIdentities(config: ReviewerConfig, settings: Revie
   return logins;
 }
 
+/** Authors with write access to the repository. */
+const MAINTAINER_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
 export async function learnRepo(config: ReviewerConfig, settings: ReviewerSettings): Promise<LearnJobResult> {
   const { octokit } = getOctokit(config.github);
   const store = await openStore(config, settings.repo);
@@ -288,9 +291,20 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
     }
     writeReviewer(config, { repo, ...(botLogin ? { botLogin } : {}) });
   }
+  // The webhook path reaches here too, so the repo's pause and author allowlist apply to it.
+  const reviewer = readReviewer(config, repo);
+  if (!opts.force && reviewer?.paused) return unreviewedOutcome(`${repo} is paused; ignoring the review request`, pr.head.sha);
+  if (!opts.force && reviewer?.authorAllowlist?.length && !reviewer.authorAllowlist.includes(pr.user?.login ?? '')) {
+    return unreviewedOutcome(`#${prNumber} by ${pr.user?.login ?? 'unknown'} is not on ${repo}'s author allowlist`, pr.head.sha);
+  }
   const store = await openStore(config, repo);
   const embedder = maybeEmbedder(config);
-  const key = `${repo}#${prNumber}@${pr.head.sha}`;
+  // A head is reviewed against its base. A PR retargeted from a side branch to the
+  // default branch gets a fresh claim, so its approval cannot carry over unreviewed
+  // commits; heads against the default branch keep the original key.
+  const baseRef = pr.base?.ref;
+  const defaultBranch = pr.base?.repo?.default_branch;
+  const key = `${repo}#${prNumber}@${pr.head.sha}${baseRef && defaultBranch && baseRef !== defaultBranch ? `~${baseRef}` : ''}`;
   const managedTarget: ReviewCheckTarget = {
     repo,
     prNumber,
@@ -349,6 +363,9 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
       day,
       dailyReviews: config.limits.dailyReviews,
       dailyTokens: config.limits.dailyTokens,
+      dailyReviewsPerAuthor: config.limits.dailyReviewsPerAuthor,
+      ...(pr.user?.login ? { author: pr.user.login } : {}),
+      maintainer: MAINTAINER_ASSOCIATIONS.has(pr.author_association ?? ''),
       historical,
     }));
     finalRun = round.allowed && round.final;

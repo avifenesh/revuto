@@ -17,6 +17,8 @@ import {
 } from './review-check.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/** GitHub gives up on a delivery after 10 seconds, so nothing legitimate takes longer. */
+const REQUEST_TIMEOUT_MS = 15_000;
 const REVIEW_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 'ready_for_review']);
 
 const PullRequestWebhookSchema = z.object({
@@ -33,12 +35,44 @@ const PullRequestWebhookSchema = z.object({
     html_url: z.string().url(),
     head: z.object({ sha: z.string().min(1) }),
   }),
+  /** Present on `edited`: a changed base means the head was reviewed against another branch. */
+  changes: z.object({ base: z.unknown().optional() }).passthrough().optional(),
 });
 
 export type PullRequestWebhook = z.infer<typeof PullRequestWebhookSchema>;
 
 export function shouldReviewPullRequest(event: PullRequestWebhook): boolean {
-  return REVIEW_ACTIONS.has(event.action) && event.pull_request.draft !== true;
+  const retargeted = event.action === 'edited' && event.changes?.base !== undefined;
+  return (REVIEW_ACTIONS.has(event.action) || retargeted) && event.pull_request.draft !== true;
+}
+
+/**
+ * Coalesce deliveries per PR: at most one review runs and one waits. A newer
+ * delivery replaces the waiting one, so a burst of pushes costs one queued review,
+ * not one queue slot (and one ticket scan) per push.
+ */
+export function coalescingDispatcher(process: (event: PullRequestWebhook) => Promise<void>, onError: (err: unknown) => void) {
+  const waiting = new Map<string, PullRequestWebhook>();
+  const running = new Set<string>();
+  const drain = async (key: string): Promise<void> => {
+    running.add(key);
+    try {
+      for (let event = waiting.get(key); event; event = waiting.get(key)) {
+        waiting.delete(key);
+        await process(event).catch(onError);
+      }
+    } finally {
+      running.delete(key);
+    }
+  };
+  return {
+    dispatch(event: PullRequestWebhook): void {
+      const key = `${event.repository.full_name.toLowerCase()}#${event.number}`;
+      waiting.set(key, event);
+      if (!running.has(key)) setImmediate(() => { void drain(key); });
+    },
+    pending: (): number => waiting.size,
+  };
 }
 
 export function verifyWebhookSignature(body: Buffer | string, secret: string, signature: string | undefined): boolean {
@@ -106,7 +140,7 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
   };
   try {
     const outcome = await runForRegisteredRepo(config, event.repository.full_name, async () => {
-        auth = await getInstallationOctokit(app, event.installation.id);
+        auth = await getInstallationOctokit(app, event.installation.id, event.repository.full_name);
         return reviewOnePr(config, event.repository.full_name, event.number, {
           githubAuth: auth,
           registeredOnly: true,
@@ -171,8 +205,15 @@ export function createWebhookServer(config: ReviewerConfig, deps: WebhookServerD
     console.error(`[webhook] background failure: ${err instanceof Error ? err.message : String(err)}`);
   });
 
-  return createServer(async (req, res) => {
-    const requestPath = new URL(req.url ?? '/', 'http://localhost').pathname;
+  const dispatcher = coalescingDispatcher((event) => processEvent(config, event), onError);
+  const server = createServer(async (req, res) => {
+    try {
+    // A malformed request line must not reach an unguarded throw: it would take the daemon down.
+    let requestPath: string;
+    try { requestPath = new URL(req.url ?? '/', 'http://localhost').pathname; } catch {
+      respond(res, 400, 'invalid request');
+      return;
+    }
     if (req.method === 'GET' && requestPath === '/healthz') {
       respond(res, 200, 'ok');
       return;
@@ -183,6 +224,19 @@ export function createWebhookServer(config: ReviewerConfig, deps: WebhookServerD
     }
 
     try {
+      // Everything that needs no body is checked before reading one: an unsigned or
+      // oversized request costs a header parse, not 2 MiB of buffering.
+      if (!/^sha256=[0-9a-f]{64}$/.test(header(req, 'x-hub-signature-256') ?? '')) {
+        respond(res, 401, 'invalid signature');
+        req.destroy();
+        return;
+      }
+      const declared = Number(header(req, 'content-length') ?? '0');
+      if (declared > MAX_BODY_BYTES) {
+        respond(res, 413, 'payload too large');
+        req.destroy();
+        return;
+      }
       const body = await readBody(req);
       if (!verifyWebhookSignature(body, secret, header(req, 'x-hub-signature-256'))) {
         respond(res, 401, 'invalid signature');
@@ -211,14 +265,19 @@ export function createWebhookServer(config: ReviewerConfig, deps: WebhookServerD
       }
 
       respond(res, 202, 'accepted');
-      setImmediate(() => {
-        void processEvent(config, parsed.data).catch(onError);
-      });
+      dispatcher.dispatch(parsed.data);
     } catch (err) {
       const status = err instanceof Error && err.message.includes('exceeds 2 MiB') ? 413 : 400;
       respond(res, status, status === 413 ? 'payload too large' : 'invalid request');
     }
+    } catch (err) {
+      onError(err);
+      if (!res.headersSent) respond(res, 500, 'internal error');
+    }
   });
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.headersTimeout = REQUEST_TIMEOUT_MS;
+  return server;
 }
 
 export async function startWebhookServer(config: ReviewerConfig, deps: WebhookServerDependencies = {}): Promise<Server> {

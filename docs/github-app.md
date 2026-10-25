@@ -58,7 +58,12 @@ Use the resulting public `https://<machine>.<tailnet>.ts.net:8443/github/webhook
 URL in the App settings. Funnel configuration persists in Tailscale; keep the
 cron review schedule enabled as recovery for delivery or machine outages. After
 the first successful App check appears, require `revuto-review` in each
-repository's branch rules.
+repository's branch rules, pinned to the App as its source. Unpinned, a workflow
+in a fork PR that names a job `revuto-review` could satisfy the rule.
+
+A retargeted PR (its base branch changed) is reviewed again against the new base.
+One caveat is GitHub's: a check belongs to a commit, so two open PRs with the same
+head commit share one `revuto-review` result.
 
 ## Webhook health
 
