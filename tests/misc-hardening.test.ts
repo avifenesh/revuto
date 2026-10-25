@@ -17,6 +17,7 @@ import { startReviewTrace } from '../agents/common/src/trace.js';
 import { sanitizeNote } from '../agents/common/src/outbound.js';
 import { MarkdownSkills } from '../agents/common/src/store/markdown-skills.js';
 import { NativeStepLimitError } from '../agents/common/src/agy-review.js';
+import { addCarriedTokens } from '../agents/common/src/run-agent.js';
 import { openStore } from '../agents/common/src/store/open.js';
 import { reviewOnePr } from '../daemon/src/jobs.js';
 import { counterKey } from '../daemon/src/review-rounds.js';
@@ -94,4 +95,14 @@ test('a review that fails after spending tokens still counts them', async () => 
       assert.equal(await store.getCounter(counterKey('tokens', day)), 4321);
     } finally { await store.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an error that ends a run after an escalation carries the earlier pass\'s tokens', () => {
+  const stop = addCarriedTokens(new NativeStepLimitError('step limit', 3, 6000), 4000) as NativeStepLimitError;
+  assert.ok(stop instanceof NativeStepLimitError);
+  assert.equal(stop.tokens, 10_000);
+  assert.equal((addCarriedTokens(new Error('model down'), 4000) as { tokens?: number }).tokens, 4000);
+  const plain = new Error('x');
+  assert.equal(addCarriedTokens(plain, 0), plain);
+  assert.equal((plain as { tokens?: number }).tokens, undefined);
 });
