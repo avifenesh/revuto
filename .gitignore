@@ -11,8 +11,6 @@ pnpm-debug.log*
 dist/
 *.tsbuildinfo
 .svelte-kit/
-dashboard/.svelte-kit/
-dashboard/build/
 
 # CDK
 cdk.out/

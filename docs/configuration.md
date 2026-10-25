@@ -64,34 +64,6 @@ Optional caps under `limits` (0 = unlimited; run/comment/token counts are per re
 }
 ```
 
-## Local dashboard
-
-The local dashboard can run as a user service and open from a desktop icon:
-
-```bash
-npm run dashboard:install-desktop
-```
-
-That builds the SvelteKit dashboard, installs `revuto-dashboard.service` under
-`~/.config/systemd/user/`, starts it on `127.0.0.1:5180`, and writes a
-`Revuto Watch` launcher to both the desktop applications menu and `~/Desktop`.
-After that, use the icon or:
-
-```bash
-npm run dashboard:open
-```
-
-The dashboard includes daemon controls (`start`, `restart`, `doctor`, guarded
-`stop`) and per-repo controls for pause/resume plus one-off review, learn, and
-decay runs.
-
-Useful checks:
-
-```bash
-systemctl --user status revuto-dashboard.service
-journalctl --user -u revuto-dashboard.service -f
-```
-
 ## Running as a service
 
 Run the daemon as a systemd user service to survive reboots; see

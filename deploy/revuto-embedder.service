@@ -3,7 +3,7 @@
 # Edit the llama.cpp build path or model path if your checkout/cache differs.
 # This unit intentionally restarts on clean exits: some llama-server builds shut
 # down with status 0 after embedding traffic, but Revuto expects the embedder to
-# remain available for dashboard probes and review jobs.
+# remain available for doctor probes and review jobs.
 
 [Unit]
 Description=revuto embedder (llama.cpp bge-small-en-v1.5, CPU)
