@@ -13,6 +13,7 @@
  */
 import { mkdirSync, writeFileSync, appendFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { redactSecrets } from './outbound.js';
 
 /** Keep the newest N traces per repo. Old ones are pruned after every write. */
 const MAX_TRACES_PER_REPO = 50;
@@ -131,7 +132,8 @@ export function startReviewTrace(opts: StartTraceOptions): TraceWriter {
     if (!live) return;
     let line: string;
     try {
-      line = JSON.stringify(record);
+      // Tool output can echo a credential; the trace keeps the step, not the secret.
+      line = redactSecrets(JSON.stringify(record));
     } catch {
       line = JSON.stringify({ kind: record.kind ?? 'unknown', error: 'record could not be serialized' });
     }

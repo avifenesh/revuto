@@ -12,6 +12,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readd
 import { join } from 'node:path';
 import { type SkillNote, type NewSkillNote, type SkillStatus, slugify } from './store.js';
 import { parseFrontMatter } from './front-matter.js';
+import { sanitizeNote } from '../outbound.js';
 
 /** A slug for a subject: punctuation-only subjects get a stable hash instead of an empty name. */
 export function skillSlug(subject: string): string {
@@ -95,7 +96,7 @@ export class MarkdownSkills {
   private writeNote(slug: string, note: { description: string; area: readonly string[]; body: string; status: SkillStatus; sourceRecord?: string }): SkillNote {
     const data: Record<string, unknown> = { name: slug, description: note.description, status: note.status, area: note.area };
     if (note.sourceRecord) data.source_record = note.sourceRecord;
-    writeFileSync(join(this.skillsDir, `${slug}.md`), matter.stringify(`${note.body.trim()}\n`, data), 'utf8');
+    writeFileSync(join(this.skillsDir, `${slug}.md`), matter.stringify(`${sanitizeNote(note.body).trim()}\n`, data), 'utf8');
     return this.readSkill(slug)!;
   }
 
@@ -104,7 +105,8 @@ export class MarkdownSkills {
   }
 
   writeTextbook(body: string): void {
-    writeFileSync(this.textbookPath, body.endsWith('\n') ? body : `${body}\n`, 'utf8');
+    const clean = sanitizeNote(body);
+    writeFileSync(this.textbookPath, clean.endsWith('\n') ? clean : `${clean}\n`, 'utf8');
   }
 }
 

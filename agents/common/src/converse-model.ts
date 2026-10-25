@@ -311,7 +311,7 @@ class ConverseLanguageModel {
     const auth = this.spec.auth ?? 'auto';
     if ((auth === 'auto' || auth === 'bearer') && apiKey) {
       headers.authorization = `Bearer ${apiKey}`;
-      return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal });
+      return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal, redirect: 'error' });
     }
     if (auth === 'bearer') {
       throw new Error(`models.${this.provider}: ${this.spec.apiKeyEnv ?? 'apiKeyEnv'} is required for bearer auth`);
@@ -323,9 +323,10 @@ class ConverseLanguageModel {
         headers: await signHeaders(url, headers, bodyText, this.awsRegion(url)),
         body: bodyText,
         signal: options.abortSignal,
+        redirect: 'error',
       });
     }
-    return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal });
+    return fetch(url, { method: 'POST', headers, body: bodyText, signal: options.abortSignal, redirect: 'error' });
   }
 
   private awsRegion(url: URL): string {

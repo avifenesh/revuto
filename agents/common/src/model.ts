@@ -28,9 +28,16 @@ export function resolveApiKey(spec: ModelSpec): string {
   return '';
 }
 
+/**
+ * Model calls never follow a redirect: the request carries a key and the whole
+ * prompt, and a cross-origin hop would replay the prompt to another host.
+ */
+const noRedirectFetch = (url: string | URL | Request, init?: RequestInit) => fetch(url, { ...init, redirect: 'error' });
+
 function provider(spec: ModelSpec) {
   const isGrok = usesGrokCLIAuth(spec);
   return createOpenAICompatible({
+    fetch: noRedirectFetch,
     name: spec.name ?? new URL(spec.baseURL).host,
     baseURL: spec.baseURL,
     apiKey: isGrok ? undefined : (resolveApiKey(spec) || undefined),
@@ -44,7 +51,7 @@ function provider(spec: ModelSpec) {
             for (const [k, v] of Object.entries(grokCLIHeaders(spec.model))) {
               headers.set(k, v);
             }
-            return fetch(url, { ...init, headers });
+            return noRedirectFetch(url, { ...init, headers });
           },
         }
       : {}),

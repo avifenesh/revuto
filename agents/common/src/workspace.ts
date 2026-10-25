@@ -100,8 +100,10 @@ async function ensureClone(owner: string, repoName: string, workspaceRoot: strin
   } else {
     // Also scrubs a token an older revuto wrote into the remote, and brings the scan up to date.
     await run('git', ['remote', 'set-url', 'origin', remoteUrl], { cwd: workspaceRoot, env });
-    await run('git', ['fetch', '--quiet', 'origin'], { cwd: workspaceRoot, env });
-    await run('git', ['reset', '--quiet', '--hard', '@{upstream}'], { cwd: workspaceRoot, env });
+    // The clone is often left detached at a PR head, so there is no upstream to reset to:
+    // fetch the default branch and check it out detached.
+    await run('git', ['fetch', '--quiet', '--filter=tree:0', 'origin', 'HEAD'], { cwd: workspaceRoot, env });
+    await run('git', ['checkout', '--quiet', '--force', '--detach', 'FETCH_HEAD'], { cwd: workspaceRoot, env });
   }
 }
 

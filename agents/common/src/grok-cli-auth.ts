@@ -14,6 +14,8 @@ import type { ModelSpec } from './config.js';
 
 export const GROK_CLI_PROXY_BASE_URL = 'https://cli-chat-proxy.grok.com/v1';
 const DEFAULT_TOKEN_ENDPOINT = 'https://auth.x.ai/oauth2/token';
+/** A token refresh is one small POST; one that hangs must not hold the run. */
+const GROK_REFRESH_TIMEOUT_MS = 30_000;
 const EARLY_INVALIDATION_MS = 5 * 60 * 1000;
 const LOCK_WAIT_MS = 8_000;
 
@@ -157,6 +159,8 @@ async function doRefresh(force = false, rejectedToken?: string): Promise<string>
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body,
+      redirect: 'error',
+      signal: AbortSignal.timeout(GROK_REFRESH_TIMEOUT_MS),
     });
     const text = await response.text();
     if (!response.ok) {
@@ -203,8 +207,17 @@ function pickRefreshable(entries: GrokAuthFile): [string, RefreshableEntry] | nu
   return best;
 }
 
-function tokenEndpoint(issuer?: string): string {
+/**
+ * The refresh token goes to the issuer named in ~/.grok/auth.json. Only an https
+ * x.ai issuer is accepted, so an edited auth file cannot send it anywhere else.
+ */
+export function tokenEndpoint(issuer?: string): string {
   if (!issuer || issuer === 'https://auth.x.ai') return DEFAULT_TOKEN_ENDPOINT;
+  let url: URL;
+  try { url = new URL(issuer); } catch { throw new Error('Grok auth: oidc_issuer is not a URL'); }
+  if (url.protocol !== 'https:' || !(url.hostname === 'x.ai' || url.hostname.endsWith('.x.ai'))) {
+    throw new Error(`Grok auth: refusing token refresh at ${url.origin}; the issuer must be https on x.ai`);
+  }
   return `${issuer.replace(/\/+$/, '')}/oauth2/token`;
 }
 
