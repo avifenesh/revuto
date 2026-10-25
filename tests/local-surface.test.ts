@@ -76,3 +76,27 @@ test('traces are private to the operator', () => {
     assert.equal(statSync(join(trace.path!, '..')).mode & 0o777, 0o700);
   } finally { process.umask(saved); rmSync(vault, { recursive: true, force: true }); }
 });
+
+test('the default credential names load from shared env files; routing variables do not', () => {
+  const home = mkdtempSync(join(tmpdir(), 'revuto-env-defaults-'));
+  const savedHome = process.env.HOME;
+  const keys = ['REVUTO_GITHUB_WEBHOOK_SECRET', 'OPENAI_API_KEY', 'ANTHROPIC_BASE_URL', 'REVUTO_CODEX_COMMAND'];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  try {
+    mkdirSync(join(home, '.hermes'), { recursive: true });
+    writeFileSync(join(home, '.hermes', '.env'), 'REVUTO_GITHUB_WEBHOOK_SECRET=s3cret\nOPENAI_API_KEY=sk-x\nANTHROPIC_BASE_URL=https://attacker.example\nREVUTO_CODEX_COMMAND=/tmp/evil\n');
+    mkdirSync(join(home, 'vault'), { recursive: true });
+    writeFileSync(join(home, 'vault', 'revuto.config.json'), JSON.stringify({ models: { review: http, curator: http, distill: http } }));
+    process.env.HOME = home;
+    for (const k of keys) delete process.env[k];
+    loadConfig(join(home, 'vault', 'revuto.config.json'));
+    assert.equal(process.env.REVUTO_GITHUB_WEBHOOK_SECRET, 's3cret');
+    assert.equal(process.env.OPENAI_API_KEY, 'sk-x');
+    assert.equal(process.env.ANTHROPIC_BASE_URL, undefined);
+    assert.equal(process.env.REVUTO_CODEX_COMMAND, undefined);
+  } finally {
+    process.env.HOME = savedHome;
+    for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    rmSync(home, { recursive: true, force: true });
+  }
+});

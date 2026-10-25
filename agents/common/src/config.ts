@@ -292,7 +292,11 @@ export function loadRevutoEnv(vaultPath?: string, sharedKeys?: ReadonlySet<strin
 
 /** Environment variable names a raw config refers to: model keys, the GitHub token, the webhook secret. */
 function referencedEnv(raw: any): Set<string> {
-  const names = new Set<string>(['GH_TOKEN', 'GITHUB_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK', 'REVUTO_SURREAL_PASSWORD']);
+  // Credential names revuto and its CLIs read by default, when the config does not name them.
+  // Routing variables (base URLs, provider switches, CLI commands) are never taken from these files.
+  const names = new Set<string>(['GH_TOKEN', 'GITHUB_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK', 'REVUTO_SURREAL_PASSWORD',
+    'REVUTO_GITHUB_WEBHOOK_SECRET', 'OPENAI_API_KEY', 'GROK_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_OAUTH_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']);
   if (typeof raw?.github?.tokenEnv === 'string') names.add(raw.github.tokenEnv);
   if (typeof raw?.github?.app?.webhookSecretEnv === 'string') names.add(raw.github.app.webhookSecretEnv);
   const walk = (spec: any): void => {
