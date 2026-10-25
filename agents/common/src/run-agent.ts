@@ -568,9 +568,9 @@ export function shadowRecord(input: { repo: string; prNumber: number; headSha: s
 /** Append to <vault>/.shadow/<YYYY-MM>.jsonl. */
 export function writeShadowRecord(vaultPath: string, record: ShadowRecord): string {
   const dir = join(vaultPath, '.shadow');
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, `${record.at.slice(0, 7)}.jsonl`);
-  appendFileSync(file, `${JSON.stringify(record)}\n`);
+  appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
   return file;
 }
 

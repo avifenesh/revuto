@@ -67,9 +67,16 @@ export function extractModelOverrideArgs(argv: readonly string[]): ParsedModelOv
   return { args, overrides, ...(bedrockRegion ? { bedrockRegion } : {}) };
 }
 
+/** An AWS region name, the only shape allowed into a generated Bedrock endpoint. */
+const BEDROCK_REGION = /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/;
+
 export function applyModelOverrides(config: ReviewerConfig, parsed: Pick<ParsedModelOverrideArgs, 'overrides' | 'bedrockRegion'>): ReviewerConfig {
   if (parsed.overrides.length === 0) return config;
   const defaultRegion = parsed.bedrockRegion ?? process.env.REVUTO_BEDROCK_REGION;
+  // The region becomes part of a Bedrock hostname that receives the AWS bearer token.
+  if (defaultRegion !== undefined && !BEDROCK_REGION.test(defaultRegion)) {
+    throw new Error(`invalid Bedrock region "${defaultRegion}" (expected an AWS region such as us-east-1)`);
+  }
   const models: { -readonly [K in keyof ReviewerConfig['models']]: ReviewerConfig['models'][K] } = { ...config.models };
   for (const override of parsed.overrides) {
     models[override.role] = modelChain(override.chain, defaultRegion);
@@ -256,6 +263,6 @@ function splitRegion(alias: string, defaultRegion: string | undefined): { value:
   const at = trimmed.lastIndexOf('@');
   if (at < 0) return { value: trimmed, region: defaultRegion };
   const maybeRegion = trimmed.slice(at + 1);
-  if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(maybeRegion)) return { value: trimmed, region: defaultRegion };
+  if (!BEDROCK_REGION.test(maybeRegion)) return { value: trimmed, region: defaultRegion };
   return { value: trimmed.slice(0, at), region: maybeRegion };
 }

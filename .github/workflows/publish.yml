@@ -14,21 +14,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: build + verify + npm publish
+  verify:
+    name: build + verify
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # create the GitHub Release
-      id-token: write   # npm provenance (OIDC)
     steps:
-      - uses: step-security/harden-runner@v2
+      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2
         with:
           egress-policy: audit
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
       - name: Tag matches package.json version
@@ -48,11 +44,31 @@ jobs:
           npx tsx scripts/smoke/doctor.ts
           npx tsx scripts/smoke/config.ts
           npx tsx scripts/smoke/webhook.ts
+
+  # The job holding the npm token and the OIDC/release permissions runs no
+  # dependency install scripts: they ran, unprivileged, in verify.
+  publish:
+    name: npm publish + release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub Release
+      id-token: write   # npm provenance (OIDC)
+    steps:
+      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci --ignore-scripts
       - name: Publish to npm (with provenance)
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           generate_release_notes: true

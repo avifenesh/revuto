@@ -10,7 +10,9 @@
  *   revuto approve <owner/repo> <skill-slug>   activate a draft skill
  */
 import cron from 'node-cron';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { homedir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { loadConfig, defaultVaultPath, type ReviewerConfig } from '../../agents/common/src/config.js';
 import { engineRoot } from '../../agents/common/src/engine-root.js';
@@ -80,6 +82,20 @@ async function cmdAdd(config: ReviewerConfig, repo: string): Promise<void> {
   console.log(`registered ${repo} (botLogin=${botLogin}). Skills + memory will live in ${config.vaultPath}.`);
 }
 
+/**
+ * Make sure ~/.config/revuto/env holds REVUTO_SURREAL_PASSWORD, so the store never
+ * runs on the root/root default. Returns the file when it generated one.
+ */
+function ensureSurrealPassword(): string | null {
+  const envFile = join(homedir(), '.config', 'revuto', 'env');
+  const current = existsSync(envFile) ? readFileSync(envFile, 'utf8') : '';
+  if (process.env.REVUTO_SURREAL_PASSWORD || /^REVUTO_SURREAL_PASSWORD=./m.test(current)) return null;
+  mkdirSync(dirname(envFile), { recursive: true, mode: 0o700 });
+  appendFileSync(envFile, `${current && !current.endsWith('\n') ? '\n' : ''}REVUTO_SURREAL_PASSWORD=${randomBytes(24).toString('hex')}\n`, { mode: 0o600 });
+  chmodSync(envFile, 0o600);
+  return envFile;
+}
+
 async function main(): Promise<void> {
   const parsed = extractModelOverrideArgs(process.argv.slice(2));
   const [cmd, ...args] = parsed.args;
@@ -94,8 +110,11 @@ async function main(): Promise<void> {
       // Exclusive create (wx) — no exists pre-check, so there is no TOCTOU window.
       // EEXIST (file already there, or created concurrently) means "leave it".
       try {
-        writeFileSync(dest, JSON.stringify(cfg, null, 2) + '\n', { flag: 'wx' });
+        writeFileSync(dest, JSON.stringify(cfg, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
         console.log(`wrote ${dest}\nedit models, then: revuto doctor`);
+        if (args.includes('--local')) console.log(`revuto reads it only with REVUTO_CONFIG=${dest}`);
+        const envFile = ensureSurrealPassword();
+        if (envFile) console.log(`generated a SurrealDB root password in ${envFile}; start the store with scripts/surreal-start.sh`);
       } catch (e: any) {
         if (e && e.code === 'EEXIST') {
           console.log(`${dest} already exists — leaving it`);

@@ -4,7 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/surreal start --user root --pass root --bind 127.0.0.1:8000 surrealkv://%h/revuto/memory/surreal
+# REVUTO_SURREAL_PASSWORD comes from ~/.config/revuto/env (scripts/surreal-start.sh or
+# `revuto init-config` generates it). Browsers are refused and scripting is off.
+# The start script reads it and passes it to surreal through SURREAL_PASS, not argv.
+ExecStart=%h/projects/revuto/scripts/surreal-start.sh
+Environment=SURREAL_DATA=%h/revuto/memory/surreal
 Restart=on-failure
 RestartSec=5
 

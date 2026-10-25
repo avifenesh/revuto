@@ -255,14 +255,17 @@ const AGY_PERMISSION_MODES = ['bypass', 'settings'] as const;
  * Auto-load environment variables from ~/.config/revuto/env or <vault>/env if present.
  * Does not overwrite existing non-empty environment variables.
  */
-export function loadRevutoEnv(vaultPath?: string): void {
-  const candidates = [
-    join(homedir(), '.config', 'revuto', 'env'),
-    join(homedir(), '.config', 'gh-shared', 'token.env'),
-    join(homedir(), '.hermes', '.env'),
-    join(vaultPath ?? defaultVaultPath(), 'env'),
+export function loadRevutoEnv(vaultPath?: string, sharedKeys?: ReadonlySet<string>): void {
+  // revuto's own files load whole. Files other tools own load only the variables
+  // the config names (key variables, token and webhook secret), so they cannot
+  // inject a base URL, a CLI command or NODE_OPTIONS into revuto and its children.
+  const candidates: Array<{ file: string; only?: ReadonlySet<string> }> = [
+    { file: join(homedir(), '.config', 'revuto', 'env') },
+    { file: join(homedir(), '.config', 'gh-shared', 'token.env'), only: sharedKeys ?? new Set() },
+    { file: join(homedir(), '.hermes', '.env'), only: sharedKeys ?? new Set() },
+    { file: join(vaultPath ?? defaultVaultPath(), 'env') },
   ];
-  for (const file of candidates) {
+  for (const { file, only } of candidates) {
     if (!existsSync(file)) continue;
     try {
       const content = readFileSync(file, 'utf8');
@@ -272,6 +275,7 @@ export function loadRevutoEnv(vaultPath?: string): void {
         const eqIdx = trimmed.indexOf('=');
         if (eqIdx <= 0) continue;
         const key = trimmed.slice(0, eqIdx).trim();
+        if (only && !only.has(key)) continue;
         let val = trimmed.slice(eqIdx + 1).trim();
         if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
           val = val.slice(1, -1);
@@ -284,6 +288,21 @@ export function loadRevutoEnv(vaultPath?: string): void {
       /* ignore read errors */
     }
   }
+}
+
+/** Environment variable names a raw config refers to: model keys, the GitHub token, the webhook secret. */
+function referencedEnv(raw: any): Set<string> {
+  const names = new Set<string>(['GH_TOKEN', 'GITHUB_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK', 'REVUTO_SURREAL_PASSWORD']);
+  if (typeof raw?.github?.tokenEnv === 'string') names.add(raw.github.tokenEnv);
+  if (typeof raw?.github?.app?.webhookSecretEnv === 'string') names.add(raw.github.app.webhookSecretEnv);
+  const walk = (spec: any): void => {
+    if (!spec || typeof spec !== 'object') return;
+    if (typeof spec.apiKeyEnv === 'string') names.add(spec.apiKeyEnv);
+    if (spec.auth === 'grok') names.add('GROK_API_KEY');
+    for (const f of Array.isArray(spec.fallbacks) ? spec.fallbacks : []) walk(f);
+  };
+  for (const spec of Object.values(raw?.models ?? {})) walk(spec);
+  return names;
 }
 
 function requireField<T>(v: T | undefined, name: string): T {
@@ -398,18 +417,14 @@ export function defaultVaultPath(): string {
 
 /**
  * Resolve the config path. Order: explicit arg → $REVUTO_CONFIG → $REVIEWER_CONFIG
- * → ./revuto.config.json (local override) → <vault>/revuto.config.json (the default
- * home) → ./reviewer.config.json (back-compat). The config lives in the vault by
- * default so config + skills + reviewer notes are controlled in one place (Obsidian).
+ * → <vault>/revuto.config.json. The working directory is never searched: a config
+ * names endpoints, key variables and CLI binaries, so a revuto.config.json in a
+ * cloned repo or a PR checkout must not be able to redirect credentials.
  */
 function defaultConfigPath(): string {
   if (process.env.REVUTO_CONFIG) return process.env.REVUTO_CONFIG;
   if (process.env.REVIEWER_CONFIG) return process.env.REVIEWER_CONFIG;
-  if (existsSync(resolve('revuto.config.json'))) return 'revuto.config.json';
-  const vaultCfg = join(defaultVaultPath(), 'revuto.config.json');
-  if (existsSync(vaultCfg)) return vaultCfg;
-  if (existsSync(resolve('reviewer.config.json'))) return 'reviewer.config.json';
-  return vaultCfg; // not-found error then points at the vault location
+  return join(defaultVaultPath(), 'revuto.config.json');
 }
 
 export function resolveConfigPath(path?: string): string {
@@ -432,7 +447,7 @@ export function loadConfig(path?: string): ReviewerConfig {
   // vaultPath defaults to the config file's own folder — so the config can live
   // inside the vault and the user controls everything (config + skills + reviewers) there.
   const vaultPath = raw.vaultPath ? resolveHome(raw.vaultPath) : dirname(file);
-  loadRevutoEnv(vaultPath);
+  loadRevutoEnv(vaultPath, referencedEnv(raw));
   const tokenEnv = raw.github?.tokenEnv ?? 'GH_TOKEN';
   let githubApp: GithubAppConfig | undefined;
   if (raw.github?.app !== undefined) {
@@ -572,7 +587,8 @@ export function loadConfig(path?: string): ReviewerConfig {
       url: raw.store?.surreal?.url ?? 'http://127.0.0.1:8000/rpc',
       namespace: raw.store?.surreal?.namespace ?? 'reviewer',
       username: raw.store?.surreal?.username ?? 'root',
-      password: raw.store?.surreal?.password ?? 'root',
+      // The generated password in ~/.config/revuto/env; 'root' only for stores started before it existed.
+      password: raw.store?.surreal?.password ?? process.env.REVUTO_SURREAL_PASSWORD ?? 'root',
     },
   };
 
