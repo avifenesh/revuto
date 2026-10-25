@@ -13,7 +13,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runAgyCli } from '../../dist/agents/common/src/agy-review.js';
+// The compiled runner: its MCP server path resolves to the compiled server beside it.
+const { runAgyCli } = await import(new URL('../../dist/agents/common/src/agy-review.js', import.meta.url).href) as typeof import('../../agents/common/src/agy-review.js');
 
 const model = process.argv[2] ?? 'gpt-6.1-sol';
 const bodies: string[] = [];
