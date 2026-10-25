@@ -243,27 +243,54 @@ export const UNTRUSTED_PR_RULE =
 /** A PR head too large to check out. */
 export class CheckoutTooLargeError extends Error {
   constructor(readonly bytes: number, readonly limit: number) {
-    super(`the PR head holds at least ${bytes} bytes of files, over review.maxCheckoutBytes (${limit}); not checked out`);
+    super(bytes < 0
+      ? `the PR head's size could not be established within ${CHECKOUT_SIZE_CALLS} tree calls; not checked out (review.maxCheckoutBytes ${limit})`
+      : `the PR head holds at least ${bytes} bytes of files, over review.maxCheckoutBytes (${limit}); not checked out`);
     this.name = 'CheckoutTooLargeError';
   }
 }
 
+/** Tree API calls one size check may spend before it gives up and refuses the head. */
+const CHECKOUT_SIZE_CALLS = 500;
+
 /**
  * Refuse a head whose files add up past the limit, before anything is fetched: a
  * PR of small, highly compressible blobs can expand to fill the disk on checkout.
- * One recursive tree call returns every blob's size. A truncated listing is a
- * lower bound, which still refuses a bomb; an API failure does not block the review.
+ * A recursive tree call returns every blob's size. When GitHub truncates it (too
+ * many entries), the subtrees are summed level by level instead, so padding the
+ * tree cannot hide the large files; a head whose size cannot be established within
+ * the call budget is refused. A first call that fails (API down) does not block.
  */
 export async function assertCheckoutSize(octokit: Octokit, owner: string, repo: string, sha: string, limit: number): Promise<void> {
-  let tree: Array<{ type?: string; size?: number }>;
+  type Entry = { type?: string; size?: number; sha?: string };
+  let calls = 0;
+  const tree = async (treeSha: string, recursive: boolean): Promise<{ entries: Entry[]; truncated: boolean }> => {
+    if (++calls > CHECKOUT_SIZE_CALLS) throw new CheckoutTooLargeError(-1, limit);
+    const { data } = await octokit.git.getTree({ owner, repo, tree_sha: treeSha, ...(recursive ? { recursive: 'true' } : {}) });
+    return { entries: data.tree as Entry[], truncated: data.truncated === true };
+  };
+  const blobs = (entries: Entry[]) => entries.reduce((sum, e) => sum + (e.type === 'blob' ? e.size ?? 0 : 0), 0);
+  const total = async (treeSha: string, running: number): Promise<number> => {
+    const full = await tree(treeSha, true);
+    if (!full.truncated) return blobs(full.entries);
+    const level = await tree(treeSha, false);
+    let bytes = blobs(level.entries);
+    for (const sub of level.entries) {
+      if (sub.type !== 'tree' || !sub.sha) continue;
+      bytes += await total(sub.sha, running + bytes);
+      if (running + bytes > limit) break;
+    }
+    return bytes;
+  };
+  let first: { entries: Entry[]; truncated: boolean };
   try {
-    const { data } = await octokit.git.getTree({ owner, repo, tree_sha: sha, recursive: 'true' });
-    tree = data.tree;
+    first = await tree(sha, true);
   } catch (err) {
+    if (err instanceof CheckoutTooLargeError) throw err;
     console.warn(`[review] ${owner}/${repo}@${sha.slice(0, 7)}: checkout size unknown (${err instanceof Error ? err.message : String(err)})`);
     return;
   }
-  const bytes = tree.reduce((sum, entry) => sum + (entry.type === 'blob' ? entry.size ?? 0 : 0), 0);
+  const bytes = first.truncated ? (calls = 0, await total(sha, 0)) : blobs(first.entries);
   if (bytes > limit) throw new CheckoutTooLargeError(bytes, limit);
 }
 

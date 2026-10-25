@@ -162,9 +162,9 @@ test('the re-review note names the range and files and keeps open findings faili
   assert.equal(renderReReview(context(), 'mcp'), '');
   const mcp = renderReReview(context(inc), 'mcp');
   assert.match(mcp, /## Re-review/); assert.match(mcp, new RegExp(`reviewed this PR at ${sha('d')}`));
-  assert.match(mcp, /- src\.ts \(\+2 \/ -1\)/); assert.match(mcp, /new_changes tool/);
+  assert.match(mcp, /- "src\.ts" \(\+2 \/ -1\)/); assert.match(mcp, /new_changes tool/);
   assert.match(mcp, /still unresolved, post it again/, 'an open finding is posted again so the review does not pass');
-  assert.match(mcp, /### Revuto's earlier findings \(1\)\n- other\.ts:7\n  \[P1\] Open bug\n  with detail/);
+  assert.match(mcp, /### Revuto's earlier findings \(1\)\n- "other\.ts":7\n  \[P1\] Open bug\n  with detail/);
   assert.match(renderReReview(context(inc), 'git'), new RegExp(`git diff ${sha('d')}\\.\\.${sha('a')}`));
   assert.match(buildAgyReviewPrompt(context(inc), '', 'codex'), /new_changes, which returns what changed since the last review/);
   assert.doesNotMatch(buildAgyReviewPrompt(context(), '', 'codex'), /new_changes/);
