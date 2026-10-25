@@ -148,6 +148,7 @@ export async function processPullRequestWebhook(config: ReviewerConfig, event: P
           githubAuth: auth,
           registeredOnly: true,
           expectedHeadSha: event.pull_request.head.sha,
+          ...(event.action === 'edited' ? { retarget: true } : {}),
           onClaimed: async () => {
             checkRunId = await createReviewCheck(auth!, app, target);
           },

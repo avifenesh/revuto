@@ -242,6 +242,8 @@ export interface ReviewOnePrOptions {
   readonly expectedHeadSha?: string;
   /** Called after this exact PR head is claimed and before the model run begins. */
   readonly onClaimed?: (headSha: string) => Promise<void>;
+  /** The delivery reported a base change (pull_request.edited with changes.base). */
+  readonly retarget?: boolean;
   /** The model run; replaceable in tests. */
   readonly runReview?: typeof runReview;
 }
@@ -299,19 +301,25 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
   }
   const store = await openStore(config, repo);
   const embedder = maybeEmbedder(config);
-  // A head is reviewed against its base. When the base changed since this head was
-  // reviewed (a retarget, either way), the head gets a new claim generation, so the
-  // done marker of a review against another base cannot stand for this one, and the
-  // review is a full one rather than a re-review of the old base's range.
+  // A PR is reviewed against its base. The base of the PR's last completed review is
+  // recorded (only once that review finished), so a later base change is seen on
+  // any head: the same head, a new push, or a retry after a failed or refused run.
+  // A retarget means a full review (no incremental baseline from the old base), and
+  // a head whose review is already done gets a new claim generation, so the done
+  // marker of a review against another base cannot stand for this one. A webhook
+  // that reports the base change counts even for heads reviewed before this record
+  // existed.
   const baseRef = pr.base?.ref ?? '';
-  const baseMarker = `reviewed-base:${prNumber}@${pr.head.sha}`;
+  const baseMarker = `reviewed-base:${prNumber}`;
   const reviewedBase = baseRef ? await store.getCursor(baseMarker) : null;
-  const retargeted = reviewedBase !== null && reviewedBase !== baseRef;
-  const generation = retargeted
-    ? await store.incrCounter(`retarget:${prNumber}@${pr.head.sha}`)
-    : await store.getCounter(`retarget:${prNumber}@${pr.head.sha}`);
-  const key = `${repo}#${prNumber}@${pr.head.sha}${generation ? `~base${generation}` : ''}`;
-  if (retargeted) console.log(`[review] ${key}: base changed from ${reviewedBase} to ${baseRef}; reviewing the head again`);
+  const retargeted = !!baseRef && (opts.retarget === true || (reviewedBase !== null && reviewedBase !== baseRef));
+  const generationKey = `retarget:${prNumber}@${pr.head.sha}`;
+  const keyFor = (g: number): string => `${repo}#${prNumber}@${pr.head.sha}${g ? `~base${g}` : ''}`;
+  let generation = await store.getCounter(generationKey);
+  // Only a finished generation moves on: one still claimed (in progress) dedupes as usual.
+  if (retargeted && await store.seen(keyFor(generation))) generation = await store.incrCounter(generationKey);
+  const key = keyFor(generation);
+  if (retargeted) console.log(`[review] ${key}: base is ${baseRef}, last reviewed against ${reviewedBase ?? 'another base'}; full review`);
   const managedTarget: ReviewCheckTarget = {
     repo,
     prNumber,
@@ -356,7 +364,6 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
         );
       }
     }
-    if (baseRef) await store.setCursor(baseMarker, baseRef);
     if (opts.onClaimed) {
       await opts.onClaimed(pr.head.sha);
     } else if (githubApp) {
@@ -393,7 +400,11 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
       throw new Error(`review of ${repo}#${prNumber}@${pr.head.sha} ended without a terminal decision`);
     }
     if (round.daily) await store.unclaim(claimKey);
-    else await store.mark(claimKey);
+    else {
+      await store.mark(claimKey);
+      // The PR now stands reviewed against this base; until then a retarget stays pending.
+      if (baseRef && outcome.ranModel) await store.setCursor(baseMarker, baseRef);
+    }
     if (finalRun && claimKey !== finalKey) await store.mark(finalKey);
     if (githubApp && managedCheckRunId !== undefined) {
       try {

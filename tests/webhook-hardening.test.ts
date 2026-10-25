@@ -158,5 +158,34 @@ test('a head retargeted to another base, and back, gets a fresh full review each
     await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview });
     assert.deepEqual(full, [undefined, true, true], 'each base change reviews the head again, in full');
     assert.match((await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview })).result, /already reviewed/);
+    // A webhook-reported retarget counts even with no recorded base (a head reviewed before the record existed).
+    await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview, retarget: true });
+    assert.equal(full.at(-1), true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a retarget that comes with a push, or after a failed run, is still a full review', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'retarget-push-'));
+  const cfg = { vaultPath: root, review: { workspaceDir: join(root, 'workspaces'), maxConcurrent: 4, maxConcurrentPerRepo: 2, maxRounds: 10 },
+    github: { tokenEnv: 'TEST_UNUSED' }, models: { embedder: null }, limits: { dailyReviews: 0, dailyTokens: 0 }, store: { backend: 'sqlite' } } as ReviewerConfig;
+  let base = 'dev', head = 'a'.repeat(40);
+  const auth = { login: 'reviewer', token: async () => 'unused', octokit: {
+    pulls: { get: async () => ({ data: { head: { sha: head }, base: { ref: base, repo: { default_branch: 'main' } }, state: 'open', draft: false, html_url: 'https://example.test/pr', user: { login: 'author' }, author_association: 'NONE' } }), listReviews: () => {} },
+    paginate: async () => [],
+  } } as unknown as GithubAuth;
+  const full: Array<boolean | undefined> = [];
+  let fail = false;
+  const runReview = async (o: any) => { full.push(o.fullReview); if (fail) throw new Error('model down'); return { ...unreviewedOutcome('ran', head), ranModel: true, terminal: 'skip_review', inspections: 1 } as never; };
+  try {
+    await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview });
+    head = 'b'.repeat(40); base = 'main';
+    fail = true;
+    await assert.rejects(reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview }));
+    fail = false;
+    await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview });
+    assert.deepEqual(full, [undefined, true, true], 'the new head on the new base is reviewed in full, and the retry after a failure too');
+    head = 'c'.repeat(40);
+    await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview });
+    assert.equal(full.at(-1), undefined, 'once reviewed against main, a later push is an ordinary re-review');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
