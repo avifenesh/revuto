@@ -25,7 +25,7 @@ import type { PrContext } from './workspace.js';
 import { buildPostReviewTool, buildSkipTool } from './tools/gh.js';
 import { isToolErrorOutput, startReviewTrace, type TraceWriter } from './trace.js';
 import { ModelRefusalError } from './refusal.js';
-import { codexCatalogArgs, codexEnvironment, codexExecArgs, codexReviewSchema, codexUsesLogin, normalizeCodexEvents, restrictCodexCatalog, revutoCodexHome, type CodexStreamState } from './codex-review.js';
+import { codexCatalogArgs, codexEnvironment, codexExecArgs, codexExecutableRoots, codexReviewSchema, codexUsesLogin, normalizeCodexEvents, restrictCodexCatalog, revutoCodexHome, type CodexStreamState } from './codex-review.js';
 import { renderPrOverview } from './workspace.js';
 import { repoSlug } from './store/markdown-skills.js';
 import { fenceUntrusted, stripControl } from './untrusted.js';
@@ -245,7 +245,7 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       await copySkills(opts.skillsDir, layout.skills);
       const git = await checkoutGitDir(opts.cwd);
       return await spawnNativeCli({ ...opts, prompt: withWorkspace(opts.prompt, layout) }, undefined,
-        { layout, settings: claudeReviewSettings({ checkout: opts.cwd, ...(git ?? {}) }) });
+        { layout, settings: claudeReviewSettings({ checkout: opts.cwd, ...(git ?? {}), runDirs: [layout.scratch, layout.skills] }) });
     }
     if (runner === 'agy') {
       const settings = join(home, '.gemini', 'antigravity-cli');
@@ -277,8 +277,11 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
     const catalogPath = join(dir, 'models.json');
     await writeFile(catalogPath, await restrictedCodexCatalog(opts, codexHome, scratchHome));
     if (opts.probe) return await spawnNativeCli(opts, { codexHome, schemaPath, scratchHome, catalogPath });
+    const git = await checkoutGitDir(opts.cwd);
+    const readableDirs = [...new Set([git?.gitDir, git?.commonDir].filter((d): d is string => !!d)),
+      ...(existsSync(layout.skills) ? [layout.skills] : []), ...await codexExecutableRoots(nativeCommand(opts.spec))];
     return await spawnNativeCli({ ...opts, prompt: withWorkspace(opts.prompt, layout) },
-      { codexHome, schemaPath, scratchHome, catalogPath, writableDirs: [layout.scratch] });
+      { codexHome, schemaPath, scratchHome, catalogPath, writableDirs: [layout.scratch], readableDirs });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -333,7 +336,7 @@ interface ClaudeRun {
   readonly settings?: Record<string, unknown>;
 }
 
-function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string; catalogPath?: string; writableDirs?: string[] }, claudeRun?: ClaudeRun, agyHome?: string): Promise<AgyCliRun> {
+function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string; catalogPath?: string; writableDirs?: string[]; readableDirs?: string[] }, claudeRun?: ClaudeRun, agyHome?: string): Promise<AgyCliRun> {
   const runner = runnerOf(opts.spec);
   const claude = runner === 'claude';
   const label = runner === 'claude' ? 'Claude CLI' : runner === 'codex' ? 'Codex CLI' : 'AGY';
@@ -351,7 +354,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   const args = runner === 'codex' ? codexExecArgs({
     spec: opts.spec,
     cwd: opts.cwd,
-    ...(codex?.writableDirs ? { writableDirs: codex.writableDirs } : {}),
+    ...(codex?.writableDirs ? { writableDirs: codex.writableDirs, readableDirs: codex.readableDirs ?? [] } : {}),
     ...(codex?.schemaPath ? { schemaPath: codex.schemaPath } : {}),
     ...(codex?.catalogPath ? { catalogPath: codex.catalogPath } : {}),
   }) : [

@@ -1,6 +1,6 @@
 /**
  * The native reviewers' sandbox layout: what Claude Code's settings deny, how a
- * worktree's git directories are found, and that the skills copy brings no links.
+ * worktree's git directories are found, and what the skills copy brings.
  * The live behavior is checked by scripts/smoke/native-sandbox.ts.
  *
  * Run: npm test
@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,17 +32,19 @@ test('a worktree pointer resolves to its gitdir and the shared cache, both write
       permissions: { deny: string[]; blockReadsOutsideWorkingDirectories: boolean };
       sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean;
         filesystem: { denyWrite: string[]; allowRead: string[]; denyRead: string[] };
-        network: { allowedDomains: string[] }; credentials: { envVars: Array<{ name: string; mode: string }> } };
+        network: { allowedDomains: string[]; strictAllowlist: boolean }; credentials: { envVars: Array<{ name: string; mode: string }> } };
     };
     for (const path of [join(checkout, '.git'), git!.gitDir, cache]) {
       assert.ok(settings.sandbox.filesystem.denyWrite.includes(path), `sandbox denies writes to ${path}`);
-      assert.ok(settings.permissions.deny.includes(`Write(/${path})`) && settings.permissions.deny.includes(`Edit(/${path}/**)`), `tools deny writes to ${path}`);
+      assert.ok(settings.permissions.deny.includes(`Edit(/${path})`) && settings.permissions.deny.includes(`Edit(/${path}/**)`), `tools deny writes to ${path}`);
     }
-    assert.deepEqual(settings.sandbox.filesystem.allowRead.sort(), [cache, git!.gitDir].sort(), 'git can read history');
+    assert.deepEqual(settings.sandbox.filesystem.allowRead.sort(), [cache, git!.gitDir, checkout].sort(), 'the checkout and its history are readable');
+    assert.equal(settings.sandbox.filesystem.denyRead[0], '~', 'the rest of the home directory is not');
     assert.ok(settings.permissions.blockReadsOutsideWorkingDirectories);
     assert.equal(settings.sandbox.enabled && settings.sandbox.failIfUnavailable, true);
     assert.equal(settings.sandbox.allowUnsandboxedCommands, false);
     assert.deepEqual(settings.sandbox.network.allowedDomains, []);
+    assert.equal(settings.sandbox.network.strictAllowlist, true, 'no host outside the empty allowlist, even on request');
     assert.ok(settings.sandbox.filesystem.denyRead.includes('/run/user'), 'the session bus is hidden');
     assert.ok(settings.sandbox.credentials.envVars.every((v) => v.mode === 'deny'));
     assert.ok(settings.sandbox.credentials.envVars.some((v) => v.name === 'AWS_BEARER_TOKEN_BEDROCK'));
@@ -55,20 +57,21 @@ test('a worktree pointer resolves to its gitdir and the shared cache, both write
   }
 });
 
-test('the skills copy keeps files and skips links', async () => {
+test('the skills copy brings the textbook and active skills only, never drafts, history or links', async () => {
   const root = mkdtempSync(join(tmpdir(), 'revuto-native-skills-'));
   try {
     const from = join(root, 'skills');
     mkdirSync(join(from, '_history'), { recursive: true });
-    writeFileSync(join(from, 'locks.md'), 'skill');
-    writeFileSync(join(from, '_history', 'old.md'), 'old');
-    writeFileSync(join(root, 'secret.txt'), 'secret');
-    symlinkSync(join(root, 'secret.txt'), join(from, 'link.md'));
+    writeFileSync(join(from, '_textbook.md'), 'textbook');
+    writeFileSync(join(from, 'locks.md'), '---\nstatus: active\n---\nskill');
+    writeFileSync(join(from, 'locks-revision.md'), '---\nstatus: draft\n---\nunvetted');
+    writeFileSync(join(from, '_history', 'old.md'), '---\nstatus: active\n---\nold');
+    writeFileSync(join(root, 'secret.md'), '---\nstatus: active\n---\nsecret');
+    symlinkSync(join(root, 'secret.md'), join(from, 'link.md'));
     const to = join(root, 'copy');
     await copySkills(from, to);
-    assert.equal(readFileSync(join(to, 'locks.md'), 'utf8'), 'skill');
-    assert.ok(existsSync(join(to, '_history', 'old.md')));
-    assert.equal(existsSync(join(to, 'link.md')), false, 'a link out of the vault is not copied');
+    assert.deepEqual(readdirSync(to).sort(), ['_textbook.md', 'locks.md']);
+    assert.equal(readFileSync(join(to, 'locks.md'), 'utf8'), '---\nstatus: active\n---\nskill');
     await copySkills(join(root, 'missing'), join(root, 'none'));
     assert.equal(existsSync(join(root, 'none')), false);
   } finally {

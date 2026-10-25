@@ -3,15 +3,18 @@
  *
  * Codex runs headless (`codex exec --json`) on OpenAI (a ChatGPT login or an API
  * key) or Amazon Bedrock, with no user config, no rules, no AGENTS.md or skills
- * from the checkout, and a shell in the workspace-write sandbox: no network,
- * writes only to the checkout and the run's scratch dir, `.git` read-only. It
- * reads the diff and history with git (see native-sandbox.ts). The verdict is the
+ * from the checkout, and a shell under a review permission profile: no network,
+ * reads only the checkout, its git directories, the run's skills copy and the
+ * system, writes only to the checkout and the run's scratch dir, `.git` read-only.
+ * It reads the diff and history with git (see native-sandbox.ts). The verdict is the
  * final agent message, constrained by `--output-schema`.
  */
+import { accessSync, constants } from 'node:fs';
+import { open, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { ModelSpec } from './config.js';
-import { REVIEW_COMMAND_ENV } from './native-sandbox.js';
+import { CODEX_REVIEW_PROFILE, REVIEW_COMMAND_ENV, codexReviewPermissions } from './native-sandbox.js';
 
 /** Bedrock region for Codex when the spec sets none: the GPT-6 family is served from us-east-1. */
 export const CODEX_DEFAULT_REGION = 'us-east-1';
@@ -183,13 +186,53 @@ export interface CodexArgsOptions {
   readonly cwd: string;
   /**
    * Directories a review may write besides the checkout (its scratch dir). Set
-   * for a review, which then gets a shell in the workspace-write sandbox; absent
-   * for the doctor probe, which runs read-only with no shell.
+   * for a review, which then gets a shell under the review permission profile;
+   * absent for the doctor probe, which runs read-only with no shell.
    */
   readonly writableDirs?: readonly string[];
+  /** Directories a review may read besides the checkout and the system (git dirs, skills). */
+  readonly readableDirs?: readonly string[];
   readonly schemaPath?: string;
   /** The restricted model catalog (`restrictCodexCatalog`). */
   readonly catalogPath?: string;
+}
+
+/**
+ * What a review's sandbox must be able to read for Codex itself: the sandbox
+ * re-runs the Codex executable inside bubblewrap, and that executable usually
+ * sits under the home directory the review profile closes. For the npm package
+ * that is the package directory (its native binary is a dependency inside it);
+ * for a native binary, the binary. A shell wrapper hides which binary runs, so
+ * it is refused: point the command at the package's bin or the binary.
+ */
+export async function codexExecutableRoots(command: string): Promise<string[]> {
+  const found = isAbsolute(command) ? command
+    : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, command))
+      .find((path) => isExecutable(path));
+  if (!found) throw new Error(`Codex command not found: ${command}`);
+  const real = await realpath(found);
+  for (let dir = dirname(real); dir !== dirname(dir); dir = dirname(dir)) {
+    const name = await readFile(join(dir, 'package.json'), 'utf8').then((raw) => (JSON.parse(raw) as { name?: unknown }).name, () => undefined);
+    if (name === '@openai/codex') return [dir];
+  }
+  const file = await open(real, 'r');
+  try {
+    const head = Buffer.alloc(4);
+    await file.read(head, 0, 4, 0);
+    if (head.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) return [real];
+  } finally {
+    await file.close();
+  }
+  throw new Error(`Codex command ${real} is a wrapper script: set it to the @openai/codex package's bin or the native codex binary`);
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** `codex exec` arguments for one review turn. The prompt is read from stdin (`-`). */
@@ -229,12 +272,17 @@ export function codexExecArgs(opts: CodexArgsOptions): string[] {
   if (provider === 'amazon-bedrock') args.push('-c', `model_context_window=${CODEX_CONTEXT_WINDOW}`);
   args.push('-c', `model_auto_compact_token_limit=${CODEX_AUTO_COMPACT_TOKENS}`);
   if (opts.spec.reasoningEffort) args.push('-c', `model_reasoning_effort=${toml(opts.spec.reasoningEffort)}`);
-  // workspace-write: network off, writes to the checkout and the scratch dir;
-  // the sandbox keeps .git (and the gitdir a pointer names) read-only.
-  // /tmp and $TMPDIR are not writable: the scratch dir is the place to write.
-  if (opts.writableDirs) args.push('-c', 'sandbox_workspace_write.exclude_slash_tmp=true', '-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true');
-  args.push('--skip-git-repo-check', '-C', opts.cwd, '--sandbox', opts.writableDirs ? 'workspace-write' : 'read-only',
-    ...(opts.writableDirs ?? []).flatMap((dir) => ['--add-dir', dir]), '--ephemeral', '--json');
+  // A review's commands run under its permission profile: the checkout and the
+  // scratch dir writable, .git read-only, the rest of the filesystem closed
+  // apart from system paths, the git dirs and the skills copy; no network. The
+  // probe has no shell, so the read-only sandbox is enough.
+  if (opts.writableDirs) {
+    args.push('-c', `default_permissions=${toml(CODEX_REVIEW_PROFILE)}`,
+      '-c', `permissions=${codexReviewPermissions({ writable: opts.writableDirs, readable: opts.readableDirs ?? [] })}`);
+  } else {
+    args.push('--sandbox', 'read-only');
+  }
+  args.push('--skip-git-repo-check', '-C', opts.cwd, '--ephemeral', '--json');
   if (opts.schemaPath) args.push('--output-schema', opts.schemaPath);
   args.push('-');
   return args;

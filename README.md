@@ -28,8 +28,8 @@ becomes a reusable skill.
   any folder. Nothing is written into the reviewed repo.
 - **Real tools, behind a sandbox.** Claude Code and Codex reviewers get a shell,
   file tools, git history, Python and a scratch directory, under auto mode or
-  Codex's sandbox: no network, no credentials, nothing from the checkout loaded
-  as configuration, and no repository code run.
+  Codex's sandbox: no network, no credentials, no home directory reads, nothing
+  from the checkout loaded as configuration, and no repository code run.
   Revuto posts the review itself, after stripping mentions, HTML and secrets.
 
 ## Quick start

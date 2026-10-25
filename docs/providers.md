@@ -78,22 +78,25 @@ closed off:
   `AGENTS.md`, project skills, agents, commands, hooks or `.mcp.json`, no
   bundled skills, no auto-memory.
 - Every shell command runs in Claude Code's sandbox (`failIfUnavailable`, no
-  unsandboxed retry): no network; writes only to the checkout and the run's
-  scratch directory, never to `.git` or the shared git cache; reads of the home
-  directory blocked apart from the run's directories and the git cache;
-  credential variables and `~/.aws`, `~/.ssh` and `~/.config` denied; the
+  unsandboxed retry): no network, and an unlisted host is refused rather than
+  put to the classifier (`strictAllowlist`); writes only to the checkout and the
+  run's scratch directory, never to `.git` or the shared git cache; the whole
+  home directory unreadable apart from the checkout, its git directories and
+  the run's directories, so logins such as `~/.claude`, `~/.codex`, `~/.grok`
+  and revuto's own Codex home stay out; credential variables denied; the
   session bus, container sockets, X11 and agents hidden. Claude Code's
   Unix-socket filter cannot start on some kernels (anthropics/claude-code#81799),
   so sockets are allowed and those paths are denied instead.
 - Read, Write and Edit follow permission rules: reads stay in the working
-  directories, writes to `.git` and the git cache are denied.
+  directories, edits to `.git` and the git cache are denied.
 - `PYTHONSAFEPATH` keeps Python from importing a planted module from the
   directory it runs in; `GIT_NO_LAZY_FETCH` keeps git offline.
 - The prompt says not to run repository code (builds, tests, installs, scripts).
 
 The checkout comes from a blobless cache, so commits and trees for the whole
 history are local: `git log -- <path>`, `--stat` and `git show` work offline.
-Each run also gets a copy of the repository's revuto skills and textbook to read.
+Each run also gets a copy of the repository's textbook and active skills to
+read; drafts and `_history/` stay out, as they do from skill selection.
 `scripts/smoke/native-sandbox.ts` runs a real review against a hostile checkout
 to check all of this.
 
@@ -110,11 +113,16 @@ as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. A turn-limit exit fails the review.
 ## Codex
 
 Revuto runs `codex exec --json` with `--ignore-user-config --ignore-rules`, web
-search off and `--ephemeral`. A review gets the shell in the `workspace-write`
-sandbox: no network, writes only to the checkout and the run's scratch directory
-(`/tmp` and `$TMPDIR` excluded), `.git` and the gitdir it points to read-only, and
-commands get only core environment variables plus `PYTHONSAFEPATH` and
-`GIT_NO_LAZY_FETCH`. The doctor probe runs read-only with no shell. Project docs
+search off and `--ephemeral`. A review's shell runs under a permission profile
+(`default_permissions`) that closes the whole filesystem (`:root` deny) and
+re-opens system paths (`:minimal`), the checkout (writable, its `.git`
+read-only), the run's scratch directory (writable), and the git directories,
+the skills copy and the Codex package (read-only). The home directory, so
+revuto's ChatGPT login too, is out of reach; `/tmp` is a private empty tmpfs;
+there is no network. Commands get only core environment variables plus
+`PYTHONSAFEPATH` and `GIT_NO_LAZY_FETCH`. The sandbox re-runs the Codex
+executable inside it, so the Codex command must be the npm package's bin or the
+native binary; a wrapper script is refused. The doctor probe runs read-only with no shell. Project docs
 (`AGENTS.md`) and skill instructions are off, so neither the checkout's nor the
 operator's reach the model, and the operator's `~/.codex` config and sessions are
 never read. Codex also gets a scratch `HOME`, so `~/.agents` skills and dotfiles
@@ -128,8 +136,7 @@ removes. Before each run revuto reads the catalog with `codex debug models`, in
 the same home and on the same provider, sets every model to direct tools with
 sub-agents, tool search, `apply_patch` and experimental tools off, and passes it
 as `model_catalog_json`. If the catalog cannot be read, the run fails. The model
-then sees only the sandboxed shell (`exec_command`, `write_stdin`), which only
-reach the revuto server. Any tool item Codex still reports counts toward
+then sees only the sandboxed shell (`exec_command`, `write_stdin`). Any tool item Codex still reports counts toward
 `review.maxSteps`. Codex runs the review tiers only.
 
 ### On a ChatGPT plan
@@ -160,9 +167,9 @@ with the command to run.
 The login is the `auth.json` in that home, and it holds live ChatGPT tokens.
 OpenAI advises against a ChatGPT login for public repositories in CI, where the
 repository's own code runs beside that file. Revuto runs no repository code, and
-Codex's sandboxed shell has no network. For
-reviews of repositories whose contributors you do not trust, an API key limits
-what a leaked credential can do.
+Codex's sandboxed shell can neither read that file nor reach the network. For
+reviews of repositories whose contributors you do not trust, an API key still
+limits what a leaked credential can do.
 
 ### On an OpenAI API key
 

@@ -1,8 +1,8 @@
 /**
  * Codex CLI runner contract tests. A fake `codex` executable checks that revuto
- * starts Codex on Bedrock with no user config, no shell, a read-only sandbox, a
- * private CODEX_HOME, only the guarded revuto MCP server and a strict output
- * schema, and that the JSON event stream maps onto the native runner contract.
+ * starts Codex on Bedrock with no user config, a shell under the review
+ * permission profile (the doctor probe: no shell, read-only), a private
+ * CODEX_HOME, no MCP server and a strict output schema, and that the JSON event stream maps onto the native runner contract.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,6 +19,8 @@ import type { PrContext } from '../agents/common/src/workspace.js';
 
 function fakeCodex(dir: string): string {
   const command = join(dir, 'codex-fake.mjs');
+  // Laid out like the npm package, whose directory the sandbox must read.
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@openai/codex' }));
   writeFileSync(command, `#!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -45,11 +47,15 @@ if (probe) {
   assert.equal(value('--disable'), 'shell_tool');
   assert.equal(value('--sandbox'), 'read-only');
 } else {
-  // A review gets a shell in the workspace-write sandbox, with a scratch dir and no /tmp.
-  assert.ok(!args.includes('--disable'));
-  assert.equal(value('--sandbox'), 'workspace-write');
-  assert.ok(existsSync(value('--add-dir')), 'the scratch dir exists during the run');
-  assert.ok(configs.includes('sandbox_workspace_write.exclude_slash_tmp=true') && configs.includes('sandbox_workspace_write.exclude_tmpdir_env_var=true'));
+  // A review gets a shell under the review profile: the filesystem closed apart
+  // from system paths, a scratch dir to write, the Codex package to read.
+  assert.ok(!args.includes('--disable') && !args.includes('--sandbox') && !args.includes('--add-dir'));
+  assert.ok(configs.includes('default_permissions="revuto-review"'));
+  const profile = configs.find((c) => c.startsWith('permissions='));
+  for (const entry of ['extends=":read-only"', '":root"="deny"', '":minimal"="read"', '":workspace_roots"={"."="write"}', 'network={enabled=false}']) assert.ok(profile.includes(entry), entry);
+  const scratch = JSON.parse(profile.match(/("[^"]+")="write"/)[1]);
+  assert.ok(existsSync(scratch), 'the scratch dir exists during the run');
+  assert.ok(profile.includes(JSON.stringify(process.argv[1].slice(0, process.argv[1].lastIndexOf('/'))) + '="read"'), 'the Codex package stays readable');
   assert.ok(configs.includes('shell_environment_policy.inherit="core"'));
   assert.ok(configs.some((c) => c.startsWith('shell_environment_policy.set=') && c.includes('PYTHONSAFEPATH="1"')));
   assert.match(fullPrompt, /## Workspace\\n- Scratch directory, yours to write: /);
@@ -133,7 +139,7 @@ test('Codex runs on Bedrock with no user config, a sandboxed shell and a scratch
     const last = JSON.parse(readFileSync(command + '.last', 'utf8'));
     assert.equal(last.prompt, 'review', 'the prompt goes over stdin');
     assert.ok(last.args.includes('model_reasoning_effort="high"'));
-    const scratch = last.args[last.args.indexOf('--add-dir') + 1];
+    const scratch = JSON.parse(last.args.find((a: string) => a.startsWith('permissions=')).match(/("[^"]+")="write"/)[1]);
     assert.equal(existsSync(scratch), false, 'the scratch dir is removed after the run');
     assert.ok(last.args.includes('model_context_window=900000'));
     assert.ok(last.args.includes('model_auto_compact_token_limit=250000'));
