@@ -60,6 +60,8 @@ export interface RunReviewOptions {
    * reviewed for a re-review. Defaults to the auth's login, then the token's user.
    */
   readonly reviewerLogins?: readonly string[];
+  /** Review the whole PR, not what changed since revuto's last review (a retargeted PR). */
+  readonly fullReview?: boolean;
   /** Bold heading put on top of the posted review summary (the final review past the round cap). */
   readonly reviewHeading?: string;
 }
@@ -252,7 +254,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   const [owner, name] = opts.repo.split('/');
   if (!owner || !name) throw new Error(`bad repo: ${opts.repo}`);
   const resolvedToken = await token();
-  const reviewerLogins = config.review.incremental === false ? [] : await reviewerLoginsFor(opts, auth);
+  const reviewerLogins = config.review.incremental === false || opts.fullReview ? [] : await reviewerLoginsFor(opts, auth);
   const prepared = await runQueuedForRepo(config, `_review-cache/${opts.repo}`, () => prepareWorkspace(
     { repo: opts.repo, pr_number: opts.prNumber, headSha: opts.headSha },
     octokit,
@@ -260,7 +262,7 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
     // the tools below get the getter, since they run for the next half hour.
     resolvedToken,
     workspaceRoot,
-    { cacheRoot, signal, incremental: config.review.incremental !== false, reviewerLogins },
+    { cacheRoot, signal, incremental: config.review.incremental !== false && !opts.fullReview, reviewerLogins },
   ));
   // The posting tools read the heading from the context, on every runner path.
   const ctx: PrContext = opts.reviewHeading ? { ...prepared, reviewHeading: opts.reviewHeading } : prepared;

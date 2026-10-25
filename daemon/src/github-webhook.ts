@@ -55,7 +55,6 @@ export function coalescingDispatcher(process: (event: PullRequestWebhook) => Pro
   const waiting = new Map<string, PullRequestWebhook>();
   const running = new Set<string>();
   const drain = async (key: string): Promise<void> => {
-    running.add(key);
     try {
       for (let event = waiting.get(key); event; event = waiting.get(key)) {
         waiting.delete(key);
@@ -69,7 +68,11 @@ export function coalescingDispatcher(process: (event: PullRequestWebhook) => Pro
     dispatch(event: PullRequestWebhook): void {
       const key = `${event.repository.full_name.toLowerCase()}#${event.number}`;
       waiting.set(key, event);
-      if (!running.has(key)) setImmediate(() => { void drain(key); });
+      // Marked at dispatch, not when the drain starts: two deliveries in one tick
+      // must not both schedule a drain for the same PR.
+      if (running.has(key)) return;
+      running.add(key);
+      setImmediate(() => { void drain(key); });
     },
     pending: (): number => waiting.size,
   };

@@ -299,12 +299,19 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
   }
   const store = await openStore(config, repo);
   const embedder = maybeEmbedder(config);
-  // A head is reviewed against its base. A PR retargeted from a side branch to the
-  // default branch gets a fresh claim, so its approval cannot carry over unreviewed
-  // commits; heads against the default branch keep the original key.
-  const baseRef = pr.base?.ref;
-  const defaultBranch = pr.base?.repo?.default_branch;
-  const key = `${repo}#${prNumber}@${pr.head.sha}${baseRef && defaultBranch && baseRef !== defaultBranch ? `~${baseRef}` : ''}`;
+  // A head is reviewed against its base. When the base changed since this head was
+  // reviewed (a retarget, either way), the head gets a new claim generation, so the
+  // done marker of a review against another base cannot stand for this one, and the
+  // review is a full one rather than a re-review of the old base's range.
+  const baseRef = pr.base?.ref ?? '';
+  const baseMarker = `reviewed-base:${prNumber}@${pr.head.sha}`;
+  const reviewedBase = baseRef ? await store.getCursor(baseMarker) : null;
+  const retargeted = reviewedBase !== null && reviewedBase !== baseRef;
+  const generation = retargeted
+    ? await store.incrCounter(`retarget:${prNumber}@${pr.head.sha}`)
+    : await store.getCounter(`retarget:${prNumber}@${pr.head.sha}`);
+  const key = `${repo}#${prNumber}@${pr.head.sha}${generation ? `~base${generation}` : ''}`;
+  if (retargeted) console.log(`[review] ${key}: base changed from ${reviewedBase} to ${baseRef}; reviewing the head again`);
   const managedTarget: ReviewCheckTarget = {
     repo,
     prNumber,
@@ -349,6 +356,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
         );
       }
     }
+    if (baseRef) await store.setCursor(baseMarker, baseRef);
     if (opts.onClaimed) {
       await opts.onClaimed(pr.head.sha);
     } else if (githubApp) {
@@ -372,6 +380,7 @@ async function reviewOnePrAdmitted(config: ReviewerConfig, repo: string, prNumbe
     if (finalRun) console.log(`[review] ${key}: ${round.reason}`);
     const ran = round.allowed
       ? await (opts.runReview ?? runReview)({ repo, prNumber, headSha: pr.head.sha, config, store, embedder, githubAuth: auth,
+          ...(retargeted ? { fullReview: true } : {}),
           reviewerLogins: [auth.login, readReviewer(config, repo)?.botLogin].filter((l): l is string => !!l),
           ...(finalRun ? { reviewHeading: FINAL_REVIEW_HEADING } : {}) })
       : unreviewedOutcome(round.reason, pr.head.sha);

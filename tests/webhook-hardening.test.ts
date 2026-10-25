@@ -10,6 +10,13 @@ import type { AddressInfo } from 'node:net';
 import { coalescingDispatcher, createWebhookServer, shouldReviewPullRequest, type PullRequestWebhook } from '../daemon/src/github-webhook.js';
 import { historicalReviewRounds, reserveReviewBudget } from '../daemon/src/review-rounds.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { GithubAuth } from '../agents/common/src/github-auth.js';
+import { scopedInstallationToken, tokenHookAuth } from '../agents/common/src/github-auth.js';
+import { unreviewedOutcome } from '../agents/common/src/run-agent.js';
+import { reviewOnePr } from '../daemon/src/jobs.js';
 
 const event = (sha: string, action = 'synchronize', changes?: Record<string, unknown>): PullRequestWebhook => ({
   action, number: 7, installation: { id: 1 },
@@ -101,4 +108,55 @@ test('a daily cap never refuses a maintainer, and a per-author cap stops one aut
   assert.equal((await reserveReviewBudget(store, { ...per, prNumber: 5, author: 'flood' })).allowed, true);
   assert.equal((await reserveReviewBudget(store, { ...per, prNumber: 6, author: 'flood' })).allowed, false);
   assert.equal((await reserveReviewBudget(store, { ...per, prNumber: 7, author: 'other' })).allowed, true);
+});
+
+test('deliveries in the same tick still run one review at a time', async () => {
+  let active = 0, peak = 0, runs = 0;
+  const d = coalescingDispatcher(async () => { active++; peak = Math.max(peak, active); runs++; await new Promise((r) => setTimeout(r, 20)); active--; }, () => {});
+  for (let i = 0; i < 5; i++) d.dispatch(event(`h${i}`));
+  // While the first review runs, the drains scheduled by the rest of the burst have
+  // finished; a late delivery must wait for the running review, not start beside it.
+  await new Promise((r) => setTimeout(r, 5));
+  d.dispatch(event('late'));
+  for (let i = 0; i < 50 && (runs < 2 || active > 0); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(peak, 1, 'never two reviews of one PR at once');
+  assert.equal(runs, 2, 'the burst collapsed into one review, then the late head');
+});
+
+test('installation tokens name the repository on every mint, and every request carries one', async () => {
+  const calls: unknown[] = [];
+  const mint = scopedInstallationToken(async (o) => { calls.push(o); return { token: `t${calls.length}` }; }, 'owner/repo');
+  assert.equal(await mint(), 't1');
+  assert.deepEqual(calls[0], { type: 'installation', repositoryNames: ['repo'] });
+  const auth = tokenHookAuth(mint);
+  const sent: any[] = [];
+  const request = Object.assign(async (endpoint: any) => { sent.push(endpoint); return { status: 200 }; },
+    { endpoint: { merge: (route: string, params: any) => ({ url: route, ...params, headers: {} }) } });
+  await auth.hook(request, 'GET /repos/owner/repo', {});
+  assert.equal(sent[0].headers.authorization, 't2'.replace(/^/, 'token '));
+  assert.deepEqual(calls[1], { type: 'installation', repositoryNames: ['repo'] });
+});
+
+test('a head retargeted to another base, and back, gets a fresh full review each time', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'retarget-'));
+  const HEAD = 'a'.repeat(40);
+  const cfg = { vaultPath: root, review: { workspaceDir: join(root, 'workspaces'), maxConcurrent: 4, maxConcurrentPerRepo: 2, maxRounds: 10 },
+    github: { tokenEnv: 'TEST_UNUSED' }, models: { embedder: null }, limits: { dailyReviews: 0, dailyTokens: 0 }, store: { backend: 'sqlite' } } as ReviewerConfig;
+  let base = 'main';
+  const auth = { login: 'reviewer', token: async () => 'unused', octokit: {
+    pulls: { get: async () => ({ data: { head: { sha: HEAD }, base: { ref: base, repo: { default_branch: 'main' } }, state: 'open', draft: false, html_url: 'https://example.test/pr', user: { login: 'author' }, author_association: 'NONE' } }), listReviews: () => {} },
+    paginate: async () => [],
+  } } as unknown as GithubAuth;
+  const full: Array<boolean | undefined> = [];
+  const runReview = async (o: any) => { full.push(o.fullReview); return { ...unreviewedOutcome('ran', HEAD), ranModel: true, terminal: 'skip_review', inspections: 1 } as never; };
+  try {
+    await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview });
+    assert.match((await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview })).result, /already reviewed/);
+    base = 'dev';
+    await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview });
+    base = 'main';
+    await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview });
+    assert.deepEqual(full, [undefined, true, true], 'each base change reviews the head again, in full');
+    assert.match((await reviewOnePr(cfg, 'a/repo', 7, { githubAuth: auth, runReview })).result, /already reviewed/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
