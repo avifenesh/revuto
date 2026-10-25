@@ -24,6 +24,8 @@ export interface GithubAuth {
   token(): Promise<string>;
   /** Login used for comments/reviews, when known. */
   readonly login?: string;
+  /** Set for a GitHub App installation token; absent for a personal token. */
+  readonly installation?: true;
 }
 
 let cached: GithubAuth | null = null;
@@ -72,6 +74,38 @@ export function githubFetchWithDeadline(fetchImpl: typeof fetch = fetch, timeout
     Object.defineProperty(buffered, 'url', { value: response.url });
     return buffered;
   };
+}
+
+/** The App that serves `repo`: configured, and the repo's owner is allowed (or none are listed). */
+export function githubAppForRepo(github: { readonly app?: GithubAppConfig }, repo: string): GithubAppConfig | undefined {
+  const app = github.app;
+  const owner = repo.split('/')[0]?.toLowerCase();
+  if (!app || !owner) return undefined;
+  return app.allowedOwners.length === 0 || app.allowedOwners.some((candidate) => candidate.toLowerCase() === owner) ? app : undefined;
+}
+
+/**
+ * GitHub access for one repository. With a GitHub App that serves the repo,
+ * this is the App's installation token, scoped to that repo, and no personal
+ * token is read. Only a repo the App does not serve (no App, an owner outside
+ * `allowedOwners`, or no installation) uses the personal token.
+ */
+export async function githubAuthForRepo(
+  github: { readonly tokenEnv: string; readonly app?: GithubAppConfig },
+  repo: string,
+): Promise<GithubAuth> {
+  const app = githubAppForRepo(github, repo);
+  if (!app) return getOctokit(github);
+  try {
+    return await getRepositoryInstallationOctokit(app, repo);
+  } catch (err) {
+    if (!(err instanceof RepositoryNotInstalledError)) throw err;
+    try {
+      return getOctokit(github);
+    } catch {
+      throw err;
+    }
+  }
 }
 
 export function getOctokit(opts: { tokenEnv: string }): GithubAuth {
@@ -164,6 +198,7 @@ export async function getInstallationOctokit(config: GithubAppConfig, installati
     // The same mint (and auth-app's cache), so git/gh subprocesses get a live token too.
     token: mint,
     login: await getAppBotLogin(config),
+    installation: true,
   };
 }
 

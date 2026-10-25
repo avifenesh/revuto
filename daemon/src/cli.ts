@@ -16,7 +16,7 @@ import { homedir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { loadConfig, defaultVaultPath, type ReviewerConfig } from '../../agents/common/src/config.js';
 import { engineRoot } from '../../agents/common/src/engine-root.js';
-import { getOctokit } from '../../agents/common/src/github-auth.js';
+import { githubAuthForRepo } from '../../agents/common/src/github-auth.js';
 import { openStore } from '../../agents/common/src/store/open.js';
 import {
   isRepositorySlug,
@@ -76,8 +76,10 @@ function requireReviewer(config: ReviewerConfig, repo: string) {
 
 async function cmdAdd(config: ReviewerConfig, repo: string): Promise<void> {
   if (!isRepositorySlug(repo)) throw new Error('usage: revuto add <owner/repo>');
-  const { octokit } = getOctokit(config.github);
-  const botLogin = (await octokit.users.getAuthenticated()).data.login;
+  const auth = await githubAuthForRepo(config.github, repo);
+  // Keep an existing login: reviews posted under it (a personal token, before the App) stay revuto's.
+  const botLogin = readReviewer(config, repo)?.botLogin
+    ?? auth.login ?? (await auth.octokit.users.getAuthenticated()).data.login;
   writeReviewer(config, { ...(readReviewer(config, repo) ?? {}), repo, botLogin });
   console.log(`registered ${repo} (botLogin=${botLogin}). Skills + memory will live in ${config.vaultPath}.`);
 }

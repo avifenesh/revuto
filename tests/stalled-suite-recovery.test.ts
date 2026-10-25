@@ -100,7 +100,7 @@ test('scheduled review admits a stalled head older than the cursor, including in
         close: async () => { closed = true; },
       } as unknown as KnowledgeStore;
       const result = await reviewRepo(config, { repo: 'octo/demo' }, {}, {
-        githubAuth: { octokit: f.octokit } as GithubAuth,
+        githubAuth: { octokit: f.octokit, installation: true } as GithubAuth,
         openStore: async () => store,
         reviewOnePr: async (_config, _repo, number, opts) => {
           reviews.push([number, opts?.expectedHeadSha]);
@@ -136,7 +136,7 @@ test('a rescued head stays eligible after a budget deferral or error creates a c
         close: async () => {},
       } as unknown as KnowledgeStore;
       const deps = {
-        githubAuth: { octokit: f.octokit } as GithubAuth,
+        githubAuth: { octokit: f.octokit, installation: true } as GithubAuth,
         openStore: async () => store,
         reviewOnePr: async () => {
           attempts++;

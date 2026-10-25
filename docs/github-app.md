@@ -34,6 +34,12 @@ Add the App settings to `<vault>/revuto.config.json`:
 }
 ```
 
+With the App, revuto needs no personal token. Reviews, checks, learning,
+`revuto init` and `revuto add` all use the App's installation tokens, each
+scoped to one repository, and revuto's own identity is the App's
+`<slug>[bot]`. `github.tokenEnv` is read only for a repository the App does
+not serve: an owner outside `allowedOwners`, or no installation on it.
+
 Put the matching secret in the daemon environment, keep the PEM file mode
 `0600`, then restart `revuto daemon`. The daemon serves `GET /healthz` and
 validates every delivery with `X-Hub-Signature-256` before returning `202`.
