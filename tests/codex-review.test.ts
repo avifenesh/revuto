@@ -23,10 +23,20 @@ function fakeCodex(dir: string): string {
 import assert from 'node:assert/strict';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
-const prompt = readFileSync(0, 'utf8');
 const value = (flag) => args[args.indexOf(flag) + 1];
 const configs = args.flatMap((a, i) => args[i - 1] === '-c' ? [a] : []);
-writeFileSync(process.argv[1] + '.last', JSON.stringify({ args, prompt, env: process.env, schema: args.includes('--output-schema') ? readFileSync(value('--output-schema'), 'utf8') : null }));
+if (args[0] === 'debug' && args[1] === 'models') {
+  writeFileSync(process.argv[1] + '.catalog', JSON.stringify({ args, env: process.env }));
+  if (existsSync(process.argv[1] + '.fail-catalog')) { console.error('catalog refresh failed'); process.exit(1); }
+  console.log('a log line before the catalog');
+  console.log(JSON.stringify({ models: [{ slug: 'gpt-6.1-sol', tool_mode: 'code_mode_only', multi_agent_version: 'v2', supports_search_tool: true, apply_patch_tool_type: 'freeform', experimental_supported_tools: ['clock'], context_window: 272000 }] }));
+  process.exit(0);
+}
+const prompt = readFileSync(0, 'utf8');
+const catalog = configs.find((c) => c.startsWith('model_catalog_json='));
+assert.ok(catalog, 'every run loads the restricted catalog');
+writeFileSync(process.argv[1] + '.last', JSON.stringify({ args, prompt, env: process.env, catalog: readFileSync(JSON.parse(catalog.slice('model_catalog_json='.length)), 'utf8'), schema: args.includes('--output-schema') ? readFileSync(value('--output-schema'), 'utf8') : null }));
+assert.ok(configs.includes('tools.experimental_request_user_input.enabled=false'));
 assert.equal(args[0], 'exec');
 assert.ok(args.includes('--ignore-user-config') && args.includes('--ignore-rules') && args.includes('--ephemeral') && args.includes('--json'));
 assert.equal(value('--disable'), 'shell_tool');
@@ -120,6 +130,12 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
     assert.equal(last.env.AWS_BEARER_TOKEN_BEDROCK, 'bedrock-token');
     assert.match(last.env.CODEX_HOME, /revuto-codex-/);
     assert.equal(existsSync(last.env.CODEX_HOME), false, 'the private CODEX_HOME is removed after the run');
+    assert.deepEqual(JSON.parse(last.catalog).models, [{ slug: 'gpt-6.1-sol', tool_mode: 'direct', multi_agent_version: 'disabled', supports_search_tool: false, apply_patch_tool_type: null, experimental_supported_tools: [], context_window: 272000 }],
+      'code mode, sub-agents, tool search, apply_patch and experimental tools are off for every model');
+    const catalogRun = JSON.parse(readFileSync(command + '.catalog', 'utf8'));
+    assert.deepEqual(catalogRun.args, ['debug', 'models', '-c', 'model_provider="amazon-bedrock"', '-c', 'model_providers.amazon-bedrock.aws.region="us-east-1"']);
+    assert.equal(catalogRun.env.CODEX_HOME, last.env.CODEX_HOME, 'the catalog comes from the same home as the run');
+    assert.equal(catalogRun.env.GH_TOKEN, undefined);
     // Each run's own home is checked, not tmpdir as a whole: a live daemon on the
     // same host creates and removes its own revuto-codex-* directories.
     const homeOfLastRun = () => JSON.parse(readFileSync(command + '.last', 'utf8')).env.CODEX_HOME as string;
@@ -139,6 +155,10 @@ test('Codex runs on Bedrock with no user config, no shell and only the revuto MC
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'review', maxSteps: 0 }), /positive integer/);
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'policy-turn' }), (err: unknown) => err instanceof ModelRefusalError && err.category === 'cyber_policy');
     await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'declined-text' }), (err: unknown) => err instanceof ModelRefusalError && err.category === 'declined');
+    rmSync(command + '.last');
+    writeFileSync(command + '.fail-catalog', '');
+    await assert.rejects(runAgyCli({ spec, cwd: dir, prompt: 'review' }), /Codex CLI model catalog unavailable/);
+    assert.equal(existsSync(command + '.last'), false, 'no review runs without the restricted catalog');
   } finally {
     if (previous.gh === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = previous.gh;
     if (previous.aws === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK; else process.env.AWS_BEARER_TOKEN_BEDROCK = previous.aws;

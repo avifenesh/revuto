@@ -6,12 +6,13 @@
  * final GitHub mutation still goes through Revuto's existing post_review tool.
  * Authentication is intentionally delegated to AGY's own OAuth/keyring flow.
  */
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
+import { promisify } from 'node:util';
 import { killReviewChild } from './review-worktree.js';
 import { claudeEnvironment, claudeSubscriptionIsolation } from './claude-env.js';
 import { rgScopeConfigPath } from './rg-scope.js';
@@ -24,12 +25,15 @@ import type { PrContext } from './workspace.js';
 import { buildPostReviewTool, buildSkipTool } from './tools/gh.js';
 import { isToolErrorOutput, startReviewTrace, type TraceWriter } from './trace.js';
 import { ModelRefusalError } from './refusal.js';
-import { codexEnvironment, codexExecArgs, codexReviewSchema, codexUsesLogin, normalizeCodexEvents, revutoCodexHome, type CodexStreamState } from './codex-review.js';
+import { codexCatalogArgs, codexEnvironment, codexExecArgs, codexReviewSchema, codexUsesLogin, normalizeCodexEvents, restrictCodexCatalog, revutoCodexHome, type CodexStreamState } from './codex-review.js';
 import { renderPrOverview } from './workspace.js';
 import { fenceUntrusted, stripControl } from './untrusted.js';
 
 const AGY_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const AGY_DOCTOR_TIMEOUT_MS = 90 * 1000;
+/** `codex debug models` refreshes the catalog over the network on a login. */
+const CODEX_CATALOG_TIMEOUT_MS = 60 * 1000;
+const execFileAsync = promisify(execFile);
 const AGY_MAX_STDOUT_CHARS = 16 * 1024 * 1024;
 const AGY_MAX_STDERR_CHARS = 16 * 1024;
 /** Default Claude CLI output cap (CLAUDE_CODE_MAX_OUTPUT_TOKENS): the Opus 5.5 / Sonnet 5 ceiling. */
@@ -260,18 +264,43 @@ export async function runAgyCli(opts: RunAgyCliOptions): Promise<AgyCliRun> {
       schemaPath = join(dir, 'schema.json');
       await writeFile(schemaPath, opts.schema);
     }
-    return await spawnNativeCli(opts, { codexHome, schemaPath, scratchHome });
+    const catalogPath = join(dir, 'models.json');
+    await writeFile(catalogPath, await restrictedCodexCatalog(opts, codexHome, scratchHome));
+    return await spawnNativeCli(opts, { codexHome, schemaPath, scratchHome, catalogPath });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string }, claudeConfigDir?: string, agyHome?: string): Promise<AgyCliRun> {
+function nativeCommand(spec: ModelSpec): string {
+  const runner = runnerOf(spec);
+  return spec.command?.trim()
+    || (runner === 'claude' ? 'claude' : runner === 'codex' ? process.env.REVUTO_CODEX_COMMAND?.trim() || 'codex' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
+}
+
+/**
+ * The model catalog this Codex run loads, from the same binary, home and
+ * provider, with code mode and sub-agents off (`restrictCodexCatalog`). Failing
+ * to build it fails the run: without it a GPT-6 model gets those tools.
+ */
+async function restrictedCodexCatalog(opts: RunAgyCliOptions, codexHome: string, scratchHome: string): Promise<string> {
+  const env = codexEnvironment(codexHome, opts.spec, process.env, scratchHome);
+  try {
+    const { stdout } = await execFileAsync(nativeCommand(opts.spec), codexCatalogArgs(opts.spec), {
+      env, cwd: scratchHome, timeout: CODEX_CATALOG_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, ...(opts.signal ? { signal: opts.signal } : {}),
+    });
+    return restrictCodexCatalog(stdout);
+  } catch (err) {
+    opts.signal?.throwIfAborted();
+    throw new Error(`Codex CLI model catalog unavailable: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
+  }
+}
+
+function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string; catalogPath?: string }, claudeConfigDir?: string, agyHome?: string): Promise<AgyCliRun> {
   const runner = runnerOf(opts.spec);
   const claude = runner === 'claude';
   const label = runner === 'claude' ? 'Claude CLI' : runner === 'codex' ? 'Codex CLI' : 'AGY';
-  const command = opts.spec.command?.trim()
-    || (claude ? 'claude' : runner === 'codex' ? process.env.REVUTO_CODEX_COMMAND?.trim() || 'codex' : process.env.REVUTO_AGY_COMMAND?.trim() || 'agy');
+  const command = nativeCommand(opts.spec);
   const timeoutMs = opts.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
   const maxSteps = opts.maxSteps ?? 150;
   const maxOutputTokens = opts.maxOutputTokens ?? CLAUDE_DEFAULT_MAX_OUTPUT_TOKENS;
@@ -287,6 +316,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
     cwd: opts.cwd,
     ...(opts.probe ? {} : { mcpServer: reviewMcpServer(opts.cwd, opts.diffRange, opts.sinceRange) }),
     ...(codex?.schemaPath ? { schemaPath: codex.schemaPath } : {}),
+    ...(codex?.catalogPath ? { catalogPath: codex.catalogPath } : {}),
   }) : [
     ...(agyStdin ? ['--input-format', 'stream-json'] : ['-p', ...(claude ? [] : [opts.prompt])]),
     '--model',

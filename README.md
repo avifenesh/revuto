@@ -201,6 +201,7 @@ npx tsx scripts/smoke/config.ts        # config defaults + model API validation
 npx tsx scripts/smoke/webhook.ts       # GitHub webhook HMAC + dispatch/check outcomes
 npx tsx scripts/smoke/scheduler.ts     # registry + schedule planning
 npx tsx scripts/smoke/scan.ts          # onboarding repo scan
+npx tsx scripts/smoke/codex-tools.ts   # tools a real Codex CLI offers a review (after npm run build)
 ```
 
 ## License

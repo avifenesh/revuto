@@ -100,9 +100,18 @@ tool disabled, web search off, a read-only sandbox and `--ephemeral`. Project do
 operator's reach the model, and the operator's `~/.codex` config and sessions are
 never read. Codex also gets a scratch `HOME`, so `~/.agents` skills and dotfiles
 stay out, and its other built-in tools are switched off: images, code mode,
-sub-agents (one thread, no depth), apps, plugins, browsers, hooks and memories.
-Any tool item Codex still reports counts toward `review.maxSteps`. Codex runs
-the review tiers only.
+sub-agents (one thread, no depth), apps, plugins, browsers, hooks, memories and
+`request_user_input`.
+
+GPT-6 models ask Codex's model catalog for code mode (a JavaScript `exec` tool
+that drives every other tool) and the sub-agent tools, which no feature flag
+removes. Before each run revuto reads the catalog with `codex debug models`, in
+the same home and on the same provider, sets every model to direct tools with
+sub-agents, tool search, `apply_patch` and experimental tools off, and passes it
+as `model_catalog_json`. If the catalog cannot be read, the run fails. The model
+then sees the revuto tools and Codex's three MCP resource tools, which only
+reach the revuto server. Any tool item Codex still reports counts toward
+`review.maxSteps`. Codex runs the review tiers only.
 
 ### On a ChatGPT plan
 
