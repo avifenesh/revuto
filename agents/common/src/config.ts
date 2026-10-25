@@ -170,6 +170,12 @@ export interface ReviewerConfig {
      * Results go to <vault>/.shadow/<YYYY-MM>.jsonl. Native large tiers only.
      */
     readonly shadowSample?: number;
+    /**
+     * Largest PR head (sum of its file sizes) revuto checks out; 0 turns the check off.
+     * Default 4 GiB: about three times the largest registered repo measured (1.34 GB),
+     * while a compression-bomb PR expanding to hundreds of GB is refused before any fetch.
+     */
+    readonly maxCheckoutBytes?: number;
   };
   /** Caps. 0 = unlimited. Run/comment/token counts are per repo per UTC day. */
   readonly limits: {
@@ -200,6 +206,7 @@ export interface ReviewerConfig {
 const DEFAULT_SCHEDULES = { review: '*/12 * * * *', learn: '0 */4 * * *', decay: '0 3 * * *' };
 const DEFAULT_REVIEW = { maxSteps: 150, maxRounds: 3, maxConcurrent: 4, maxConcurrentPerRepo: 2, allowWrite: false, workspaceDir: '' };
 const DEFAULT_MAX_OUTPUT_TOKENS = { curator: 16384, distill: 8192 };
+export const DEFAULT_MAX_CHECKOUT_BYTES = 4 * 1024 ** 3;
 /**
  * Default review cap when `limits.maxOutputTokens.review` is unset. On Claude,
  * thinking counts toward the cap, and 128K is the Opus 5.5 / Sonnet 5 ceiling.
@@ -562,6 +569,7 @@ export function loadConfig(path?: string): ReviewerConfig {
     incremental: raw.review?.incremental ?? true,
     escalate: raw.review?.escalate ?? true,
     shadowSample: raw.review?.shadowSample ?? 0,
+    maxCheckoutBytes: Math.max(0, raw.review?.maxCheckoutBytes ?? DEFAULT_MAX_CHECKOUT_BYTES),
   };
   if (typeof review.shadowSample !== 'number' || !(review.shadowSample >= 0 && review.shadowSample <= 1)) {
     throw new Error('config: review.shadowSample must be a number from 0 to 1');

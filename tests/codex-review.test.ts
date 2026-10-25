@@ -304,7 +304,7 @@ test('the escalate option exists only where escalation is allowed, and the large
   assert.equal(renderEscalation(), '');
   assert.match(renderEscalation({ allow: true }), /set decision to escalate/);
   const note = renderEscalation({ note: 'needs a look at the retry path' });
-  assert.match(note, /## Escalated review\nA first-pass reviewer on a smaller tier handed this PR to you: needs a look at the retry path/);
+  assert.match(note, /## Escalated review\nA first-pass reviewer on a smaller tier handed this PR to you, with this reason:\n<<<UNTRUSTED-[0-9a-f]{24}>>>\nneeds a look at the retry path\n<<<END-UNTRUSTED-/);
   assert.doesNotMatch(buildAgyReviewPrompt(context('/ws'), '', 'codex'), /## Escalation/);
 });
 

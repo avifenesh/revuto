@@ -135,7 +135,8 @@ test('buildAgyReviewPrompt carries the exact PR workspace and read-only boundary
   const dir = mkdtempSync(join(tmpdir(), 'revuto-agy-prompt-'));
   try {
     const prompt = buildAgyReviewPrompt(context(dir), 'Remember the repository invariant.');
-    assert.match(prompt, /PR #7: Test PR/);
+    assert.match(prompt, /# PR #7\n/);
+    assert.match(prompt, /## Title\nTest PR/, 'the title is in the fenced PR block');
     assert.match(prompt, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.match(prompt, /read-only review/);
     assert.match(prompt, /repository invariant/);
