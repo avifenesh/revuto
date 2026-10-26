@@ -7,7 +7,7 @@
  * The schedule follows the registry live: `revuto add`, `remove`, `pause`,
  * `resume` and `cron` take effect without a daemon restart.
  */
-import { watch, type FSWatcher } from 'node:fs';
+import { statSync, watch, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
 import cron, { type ScheduledTask } from 'node-cron';
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
@@ -175,14 +175,24 @@ export function followRegistry(config: ReviewerConfig, schedule: LiveSchedule): 
     timer = setTimeout(reconcile, REGISTRY_DEBOUNCE_MS);
     timer.unref();
   };
+  const dir = join(config.vaultPath, 'reviewers');
   let watcher: FSWatcher | null = null;
+  // Linux reports a deleted or replaced directory as plain `rename` events, never an
+  // `error`, and the old watch then stays silent. Track the inode and re-attach on change.
+  let watchedIno: number | null = null;
+  const drop = () => { watcher?.close(); watcher = null; watchedIno = null; };
   const arm = () => {
-    if (watcher) return;
+    let ino: number | null = null;
+    try { ino = statSync(dir).ino; } catch { /* no reviewers dir right now */ }
+    if (watcher && ino === watchedIno) return;
+    drop();
+    if (ino === null) return; // the sweep attaches once the dir exists
     try {
-      watcher = watch(join(config.vaultPath, 'reviewers'), { persistent: false }, soon);
-      watcher.on('error', () => { watcher?.close(); watcher = null; });
+      watcher = watch(dir, { persistent: false }, () => { arm(); soon(); });
+      watchedIno = ino;
+      watcher.on('error', drop);
     } catch {
-      watcher = null; // no reviewers dir yet: the sweep arms the watch once it exists
+      drop();
     }
   };
   arm();

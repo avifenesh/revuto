@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import { removeReviewer, setPaused, setSchedule, writeReviewer, type ReviewerSettings } from '../daemon/src/reviewers.js';
@@ -92,6 +92,33 @@ test('followRegistry picks up a new repo from a file change', async () => {
     const deadline = Date.now() + 5000;
     while (!schedule.scheduled().includes('me/new') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
     assert.deepEqual(schedule.scheduled().sort(), ['me/a', 'me/new']);
+  } finally {
+    stop();
+    schedule.stop();
+    done();
+  }
+});
+
+test('followRegistry keeps working after the reviewers dir is replaced', async () => {
+  const { cfg, done } = vault();
+  writeReviewer(cfg, { repo: 'me/a' });
+  const schedule = new LiveSchedule(cfg, noJobs);
+  schedule.reconcile();
+  const stop = followRegistry(cfg, schedule);
+  const until = async (ok: () => boolean) => {
+    const deadline = Date.now() + 5000;
+    while (!ok() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  };
+  try {
+    const dir = join(cfg.vaultPath, 'reviewers');
+    // a sync tool or restore swapping the folder in place
+    renameSync(dir, `${dir}.old`);
+    cpSync(`${dir}.old`, dir, { recursive: true });
+    rmSync(`${dir}.old`, { recursive: true, force: true });
+    await new Promise((r) => setTimeout(r, 800));
+    writeReviewer(cfg, { repo: 'me/after-swap' });
+    await until(() => schedule.scheduled().includes('me/after-swap'));
+    assert.deepEqual(schedule.scheduled().sort(), ['me/a', 'me/after-swap']);
   } finally {
     stop();
     schedule.stop();
