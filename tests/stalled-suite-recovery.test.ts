@@ -104,6 +104,8 @@ test('scheduled review admits a stalled head older than the cursor, including in
         openStore: async () => store,
         reviewOnePr: async (_config, _repo, number, opts) => {
           reviews.push([number, opts?.expectedHeadSha]);
+          // a poll that outlives `revuto remove` must not write the registration back
+          assert.equal(opts?.registeredOnly, true);
           return { ...unreviewedOutcome('reviewed', `head-${number}`), ranModel: true };
         },
       });

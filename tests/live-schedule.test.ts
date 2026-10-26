@@ -64,6 +64,23 @@ test('a fired job reads the settings on disk, not the ones from schedule time', 
   }
 });
 
+test('a tick after `revuto remove` and before the reconcile does not run the job', async () => {
+  const { cfg, done } = vault();
+  let fired = 0;
+  const schedule = new LiveSchedule(cfg, { ...noJobs, review: () => { fired++; return null; } });
+  try {
+    writeReviewer(cfg, { repo: 'me/a', schedules: { review: '* * * * * *' } });
+    schedule.reconcile();
+    removeReviewer(cfg, 'me/a');
+    // no reconcile: the timer is still armed, as in the 500 ms gap after a removal
+    await new Promise((r) => setTimeout(r, 2200));
+    assert.equal(fired, 0);
+  } finally {
+    schedule.stop();
+    done();
+  }
+});
+
 test('followRegistry picks up a new repo from a file change', async () => {
   const { cfg, done } = vault();
   writeReviewer(cfg, { repo: 'me/a' });

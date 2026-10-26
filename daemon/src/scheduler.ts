@@ -59,13 +59,17 @@ function scheduleRepo(config: ReviewerConfig, r: ReviewerSettings, jobs: Schedul
   if (r.paused) { console.log(`paused ${r.repo} — not scheduled`); return []; }
   const s = effectiveSchedules(config, r);
   // A job reads the repo's settings when it fires, so an edit to a field that does not
-  // move the timers (allowlist, botLogin, autoActivate) still reaches the next run.
-  const current = (): ReviewerSettings => readReviewer(config, r.repo) ?? r;
+  // move the timers (allowlist, botLogin, autoActivate) still reaches the next run. A
+  // tick in the gap between `revuto remove` and the reconcile finds no settings and skips.
+  const withCurrent = (run: (cur: ReviewerSettings) => unknown) => () => {
+    const cur = readReviewer(config, r.repo);
+    return cur ? run(cur) : { skipped: 'no longer registered' };
+  };
   const tasks: ScheduledTask[] = [];
   for (const [job, expr, fn] of [
-    ['review', s.review, () => jobs.review(config, current())],
-    ['learn', s.learn, () => jobs.learn(config, current())],
-    ['decay', s.decay, () => jobs.decay(config, current())],
+    ['review', s.review, withCurrent((cur) => jobs.review(config, cur))],
+    ['learn', s.learn, withCurrent((cur) => jobs.learn(config, cur))],
+    ['decay', s.decay, withCurrent((cur) => jobs.decay(config, cur))],
   ] as const) {
     if (!cron.validate(expr)) {
       console.error(`[${job}] ${r.repo}: invalid cron "${expr}" — skipped`);
@@ -182,8 +186,10 @@ export function followRegistry(config: ReviewerConfig, schedule: LiveSchedule): 
     }
   };
   arm();
+  // Referenced on purpose: with no GitHub App there is no webhook server, and once the
+  // last repo is paused or removed no cron timer is left either. This interval is what
+  // keeps the daemon up to see the next add or resume.
   const sweep = setInterval(() => { arm(); reconcile(); }, REGISTRY_SWEEP_MS);
-  sweep.unref();
   return () => {
     clearInterval(sweep);
     if (timer) clearTimeout(timer);

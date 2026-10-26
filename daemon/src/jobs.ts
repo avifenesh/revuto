@@ -88,7 +88,8 @@ async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSett
       if (pr.isDraft || (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author))) { skipped++; return false; }
       return true;
     });
-    const results = await Promise.allSettled(eligible.map(pr => (deps.reviewOnePr ?? reviewOnePr)(config, settings.repo, pr.number, { expectedHeadSha: pr.headSha })));
+    // registeredOnly: a poll that outlives `revuto remove` must not write the registration back
+    const results = await Promise.allSettled(eligible.map(pr => (deps.reviewOnePr ?? reviewOnePr)(config, settings.repo, pr.number, { expectedHeadSha: pr.headSha, registeredOnly: true })));
     const errors = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
     const outcomes = results.filter((r): r is PromiseFulfilledResult<ReviewOutcome> => r.status === 'fulfilled').map(r => r.value);
     const retryPrs = eligible.filter((_pr, index) => {
