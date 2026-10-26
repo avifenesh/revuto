@@ -282,6 +282,9 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
     const config={models:{review:native,curator:http,distill:http,embedder:null}} as ReviewerConfig;
     const explicit=await runModelProbes(config);
     assert.ok(existsSync(marker));assert.equal(explicit.length,2);assert.ok(explicit.every(p=>p.ok));
+    const guarded=await runModelProbes({...config,models:{...config.models,guard:{...http,fallbacks:[{...http,model:'guard-fallback'}]}}});
+    assert.ok(guarded.find(p=>p.model==='fake')?.roles.includes('guard'),'the guard chain is probed');
+    assert.ok(guarded.find(p=>p.model==='guard-fallback')?.roles.includes('guard.fallback1'));
     const bad=await runModelProbes({...config,models:{...config.models,review:{...native,model:'wrong'}}});
     assert.match(bad.find(p=>p.api==='claude')?.error??'',/unexpected response/);
     // Same model on another credential path is its own probe, and a missing login fails it.
