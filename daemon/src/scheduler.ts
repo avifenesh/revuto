@@ -45,7 +45,7 @@ export interface SchedulerJobs {
 }
 
 const DEFAULT_JOBS: SchedulerJobs = {
-  review: (config, reviewer) => reviewRepo(config, reviewer),
+  review: (config, reviewer) => reviewRepo(config, reviewer, { registeredOnly: true }),
   learn: (config, reviewer) => learnRepo(config, reviewer),
   decay: (config, reviewer) => decayRepo(config, reviewer.repo),
 };

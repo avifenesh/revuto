@@ -61,7 +61,17 @@ export interface ReviewJobDependencies {
   readonly reviewOnePr?: typeof reviewOnePr;
 }
 
-export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean } = {}, deps: ReviewJobDependencies = {}): Promise<ReviewJobResult> {
+/**
+ * `registeredOnly`: the scheduled poll sets it, so a poll that outlives `revuto remove`
+ * cannot write the registration back. `revuto trigger` leaves it off and still
+ * registers and reviews an unregistered repo.
+ */
+export interface ReviewRepoOptions {
+  readonly force?: boolean;
+  readonly registeredOnly?: boolean;
+}
+
+export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSettings, opts: ReviewRepoOptions = {}, deps: ReviewJobDependencies = {}): Promise<ReviewJobResult> {
   if (repoIgnored(config.github.app?.ignoredRepos, settings.repo)) {
     logIgnoredOnce(settings.repo, undefined, 'review');
     return { reviewed: 0, skipped: 0 };
@@ -69,7 +79,7 @@ export async function reviewRepo(config: ReviewerConfig, settings: ReviewerSetti
   return runQueuedForRepo(config, `_review-poll/${settings.repo}`, () => reviewRepoSnapshot(config, settings, opts, deps));
 }
 
-async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSettings, opts: { force?: boolean }, deps: ReviewJobDependencies): Promise<ReviewJobResult> {
+async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSettings, opts: ReviewRepoOptions, deps: ReviewJobDependencies): Promise<ReviewJobResult> {
   const auth = deps.githubAuth ?? await githubAuthForRepo(config.github, settings.repo);
   const { octokit } = auth;
   const app = appBehindAuth(config, settings.repo, auth);
@@ -88,8 +98,7 @@ async function reviewRepoSnapshot(config: ReviewerConfig, settings: ReviewerSett
       if (pr.isDraft || (settings.authorAllowlist?.length && !settings.authorAllowlist.includes(pr.author))) { skipped++; return false; }
       return true;
     });
-    // registeredOnly: a poll that outlives `revuto remove` must not write the registration back
-    const results = await Promise.allSettled(eligible.map(pr => (deps.reviewOnePr ?? reviewOnePr)(config, settings.repo, pr.number, { expectedHeadSha: pr.headSha, registeredOnly: true })));
+    const results = await Promise.allSettled(eligible.map(pr => (deps.reviewOnePr ?? reviewOnePr)(config, settings.repo, pr.number, { expectedHeadSha: pr.headSha, registeredOnly: opts.registeredOnly })));
     const errors = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
     const outcomes = results.filter((r): r is PromiseFulfilledResult<ReviewOutcome> => r.status === 'fulfilled').map(r => r.value);
     const retryPrs = eligible.filter((_pr, index) => {

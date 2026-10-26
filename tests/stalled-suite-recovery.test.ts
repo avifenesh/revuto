@@ -99,7 +99,7 @@ test('scheduled review admits a stalled head older than the cursor, including in
         setCursor: async (_name: string, value: string) => { cursors.push(value); },
         close: async () => { closed = true; },
       } as unknown as KnowledgeStore;
-      const result = await reviewRepo(config, { repo: 'octo/demo' }, {}, {
+      const result = await reviewRepo(config, { repo: 'octo/demo' }, { registeredOnly: true }, {
         githubAuth: { octokit: f.octokit, installation: true } as GithubAuth,
         openStore: async () => store,
         reviewOnePr: async (_config, _repo, number, opts) => {
@@ -115,6 +115,30 @@ test('scheduled review admits a stalled head older than the cursor, including in
       assert.equal(closed, true);
       assert.equal(result.initialized, cursor === null ? true : undefined);
     }
+  } finally {
+    rmSync(vaultPath, { recursive: true, force: true });
+  }
+});
+
+test('a manual trigger still reviews an unregistered repo (no registeredOnly)', async () => {
+  const root = join(homedir(), '.cache');
+  mkdirSync(root, { recursive: true });
+  const vaultPath = mkdtempSync(join(root, 'revuto-manual-trigger-test-'));
+  const config = { vaultPath, github: { app } } as ReviewerConfig;
+  try {
+    const f = fixture();
+    const flags: Array<boolean | undefined> = [];
+    const store = { getCursor: async () => null, setCursor: async () => {}, close: async () => {} } as unknown as KnowledgeStore;
+    await reviewRepo(config, { repo: 'octo/demo' }, { force: true }, {
+      githubAuth: { octokit: f.octokit, installation: true } as GithubAuth,
+      openStore: async () => store,
+      reviewOnePr: async (_config, _repo, number, opts) => {
+        flags.push(opts?.registeredOnly);
+        return { ...unreviewedOutcome('reviewed', `head-${number}`), ranModel: true };
+      },
+    });
+    assert.ok(flags.length > 0, 'the trigger reached reviewOnePr');
+    assert.ok(flags.every((f) => !f), '`revuto trigger` must not require a registration');
   } finally {
     rmSync(vaultPath, { recursive: true, force: true });
   }
