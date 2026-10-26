@@ -20,7 +20,12 @@ Config keys: `vaultPath`, `github.tokenEnv` (only for repositories a configured 
 `models`, `schedules`, `limits`, and `store`. Model specs require `baseURL` and
 `model`; optional keys are `name`, `apiKeyEnv`, `api`, `auth`,
 `reasoningEffort`, `awsRegion`, `command`, `permissionMode`, and `fallbacks`
-(`embedder` may be `null`). See
+(`embedder` may be `null`). The embedder also takes `maxInputChars`, the longest
+input it is sent, in characters (default 800, sized for a 512-token window such
+as bge-small-en-v1.5's; raise it for a longer-window model). Skill selection
+fits whole touched-area names into it, most-touched first, and any other longer
+input is cut. An embedder error never fails a review: skill selection falls back
+to area-glob match and the curator stores the concern without an embedding. See
 `revuto.config.example.json`, and [providers.md](providers.md) for every `api` and
 `auth` value. No secrets are stored: API keys and the webhook secret are
 env-referenced. `revuto doctor` checks model endpoints, configured
