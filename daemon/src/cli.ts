@@ -49,7 +49,7 @@ function usage(): void {
   init <owner/repo> [maxPRs]      clone + onboard + backfill PRs + write textbook + register
   add <owner/repo>                register a repo (no onboarding)
   remove <owner/repo> [--purge]   unregister a repo (--purge also deletes skills + sqlite memory)
-  pause <owner/repo>              stop scheduling this repo (until resume / daemon restart)
+  pause <owner/repo>              stop scheduling this repo (until resume)
   resume <owner/repo>             re-enable scheduling
   cron <owner/repo> <job> <expr>  set a per-repo cron for review|learn|decay ("clear" to reset to default)
   trigger <owner/repo> [job]      run review|learn|decay now (default: review)
@@ -257,7 +257,7 @@ async function main(): Promise<void> {
       const repo = args[0];
       if (!repo?.includes('/')) throw new Error(`usage: revuto ${cmd} <owner/repo>`);
       const ok = setPaused(config(), repo, cmd === 'pause');
-      console.log(ok ? `${cmd}d ${repo} (applies on daemon restart)` : `not registered: ${repo}`);
+      console.log(ok ? `${cmd}d ${repo} (the running daemon picks it up within a second)` : `not registered: ${repo}`);
       break;
     }
     case 'cron': {
@@ -268,7 +268,7 @@ async function main(): Promise<void> {
       const clear = expr === 'clear' || expr === '-';
       if (!clear && !cron.validate(expr)) throw new Error(`invalid cron expression: "${expr}"`);
       const ok = setSchedule(config(), repo, job, clear ? null : expr);
-      console.log(ok ? `${repo} ${job} cron ${clear ? 'cleared (uses config default)' : `set to "${expr}"`} — applies on daemon restart` : `not registered: ${repo}`);
+      console.log(ok ? `${repo} ${job} cron ${clear ? 'cleared (uses config default)' : `set to "${expr}"`} — the running daemon picks it up within a second` : `not registered: ${repo}`);
       break;
     }
     case 'trigger': {
