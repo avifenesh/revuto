@@ -3,10 +3,15 @@
  * schedules each repo's review / learn / decay jobs with node-cron. node-cron's
  * timers keep the process alive, so this is the daemon's main loop. Run it as a
  * systemd user service for restart-on-reboot.
+ *
+ * The schedule follows the registry live: `revuto add`, `remove`, `pause`,
+ * `resume` and `cron` take effect without a daemon restart.
  */
+import { statSync, watch, type FSWatcher } from 'node:fs';
+import { join } from 'node:path';
 import cron, { type ScheduledTask } from 'node-cron';
 import type { ReviewerConfig } from '../../agents/common/src/config.js';
-import { listReviewers, effectiveSchedules, type ReviewerSettings } from './reviewers.js';
+import { listReviewers, readReviewer, effectiveSchedules, type ReviewerSettings } from './reviewers.js';
 import { reviewRepo, learnRepo, decayRepo } from './jobs.js';
 import { runQueuedForRepo } from './repo-queue.js';
 import { startWebhookHealthMonitor } from './webhook-health.js';
@@ -40,7 +45,7 @@ export interface SchedulerJobs {
 }
 
 const DEFAULT_JOBS: SchedulerJobs = {
-  review: (config, reviewer) => reviewRepo(config, reviewer),
+  review: (config, reviewer) => reviewRepo(config, reviewer, { registeredOnly: true }),
   learn: (config, reviewer) => learnRepo(config, reviewer),
   decay: (config, reviewer) => decayRepo(config, reviewer.repo),
 };
@@ -50,37 +55,166 @@ export function planSchedule(config: ReviewerConfig, reviewers: ReviewerSettings
   return reviewers.map((r) => ({ repo: r.repo, schedules: effectiveSchedules(config, r) }));
 }
 
+function scheduleRepo(config: ReviewerConfig, r: ReviewerSettings, jobs: SchedulerJobs): ScheduledTask[] {
+  if (r.paused) { console.log(`paused ${r.repo} — not scheduled`); return []; }
+  const s = effectiveSchedules(config, r);
+  // A job reads the repo's settings when it fires, so an edit to a field that does not
+  // move the timers (allowlist, botLogin, autoActivate) still reaches the next run. A
+  // tick in the gap between `revuto remove` and the reconcile finds no settings and skips.
+  const withCurrent = (run: (cur: ReviewerSettings) => unknown) => () => {
+    const cur = readReviewer(config, r.repo);
+    return cur ? run(cur) : { skipped: 'no longer registered' };
+  };
+  const tasks: ScheduledTask[] = [];
+  for (const [job, expr, fn] of [
+    ['review', s.review, withCurrent((cur) => jobs.review(config, cur))],
+    ['learn', s.learn, withCurrent((cur) => jobs.learn(config, cur))],
+    ['decay', s.decay, withCurrent((cur) => jobs.decay(config, cur))],
+  ] as const) {
+    if (!cron.validate(expr)) {
+      console.error(`[${job}] ${r.repo}: invalid cron "${expr}" — skipped`);
+      continue;
+    }
+    tasks.push(cron.schedule(expr, () => guard(config, job, r.repo, fn)));
+  }
+  console.log(`scheduled ${r.repo}: review='${s.review}' learn='${s.learn}' decay='${s.decay}'`);
+  return tasks;
+}
+
 export function scheduleReviewers(
   config: ReviewerConfig,
   reviewers: ReviewerSettings[],
   jobs: SchedulerJobs = DEFAULT_JOBS,
 ): ScheduledTask[] {
-  const tasks: ScheduledTask[] = [];
-  for (const r of reviewers) {
-    if (r.paused) { console.log(`paused ${r.repo} — not scheduled`); continue; }
-    const s = effectiveSchedules(config, r);
-    for (const [job, expr, fn] of [
-      ['review', s.review, () => jobs.review(config, r)],
-      ['learn', s.learn, () => jobs.learn(config, r)],
-      ['decay', s.decay, () => jobs.decay(config, r)],
-    ] as const) {
-      if (!cron.validate(expr)) {
-        console.error(`[${job}] ${r.repo}: invalid cron "${expr}" — skipped`);
-        continue;
-      }
-      tasks.push(cron.schedule(expr, () => guard(config, job, r.repo, fn)));
-    }
-    console.log(`scheduled ${r.repo}: review='${s.review}' learn='${s.learn}' decay='${s.decay}'`);
-  }
-  return tasks;
+  return reviewers.flatMap((r) => scheduleRepo(config, r, jobs));
 }
 
-export function startDaemon(config: ReviewerConfig): ScheduledTask[] {
+export interface ScheduleChange {
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
+
+/** The fields that decide a repo's timers; any change in them replaces the timers. */
+function timerKey(config: ReviewerConfig, r: ReviewerSettings): string {
+  return JSON.stringify({ paused: !!r.paused, schedules: effectiveSchedules(config, r) });
+}
+
+/**
+ * The registry-backed schedule. `reconcile` brings the timers in line with the
+ * registry: it starts new repos, stops removed ones, and replaces repos whose pause
+ * state or schedules changed. Untouched repos keep their timers, so a reconcile
+ * never shifts or doubles a job that is already due.
+ */
+export class LiveSchedule {
+  private readonly repos = new Map<string, { key: string; tasks: ScheduledTask[] }>();
+
+  constructor(
+    private readonly config: ReviewerConfig,
+    private readonly jobs: SchedulerJobs = DEFAULT_JOBS,
+  ) {}
+
+  reconcile(reviewers: ReviewerSettings[] = listReviewers(this.config)): ScheduleChange {
+    const change: ScheduleChange = { added: [], removed: [], changed: [] };
+    const seen = new Set<string>();
+    for (const r of reviewers) {
+      seen.add(r.repo);
+      const key = timerKey(this.config, r);
+      const prev = this.repos.get(r.repo);
+      if (prev?.key === key) continue;
+      if (prev) {
+        for (const t of prev.tasks) void t.stop();
+        change.changed.push(r.repo);
+      } else {
+        change.added.push(r.repo);
+      }
+      this.repos.set(r.repo, { key, tasks: scheduleRepo(this.config, r, this.jobs) });
+    }
+    for (const [repo, prev] of this.repos) {
+      if (seen.has(repo)) continue;
+      for (const t of prev.tasks) void t.stop();
+      this.repos.delete(repo);
+      change.removed.push(repo);
+      console.log(`unscheduled ${repo}: no longer registered`);
+    }
+    return change;
+  }
+
+  /** Repos that have timers now (paused repos are tracked but have none). */
+  scheduled(): string[] {
+    return [...this.repos].filter(([, v]) => v.tasks.length > 0).map(([repo]) => repo);
+  }
+
+  stop(): void {
+    for (const v of this.repos.values()) for (const t of v.tasks) void t.stop();
+    this.repos.clear();
+  }
+}
+
+// fs.watch can drop events (editors that swap files, a busy inotify queue);
+// a slow sweep catches anything it missed
+const REGISTRY_SWEEP_MS = 60_000;
+const REGISTRY_DEBOUNCE_MS = 500;
+
+/** Reconcile on every registry change, plus a slow sweep. Returns a stop function. */
+export function followRegistry(config: ReviewerConfig, schedule: LiveSchedule): () => void {
+  let timer: NodeJS.Timeout | null = null;
+  const reconcile = () => {
+    timer = null;
+    try {
+      const c = schedule.reconcile();
+      if (c.added.length || c.removed.length || c.changed.length) {
+        console.log(`[registry] added=${c.added.join(',') || '-'} removed=${c.removed.join(',') || '-'} changed=${c.changed.join(',') || '-'}`);
+      }
+    } catch (e) {
+      console.error(`[registry] reconcile failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  const soon = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(reconcile, REGISTRY_DEBOUNCE_MS);
+    timer.unref();
+  };
+  const dir = join(config.vaultPath, 'reviewers');
+  let watcher: FSWatcher | null = null;
+  // Linux reports a deleted or replaced directory as plain `rename` events, never an
+  // `error`, and the old watch then stays silent. Track the inode and re-attach on change.
+  let watchedIno: number | null = null;
+  const drop = () => { watcher?.close(); watcher = null; watchedIno = null; };
+  const arm = () => {
+    let ino: number | null = null;
+    try { ino = statSync(dir).ino; } catch { /* no reviewers dir right now */ }
+    if (watcher && ino === watchedIno) return;
+    drop();
+    if (ino === null) return; // the sweep attaches once the dir exists
+    try {
+      watcher = watch(dir, { persistent: false }, () => { arm(); soon(); });
+      watchedIno = ino;
+      watcher.on('error', drop);
+    } catch {
+      drop();
+    }
+  };
+  arm();
+  // Referenced on purpose: with no GitHub App there is no webhook server, and once the
+  // last repo is paused or removed no cron timer is left either. This interval is what
+  // keeps the daemon up to see the next add or resume.
+  const sweep = setInterval(() => { arm(); reconcile(); }, REGISTRY_SWEEP_MS);
+  return () => {
+    clearInterval(sweep);
+    if (timer) clearTimeout(timer);
+    watcher?.close();
+  };
+}
+
+export function startDaemon(config: ReviewerConfig): LiveSchedule {
   startWebhookHealthMonitor(config);
   const reviewers = listReviewers(config);
   if (reviewers.length === 0) {
     console.warn('no reviewers registered — add one with `revuto init <owner/repo>` (or `revuto add`)');
   }
-
-  return scheduleReviewers(config, reviewers);
+  const schedule = new LiveSchedule(config);
+  schedule.reconcile(reviewers);
+  followRegistry(config, schedule);
+  return schedule;
 }
