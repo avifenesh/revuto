@@ -23,7 +23,7 @@ import { assembleCommonTools } from './tools/index.js';
 import { refusedEmptyReview } from './tools/gh.js';
 import { startReviewTrace, isToolErrorOutput } from './trace.js';
 import { selectSkills } from './skills/select.js';
-import { renderEscalation, renderReReview, ReviewEscalation, runAgyReview } from './agy-review.js';
+import { NativeStepLimitError, renderEscalation, renderReReview, ReviewEscalation, runAgyReview } from './agy-review.js';
 import type { KnowledgeStore } from './store/store.js';
 import type { Embedder } from './memory/embedder.js';
 import { withReviewWorktree } from './review-worktree.js';
@@ -200,12 +200,16 @@ export function reviewTranscript(
 }
 
 /**
- * The spec to retry a refused review on: the first configured fallback, which
- * inherits the rest of the chain. Undefined when the error is not a refusal,
- * the refusal must not be retried (reasoning_extraction), or no fallback exists.
+ * The spec to retry a failed native review on: the first configured fallback,
+ * which inherits the rest of the chain. A chain is there so one model stands in
+ * for another, so a refusal, a missing login, a used-up plan or a crashed CLI all
+ * move on. Undefined when the run was cancelled, it stopped at its step budget
+ * (an outcome, which the tiers escalate), the refusal must not be retried
+ * (reasoning_extraction), or no fallback exists.
  */
-export function refusalFallback(spec: ModelSpec, err: unknown): ModelSpec | undefined {
-  if (!isModelRefusal(err) || !refusalAllowsFallback(err)) return undefined;
+export function reviewFallback(spec: ModelSpec, err: unknown, signal?: AbortSignal): ModelSpec | undefined {
+  if (signal?.aborted || err instanceof NativeStepLimitError) return undefined;
+  if (isModelRefusal(err) && !refusalAllowsFallback(err)) return undefined;
   const [next, ...rest] = spec.fallbacks ?? [];
   if (!next) return undefined;
   const chain = [...(next.fallbacks ?? []), ...rest];
@@ -326,8 +330,8 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
   // so the daily token budget counts the whole run.
   try {
     for (;;) {
-      // Native CLI reviewers. A refusal moves the run to the next configured
-      // fallback (CLI or HTTP) instead of failing it; any other error still fails.
+      // Native CLI reviewers. A refusal or a failed run moves the review to the
+      // next configured fallback (CLI or HTTP) instead of failing it.
       while (isNativeRunner(config.models.review)) {
         try {
           return await finish(await runAgyReview({ config, ctx, octokit, token, skillMarkdown: skillMd, startedAt, signal, reviewedBy,
@@ -343,9 +347,10 @@ async function runReviewInWorkspace(opts: RunReviewOptions, workspaceRoot: strin
             escalateTo = undefined;
             continue;
           }
-          const next = refusalFallback(config.models.review, err);
+          const next = reviewFallback(config.models.review, err, signal);
           if (!next) throw err;
-          console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} refused (category=${(err as ModelRefusalError).category}); falling back to ${modelLabel(next)}`);
+          const why = isModelRefusal(err) ? `refused (category=${(err as ModelRefusalError).category})` : `failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
+          console.warn(`[review] ${opts.repo}#${opts.prNumber}: ${reviewedBy} ${why}; falling back to ${modelLabel(next)}`);
           config = withReviewModel(config, next);
           reviewedBy = modelLabel(next);
         }
