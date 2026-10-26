@@ -48,6 +48,8 @@ export async function runModelProbes(config: ReviewerConfig): Promise<ModelProbe
     ...(config.models.reviewMedium ? modelEntries('reviewMedium', config.models.reviewMedium, 'chat') : []),
     ...modelEntries('curator', config.models.curator, 'chat'),
     ...modelEntries('distill', config.models.distill, 'chat'),
+    // Without its own chain the guard runs on the HTTP models above, already probed.
+    ...(config.models.guard ? modelEntries('guard', config.models.guard, 'chat') : []),
   ];
   if (config.models.embedder) entries.push({ role: 'embedder', spec: config.models.embedder, kind: 'embedding' });
 
