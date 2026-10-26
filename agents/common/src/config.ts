@@ -46,6 +46,11 @@ export interface ModelSpec {
   readonly permissionMode?: 'bypass' | 'settings';
   /** Ordered fallback models to try if this model call throws. */
   readonly fallbacks?: readonly ModelSpec[];
+  /**
+   * Embedder only: longest input in characters, cut before sending. Defaults to
+   * 800, sized for a 512-token window; raise it for a longer-window model.
+   */
+  readonly maxInputChars?: number;
 }
 
 export interface GithubAppConfig {
@@ -348,6 +353,10 @@ function checkModel(m: ModelSpec | undefined, role: string): ModelSpec {
   }
   // A fallback is checked as `review.fallbacks[0]`; it serves the role it hangs off.
   const baseRole = role.split('.')[0];
+  if (m.maxInputChars !== undefined) {
+    if (baseRole !== 'embedder') throw new Error(`config: models.${role}.maxInputChars applies only to models.embedder`);
+    if (!Number.isInteger(m.maxInputChars) || m.maxInputChars < 1) throw new Error(`config: models.${role}.maxInputChars must be a positive integer`);
+  }
   if (api === 'claude' && !REVIEW_ROLES.includes(baseRole)) {
     throw new Error(`config: native Claude CLI is supported only for models.review, models.reviewSmall and models.reviewMedium`);
   }
