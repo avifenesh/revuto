@@ -13,7 +13,7 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv
 import { AGY_REVIEW_SCHEMA, buildAgyReviewPrompt, normalizeClaudeEvents, runAgyCli, runAgyReview } from '../agents/common/src/agy-review.js';
 import type { ReviewerConfig } from '../agents/common/src/config.js';
 import type { PrContext } from '../agents/common/src/workspace.js';
-import { runModelProbes } from '../daemon/src/doctor.js';
+import { brokenChains, doctorOk, modelStatus, runModelProbes, type DoctorReport, type ModelProbe } from '../daemon/src/doctor.js';
 import { startFakeOpenAI } from '../scripts/smoke/fake-openai.js';
 
 function fakeAgy(): { dir: string; command: string } {
@@ -294,6 +294,21 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
       assert.ok(mixed.find(p=>p.roles.includes('review'))?.ok);
     } finally { process.env.HOME=home; if (token!==undefined) process.env.CLAUDE_CODE_OAUTH_TOKEN=token; }
   } finally {await server.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('doctor passes while every role chain has a working model, primary or fallback', () => {
+  const probe = (roles: string[], ok: boolean): ModelProbe => ({ roles, ok, baseURL: 'x', model: roles[0]!, kind: 'chat', ms: 1 });
+  const report = (models: ModelProbe[]): DoctorReport => ({ github: { ok: true }, store: { backend: 'sqlite', ok: true, ms: 1 }, models });
+  const fallbackDown = [probe(['distill'], true), probe(['distill.fallback1', 'review.fallback1'], false), probe(['review'], true)];
+  assert.deepEqual(brokenChains(fallbackDown), []);
+  assert.equal(modelStatus(fallbackDown[1]!, []), 'warn');
+  assert.ok(doctorOk(report(fallbackDown)), 'a dead fallback behind a working primary passes');
+  const primaryDown = [probe(['curator'], false), probe(['curator.fallback1.fallback1'], true)];
+  assert.ok(doctorOk(report(primaryDown)), 'a working fallback behind a dead primary passes');
+  const chainDown = [probe(['distill'], false), probe(['distill.fallback1', 'review.fallback1'], false), probe(['review'], true)];
+  assert.deepEqual(brokenChains(chainDown), ['distill']);
+  assert.equal(modelStatus(chainDown[1]!, brokenChains(chainDown)), 'fail', 'a model shared with a dead chain fails');
+  assert.equal(doctorOk(report(chainDown)), false);
 });
 
 test('Claude refusals surface on the result and on assistant stop_reason', () => {

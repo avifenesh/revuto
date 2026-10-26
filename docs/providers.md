@@ -11,10 +11,13 @@ check it with `revuto doctor` before the first run.
 | `guard` | approves every learned fact, skill and textbook before it is stored | HTTP models only; defaults to the HTTP models of `distill`, then `curator` |
 | `embedder` | dedup and skill selection | an OpenAI-compatible embeddings endpoint, or `null` |
 
-Each spec can list `fallbacks`, tried in order. An HTTP model falls back when its
-call fails or the model refuses. A native CLI runner (Claude Code, Codex,
-Antigravity) falls back only on a refusal; any other error, such as a plan's usage
-limit, fails the review. Native runners must come before HTTP models in a chain.
+Each spec can list `fallbacks`, tried in order. A model falls back when its call
+or run fails or the model refuses: an HTTP error, a native CLI that cannot start,
+a missing login, a used-up plan. A native review that is cancelled or stops at its
+step budget does not move on; the small and medium tiers escalate that instead.
+Native runners must come before HTTP models in a chain. `revuto doctor` fails only
+when a role has no working model; a dead model with a working one in its chain
+is a `warn`.
 
 ## Claude Code
 
@@ -219,7 +222,7 @@ the 272K-input price step. Codex has no output-token setting, so
 `limits.maxOutputTokens.review` does not apply to it. A turn Codex reports as a
 policy failure (`cyber_policy`, `bio_policy`, `invalid_prompt` and the like) or a
 final message that declines instead of returning the verdict raises a refusal, and
-the review moves to the spec's next `fallbacks` entry, as Claude refusals do.
+the review moves to the spec's next `fallbacks` entry, as any failed run does.
 `command` defaults to `$REVUTO_CODEX_COMMAND` or `codex` on PATH.
 
 ## Gemini through Antigravity
@@ -327,7 +330,8 @@ it calls ConverseStream (a 128K-token turn outlasts a plain HTTP response), neve
 sends temperature, topP or a forced tool choice (a `required` choice goes out as
 `auto` with the tools named, retried once if no call comes back), defaults effort
 to `medium`, replays signed reasoning blocks unmodified, and hands a refusal to the
-next fallback in the chain. The Claude CLI reviewer does the same for refusals.
+next fallback in the chain. The Claude CLI reviewer does the same for refusals and
+failed runs.
 
 ### Run-time overrides
 

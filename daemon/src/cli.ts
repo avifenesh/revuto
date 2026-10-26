@@ -33,7 +33,7 @@ import { startWebhookServer } from './github-webhook.js';
 import { runQueuedForRepo } from './repo-queue.js';
 import { reapReviewWorktrees } from '../../agents/common/src/review-worktree.js';
 import { runInit } from './init.js';
-import { runDoctor, doctorOk } from './doctor.js';
+import { brokenChains, doctorOk, modelStatus, runDoctor } from './doctor.js';
 import { isJob } from './types.js';
 import { applyModelOverrides, extractModelOverrideArgs, modelOverrideUsage } from './model-overrides.js';
 import { reconcileStaleReviewChecks } from './check-reconciliation.js';
@@ -160,10 +160,13 @@ async function main(): Promise<void> {
       const report = await runDoctor(config());
       console.log(`github: ${report.github.ok ? `ok (login=${report.github.login})` : `FAIL — ${report.github.error}`}`);
       console.log(`store:  ${report.store.ok ? `ok (${report.store.backend}, ${report.store.ms}ms)` : `FAIL (${report.store.backend}) — ${report.store.error}`}`);
+      const broken = brokenChains(report.models);
       for (const m of report.models) {
         const label = m.api ? `${m.kind}/${m.api}` : m.kind;
-        console.log(`${m.ok ? 'ok  ' : 'FAIL'} [${label}] ${m.roles.join('+')} → ${m.model} @ ${m.baseURL} (${m.ms}ms)${m.error ? ` — ${m.error}` : ''}`);
+        const status = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' }[modelStatus(m, broken)];
+        console.log(`${status} [${label}] ${m.roles.join('+')} → ${m.model} @ ${m.baseURL} (${m.ms}ms)${m.error ? ` — ${m.error}` : ''}`);
       }
+      if (broken.length) console.log(`no working model for: ${broken.join(', ')}`);
       if (!doctorOk(report)) process.exitCode = 1;
       break;
     }

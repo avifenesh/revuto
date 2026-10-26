@@ -12,7 +12,8 @@ import * as zlib from 'node:zlib';
 import { buildConverseModel, decodeEventStreamFrames, CONVERSE_METADATA_KEY, isAnthropicModelId } from '../agents/common/src/converse-model.js';
 import { FallbackLanguageModel } from '../agents/common/src/model.js';
 import { ModelRefusalError } from '../agents/common/src/refusal.js';
-import { refusalFallback } from '../agents/common/src/run-agent.js';
+import { reviewFallback } from '../agents/common/src/run-agent.js';
+import { NativeStepLimitError } from '../agents/common/src/agy-review.js';
 import type { ModelSpec } from '../agents/common/src/config.js';
 
 const crc32 = (zlib as unknown as { crc32: (b: Uint8Array) => number }).crc32;
@@ -229,12 +230,17 @@ test('stream exceptions surface with their type', () => {
   assert.equal(frames[0].headers[':exception-type'], 'validationException');
 });
 
-test('refusalFallback picks the next model and keeps the rest of the chain', () => {
+test('reviewFallback moves a refused or failed native review to the next model, keeping the rest of the chain', () => {
   const b: ModelSpec = { baseURL: 'x', model: 'b' };
   const c: ModelSpec = { baseURL: 'x', model: 'c' };
   const spec: ModelSpec = { baseURL: 'claude-cli://local', model: 'a', api: 'claude', fallbacks: [b, c] };
-  assert.deepEqual(refusalFallback(spec, new ModelRefusalError('a', 'cyber')), { ...b, fallbacks: [c] });
-  assert.equal(refusalFallback(spec, new ModelRefusalError('a', 'reasoning_extraction')), undefined);
-  assert.equal(refusalFallback(spec, new Error('boom')), undefined);
-  assert.equal(refusalFallback({ ...spec, fallbacks: [] }, new ModelRefusalError('a', 'cyber')), undefined);
+  assert.deepEqual(reviewFallback(spec, new ModelRefusalError('a', 'cyber')), { ...b, fallbacks: [c] });
+  assert.equal(reviewFallback(spec, new ModelRefusalError('a', 'reasoning_extraction')), undefined);
+  // A dead primary (no login, used-up plan, crashed CLI) is what the chain is for.
+  assert.deepEqual(reviewFallback(spec, new Error('Codex ChatGPT login not found')), { ...b, fallbacks: [c] });
+  assert.equal(reviewFallback(spec, new NativeStepLimitError('turn limit', 10, 100)), undefined, 'a step-budget stop is an outcome');
+  const cancelled = new AbortController();
+  cancelled.abort();
+  assert.equal(reviewFallback(spec, new Error('Review cancelled'), cancelled.signal), undefined, 'a cancelled run stays cancelled');
+  assert.equal(reviewFallback({ ...spec, fallbacks: [] }, new ModelRefusalError('a', 'cyber')), undefined);
 });
