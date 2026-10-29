@@ -64,7 +64,7 @@
     "@agent-sh/harness-grep": "^0.9.1",
     "@agent-sh/harness-read": "^0.9.1",
     "@agent-sh/harness-write": "^0.9.1",
-    "@ai-sdk/openai-compatible": "3.0.67",
+    "@ai-sdk/openai-compatible": "3.0.78",
     "@ai-sdk/provider": "4.0.17",
     "@aws-sdk/credential-provider-node": "^3.972.50",
     "@modelcontextprotocol/sdk": "^1.30.0",
