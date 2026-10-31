@@ -6,55 +6,100 @@
  * upgrade. It uses the build, because the MCP
  * server Codex starts is the compiled one.
  *
- *   npm run build && npx tsx scripts/smoke/codex-tools.ts [model]   # default gpt-6.1-sol
+ *   npm run build
+ *   REVUTO_CODEX_COMMAND=/path/to/codex npx tsx scripts/smoke/codex-tools.ts [model]
+ * Use the native binary or the @openai/codex package entry point. Default model: gpt-6.1-sol.
  */
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import childProcess, { execFileSync, type ExecFileOptions, type SpawnOptions } from 'node:child_process';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-// The compiled runner: its MCP server path resolves to the compiled server beside it.
-const { runAgyCli } = await import(new URL('../../dist/agents/common/src/agy-review.js', import.meta.url).href) as typeof import('../../agents/common/src/agy-review.js');
+import { syncBuiltinESMExports } from 'node:module';
+import { promisify } from 'node:util';
 
 // Model ids only: the value is printed and passed to Codex.
 const model = (process.argv[2] ?? 'gpt-6.1-sol').replace(/[^\w.:-]/g, '');
+const command = process.env.REVUTO_CODEX_COMMAND?.trim() || 'codex';
 const bodies: string[] = [];
 const server = createServer((req, res) => {
   let body = '';
   req.on('data', (chunk) => { body += chunk; });
   req.on('end', () => {
-    if (req.method === 'POST' && req.url?.endsWith('/responses')) bodies.push(body);
-    res.writeHead(400, { 'content-type': 'application/json' }).end('{"error":{"message":"smoke capture","type":"invalid_request_error"}}');
+    if (req.method !== 'POST' || !req.url?.endsWith('/responses')) {
+      res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":{"message":"unexpected smoke route"}}');
+      return;
+    }
+    bodies.push(body);
+    const text = JSON.stringify({ decision: 'skip_review', reason: 'smoke capture complete', body: '', comments: [] });
+    const item = { type: 'message', id: 'msg_smoke', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
+    const response = { id: 'resp_smoke', object: 'response', created_at: 0, status: 'completed', model, output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (const event of [
+      { type: 'response.created', response: { ...response, status: 'in_progress', output: [] } },
+      { type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress', content: [] } },
+      { type: 'response.output_text.delta', item_id: item.id, output_index: 0, content_index: 0, delta: text },
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response },
+    ]) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
   });
 });
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
 const port = (server.address() as { port: number }).port;
 
 const dir = mkdtempSync(join(tmpdir(), 'revuto-codex-tools-'));
+const originalSpawn = childProcess.spawn;
+const originalExecFile = childProcess.execFile;
+const originalExecFileAsync = promisify(childProcess.execFile);
+const previousSmokeKey = process.env.REVUTO_SMOKE_KEY;
 try {
   // The fixed diff range the MCP server needs: the last commit of this checkout.
   const head = execFileSync('git', ['rev-parse', 'HEAD~1', 'HEAD'], { encoding: 'utf8' }).trim().split('\n');
-  // Point Codex at the capture server; everything else is revuto's own arguments.
-  const command = join(dir, 'codex');
+  // This fixture adds only the loopback provider configuration at the process
+  // boundary. The executable, restricted catalog, arguments and environment
+  // still come from the real runner. No wrapper or user configuration is loaded.
   const provider = [
     'model_provider="capture"', 'model_providers.capture.name="capture"',
     `model_providers.capture.base_url="http://127.0.0.1:${port}/v1"`, 'model_providers.capture.wire_api="responses"',
     'model_providers.capture.env_key="CODEX_API_KEY"', 'model_providers.capture.request_max_retries=0',
     'model_providers.capture.stream_max_retries=0',
-  ].flatMap((c) => ['-c', `'${c}'`]).join(' ');
-  writeFileSync(command, `#!/bin/sh\nexec codex "$@" ${provider}\n`);
-  chmodSync(command, 0o755);
+  ].flatMap((c) => ['-c', c]);
+  const captureArgs = (file: string, args: readonly string[]) => file === command ? [...args, ...provider] : args;
+  childProcess.execFile = ((...args: unknown[]) => {
+    if (args[0] === command && Array.isArray(args[1])) args[1] = captureArgs(command, args[1]);
+    return Reflect.apply(originalExecFile, childProcess, args);
+  }) as typeof childProcess.execFile;
+  Object.defineProperty(childProcess.execFile, promisify.custom, {
+    value: (file: string, args: readonly string[], options: ExecFileOptions) => originalExecFileAsync(file, captureArgs(file, args), options),
+  });
+  childProcess.spawn = ((file: string, args: readonly string[], options: SpawnOptions) => originalSpawn(file, captureArgs(file, args), options)) as typeof childProcess.spawn;
+  syncBuiltinESMExports();
+  // Load after installing the process fixture so the compiled runner receives it.
+  const { runAgyCli } = await import(new URL('../../dist/agents/common/src/agy-review.js', import.meta.url).href) as typeof import('../../agents/common/src/agy-review.js');
+  const { codexExecutableRoots } = await import(new URL('../../dist/agents/common/src/codex-review.js', import.meta.url).href) as typeof import('../../agents/common/src/codex-review.js');
+  await codexExecutableRoots(command);
+  const wrapper = join(dir, 'wrapper');
+  writeFileSync(wrapper, '#!/bin/sh\nexit 99\n');
+  chmodSync(wrapper, 0o755);
+  await assert.rejects(codexExecutableRoots(wrapper), /wrapper script/, 'the real runner still rejects wrappers');
   process.env.REVUTO_SMOKE_KEY = 'smoke';
   const spec = { api: 'codex' as const, baseURL: 'codex://openai', auth: 'bearer' as const, apiKeyEnv: 'REVUTO_SMOKE_KEY', model, command };
-  await runAgyCli({ spec, cwd: process.cwd(), prompt: 'Say hi.', diffRange: `${head[0]}..${head[1]}`, timeoutMs: 60_000 }).catch(() => undefined);
+  await runAgyCli({ spec, cwd: process.cwd(), prompt: 'Say hi.', diffRange: `${head[0]}..${head[1]}`, timeoutMs: 60_000 });
 } finally {
+  childProcess.spawn = originalSpawn;
+  childProcess.execFile = originalExecFile;
+  syncBuiltinESMExports();
+  if (previousSmokeKey === undefined) delete process.env.REVUTO_SMOKE_KEY;
+  else process.env.REVUTO_SMOKE_KEY = previousSmokeKey;
   server.close();
   rmSync(dir, { recursive: true, force: true });
 }
 
 assert.ok(bodies.length > 0, 'Codex sent a model request');
-const request = JSON.parse(bodies[0]!) as { tools?: unknown[]; input?: Array<{ type?: string; tools?: unknown[] }> };
+const request = JSON.parse(bodies[0]!) as { model?: string; tools?: unknown[]; input?: Array<{ type?: string; tools?: unknown[] }> };
+assert.equal(request.model, model, 'the real CLI requested the selected model');
 const names: string[] = [];
 const walk = (tools: unknown[] = [], prefix = '') => {
   for (const tool of tools as Array<{ type?: string; name?: string; tools?: unknown[] }>) {
