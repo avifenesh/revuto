@@ -15,14 +15,16 @@ import childProcess, { execFileSync, type ExecFileOptions, type SpawnOptions } f
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 
 // Model ids only: the value is printed and passed to Codex.
 const model = (process.argv[2] ?? 'gpt-6.1-sol').replace(/[^\w.:-]/g, '');
-const command = process.env.REVUTO_CODEX_COMMAND?.trim() || 'codex';
+const configuredCommand = process.env.REVUTO_CODEX_COMMAND?.trim() || 'codex';
+const command = configuredCommand.includes('/') ? resolve(configuredCommand) : configuredCommand;
 const bodies: string[] = [];
+const routedStages = new Set<string>();
 const server = createServer((req, res) => {
   let body = '';
   req.on('data', (chunk) => { body += chunk; });
@@ -66,7 +68,16 @@ try {
     'model_providers.capture.env_key="CODEX_API_KEY"', 'model_providers.capture.request_max_retries=0',
     'model_providers.capture.stream_max_retries=0',
   ].flatMap((c) => ['-c', c]);
-  const captureArgs = (file: string, args: readonly string[]) => file === command ? [...args, ...provider] : args;
+  const captureArgs = (file: string, args: readonly string[]) => {
+    const stage = args[0] === 'debug' && args[1] === 'models' ? 'catalog' : args[0] === 'exec' ? 'review' : undefined;
+    if (file !== command) {
+      assert.equal(stage, undefined, 'Codex subprocesses must match the normalized capture command');
+      return args;
+    }
+    assert.ok(stage, 'every Codex subprocess must use the loopback capture configuration');
+    routedStages.add(stage);
+    return [...args, ...provider];
+  };
   childProcess.execFile = ((...args: unknown[]) => {
     if (args[0] === command && Array.isArray(args[1])) args[1] = captureArgs(command, args[1]);
     return Reflect.apply(originalExecFile, childProcess, args);
@@ -77,7 +88,7 @@ try {
   childProcess.spawn = ((file: string, args: readonly string[], options: SpawnOptions) => originalSpawn(file, captureArgs(file, args), options)) as typeof childProcess.spawn;
   syncBuiltinESMExports();
   // Load after installing the process fixture so the compiled runner receives it.
-  const { runAgyCli } = await import(new URL('../../dist/agents/common/src/agy-review.js', import.meta.url).href) as typeof import('../../agents/common/src/agy-review.js');
+  const { runAgyCli, nativeCommand } = await import(new URL('../../dist/agents/common/src/agy-review.js', import.meta.url).href) as typeof import('../../agents/common/src/agy-review.js');
   const { codexExecutableRoots } = await import(new URL('../../dist/agents/common/src/codex-review.js', import.meta.url).href) as typeof import('../../agents/common/src/codex-review.js');
   await codexExecutableRoots(command);
   const wrapper = join(dir, 'wrapper');
@@ -86,7 +97,9 @@ try {
   await assert.rejects(codexExecutableRoots(wrapper), /wrapper script/, 'the real runner still rejects wrappers');
   process.env.REVUTO_SMOKE_KEY = 'smoke';
   const spec = { api: 'codex' as const, baseURL: 'codex://openai', auth: 'bearer' as const, apiKeyEnv: 'REVUTO_SMOKE_KEY', model, command };
+  assert.equal(nativeCommand(spec), command, 'fixture and runner command normalization must agree');
   await runAgyCli({ spec, cwd: process.cwd(), prompt: 'Say hi.', diffRange: `${head[0]}..${head[1]}`, timeoutMs: 60_000 });
+  assert.deepEqual([...routedStages].sort(), ['catalog', 'review'], 'both native subprocess paths used capture configuration');
 } finally {
   childProcess.spawn = originalSpawn;
   childProcess.execFile = originalExecFile;
