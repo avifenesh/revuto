@@ -67,4 +67,4 @@ for (const item of request.input ?? []) if (item.type === 'additional_tools') wa
 const allowed = /^(functions\.)?(exec_command|write_stdin)$/;
 assert.ok(names.some((n) => /(^|\.)exec_command$/.test(n)), `the review gets a shell: ${names.join(', ')}`);
 assert.deepEqual(names.filter((n) => !allowed.test(n)), [], 'no tool beyond the sandboxed shell');
-console.log(`codex tools ok (${model}): ${names.join(', ')}`);
+console.log(`codex tools ok (${model}): ${JSON.stringify(names).replace(/[\r\n\u2028\u2029]/g, '')}`);
