@@ -35,9 +35,13 @@ becomes a reusable skill.
 ## Quick start
 
 ```bash
-npm i -g revuto            # Node 22 or newer; or run ad hoc with npx revuto <command>
+git clone https://github.com/avifenesh/revuto && cd revuto   # Node 22 or newer
+npm install && npm run build && npm link
 revuto init-config         # writes ~/revuto/revuto.config.json
 ```
+
+The npm release (`revuto` 0.1.1) predates the Claude Code, Codex, Antigravity and
+Grok reviewers and the GitHub App. Install from source until the next release.
 
 Pick a reviewer from the next section and put it in `models.review`. Then:
 
@@ -164,7 +168,7 @@ revuto daemon                        # start scheduler + configured GitHub App w
 # lifecycle
 revuto add <owner/repo>              # register without onboarding
 revuto remove <owner/repo> [--purge] # unregister (--purge also deletes its skills and memory)
-revuto pause <owner/repo>            # stop scheduling (until resume / restart)
+revuto pause <owner/repo>            # stop scheduling (until resume; survives restarts)
 revuto resume <owner/repo>           # re-enable scheduling
 revuto cron <owner/repo> <job> <expr>  # per-repo cron for review|learn|decay ("clear" resets to default)
 revuto list                          # list registered reviewers (shows PAUSED)
