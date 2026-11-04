@@ -85,9 +85,12 @@
     "@types/node": "26.6.5",
     "@types/node-cron": "^3.0.11",
     "tsx": "4.23.15",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   },
   "overrides": {
-    "valibot": "^1.2.0"
+    "valibot": "^1.2.0",
+    "surrealdb": {
+      "typescript": "$typescript"
+    }
   }
 }
