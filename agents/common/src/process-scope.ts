@@ -26,7 +26,7 @@
  * outlive the run there.
  */
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { accessSync, constants, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -203,6 +203,26 @@ const REAP_POLL_MS = 50;
 const SIGKILL_SETTLE_MS = 5000;
 
 /**
+ * How to ask the kernel whether a scope's cgroup still holds a process, by the
+ * hierarchy this host mounts: `cgroup.events` on the unified (v2) hierarchy, at
+ * the root or under `unified/` on a hybrid host, else the systemd v1
+ * hierarchy's `cgroup.procs`. A missing file there means the cgroup is gone, so
+ * empty. `undefined`: this host gives no answer.
+ */
+export function cgroupPopulated(cgroup: string, root = '/sys/fs/cgroup'): () => boolean | undefined {
+  const read = (file: string, populated: (text: string) => boolean) => (): boolean | undefined => {
+    try { return populated(readFileSync(file, 'utf8')); } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT' ? false : undefined;
+    }
+  };
+  const events = (text: string) => /^populated 1$/m.test(text);
+  if (existsSync(join(root, 'cgroup.controllers'))) return read(join(root, cgroup, 'cgroup.events'), events);
+  if (existsSync(join(root, 'unified', 'cgroup.controllers'))) return read(join(root, 'unified', cgroup, 'cgroup.events'), events);
+  if (existsSync(join(root, 'systemd', 'cgroup.procs'))) return read(join(root, 'systemd', cgroup, 'cgroup.procs'), (text) => text.trim() !== '');
+  return () => undefined;
+}
+
+/**
  * Signal what is left in a scope until its cgroup is empty. A scope whose last
  * process exited is already gone (`--collect`), which is the common case.
  */
@@ -211,26 +231,27 @@ async function reapScope(systemctl: (verb: string[], timeout?: number) => Promis
   const shown = await systemctl(['show', '--value', '--property=ControlGroup']);
   const cgroup = shown.code === 0 ? shown.stdout.trim() : '';
   if (!cgroup) return;
-  const events = `/sys/fs/cgroup${cgroup}/cgroup.events`;
-  // cgroup v2 reports emptiness; without it (cgroup v1) each signal gets its full wait.
-  const populated = (): boolean | undefined => {
-    try { return /^populated 1$/m.test(readFileSync(events, 'utf8')); } catch (error) {
-      return (error as NodeJS.ErrnoException).code === 'ENOENT' ? false : undefined;
-    }
-  };
+  const populated = cgroupPopulated(cgroup);
+  const state = populated();
+  if (state === false) return;
+  if (state === undefined) {
+    // No way to see the cgroup empty: each signal gets its full wait.
+    await systemctl(['kill', '--signal=SIGTERM']);
+    await delay(KILL_GRACE_MS);
+    await systemctl(['kill', '--signal=SIGKILL']);
+    return;
+  }
   const emptied = async (ms: number): Promise<boolean> => {
     for (let waited = 0; ; waited += REAP_POLL_MS) {
-      const state = populated();
-      if (state === false) return true;
+      if (populated() === false) return true;
       if (waited >= ms) return false;
       await delay(REAP_POLL_MS);
     }
   };
-  if (populated() === false) return;
   await systemctl(['kill', '--signal=SIGTERM']);
   if (await emptied(KILL_GRACE_MS)) return;
   await systemctl(['kill', '--signal=SIGKILL']);
-  if (!(await emptied(SIGKILL_SETTLE_MS)) && populated() !== undefined) throw new Error('processes remain after SIGKILL');
+  if (!(await emptied(SIGKILL_SETTLE_MS))) throw new Error('processes remain after SIGKILL');
 }
 
 /** Signal the child's process group (the child itself on Windows). */

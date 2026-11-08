@@ -7,7 +7,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -15,7 +15,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelSpec, ReviewerConfig } from '../agents/common/src/config.js';
 import { runAgyCli } from '../agents/common/src/agy-review.js';
 import { reviewGit } from '../agents/common/src/review-worktree.js';
-import { ownUserUnit } from '../agents/common/src/process-scope.js';
+import { cgroupPopulated, ownUserUnit } from '../agents/common/src/process-scope.js';
 
 /** Whether this host can put a process in a systemd user scope, probed without revuto's code. */
 const scopes = process.platform === 'linux'
@@ -236,4 +236,29 @@ test('scopes bind to the user-manager unit revuto runs in, and to nothing else',
   assert.equal(ownUserUnit(at('/user.slice/user-1000.slice/session-3.scope'), 1000), undefined);
   assert.equal(ownUserUnit(at('/user.slice/user-1001.slice/user@1001.service/app.slice/revuto.service'), 1000), undefined);
   assert.equal(ownUserUnit(at('/user.slice/user-1000.slice/user@1000.service/app.slice/revuto.service'), undefined), undefined);
+});
+
+test('a scope reads as empty only where the kernel says so, on every cgroup layout', () => {
+  const root = mkdtempSync(join(tmpdir(), 'revuto-reap-cgroups-'));
+  const scope = '/user.slice/user-1000.slice/user@1000.service/app.slice/revuto-codex-1-ab.scope';
+  const layout = (name: string, files: Record<string, string>) => {
+    const dir = join(root, name);
+    for (const [file, text] of Object.entries(files)) { mkdirSync(join(dir, file, '..'), { recursive: true }); writeFileSync(join(dir, file), text); }
+    return dir;
+  };
+  try {
+    const unified = layout('unified', { 'cgroup.controllers': '', [`${scope}/cgroup.events`]: 'populated 1\nfrozen 0\n' });
+    assert.equal(cgroupPopulated(scope, unified)(), true);
+    writeFileSync(join(unified, scope, 'cgroup.events'), 'populated 0\nfrozen 0\n');
+    assert.equal(cgroupPopulated(scope, unified)(), false);
+    assert.equal(cgroupPopulated(`${scope}-gone`, unified)(), false, 'a removed v2 cgroup is empty');
+    const hybrid = layout('hybrid', { 'unified/cgroup.controllers': '', [`unified${scope}/cgroup.events`]: 'populated 1\n' });
+    assert.equal(cgroupPopulated(scope, hybrid)(), true);
+    // cgroup v1 has no cgroup.events: the systemd hierarchy's process list answers instead.
+    const v1 = layout('v1', { 'systemd/cgroup.procs': '1\n', [`systemd${scope}/cgroup.procs`]: '4242\n' });
+    assert.equal(cgroupPopulated(scope, v1)(), true);
+    writeFileSync(join(v1, 'systemd', scope, 'cgroup.procs'), '');
+    assert.equal(cgroupPopulated(scope, v1)(), false);
+    assert.equal(cgroupPopulated(scope, layout('none', { 'other/x': '' }))(), undefined, 'no layout to read: unknown, never empty');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
