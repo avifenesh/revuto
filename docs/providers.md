@@ -27,11 +27,15 @@ spawned the CLI in. So on Linux with a systemd user manager, each native CLI run
 and each review git command gets its own transient scope,
 `revuto-<runner>-<pid>-<id>.scope`. A cgroup holds every descendant, whatever it
 does with sessions or parents. When the run ends, normally, on a timeout, a
-cancel or a failed start, revuto stops the scope: SIGTERM, then SIGKILL two
-seconds later. The scope is bound to the unit revuto runs in (`BindsTo=` and
-`Before=`), so stopping or crashing the daemon stops it too, after the daemon's
-own shutdown has run. Its `RuntimeMaxSec` is the run's timeout plus a minute, so
-systemd ends the run even if revuto's own timer never fires. Review git runs with
+cancel or a failed start, revuto signals the whole scope (`systemctl kill`):
+SIGTERM, then SIGKILL two seconds later, until the cgroup is empty. It never
+waits on a stop job, which during a daemon stop is queued behind the daemon's
+own. The scope is bound to the unit revuto runs in (`BindsTo=` and `Before=`), so
+stopping or crashing the daemon stops it too, after the daemon's own shutdown has
+run. Its `RuntimeMaxSec` is the run's timeout plus a minute, so systemd ends the
+run even if revuto's own timer never fires. Arguments reach the command verbatim:
+revuto turns off systemd-run's `${VAR}` expansion (`--expand-environment=no`,
+systemd 254 and later; earlier versions never expand). Review git runs with
 automatic maintenance in the foreground (`gc.autoDetach=false`), so `git gc
 --auto` never detaches into a session of its own.
 

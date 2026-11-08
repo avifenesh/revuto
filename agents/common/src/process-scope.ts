@@ -9,11 +9,16 @@
  * On Linux with a systemd user manager each process revuto starts for a run is
  * placed in its own transient scope unit, a cgroup. The kernel keeps every
  * descendant in that cgroup whatever it does with sessions, process groups or
- * parents, and stopping the scope ends all of them: SIGTERM, then SIGKILL after
- * the grace. The scope is bound to the unit revuto itself runs in (revuto.service
- * for the daemon), so stopping or crashing the daemon stops it too, after the
- * daemon's own shutdown has run. `RuntimeMaxSec` bounds a run's processes even if
- * revuto's own timer never fires.
+ * parents. When the run ends revuto signals the whole scope, SIGTERM and then
+ * SIGKILL after the grace, until the cgroup is empty. It signals with
+ * `systemctl kill` rather than queueing a stop job: while the daemon itself is
+ * being stopped, a scope's stop job waits for the daemon's, so waiting on one
+ * from the daemon's shutdown would deadlock. The scope is bound to the unit
+ * revuto itself runs in (revuto.service for the daemon), so stopping or crashing
+ * the daemon stops it too, after the daemon's own shutdown has run.
+ * `RuntimeMaxSec` bounds a run's processes even if revuto's own timer never
+ * fires. Arguments reach the command verbatim: systemd-run's `${VAR}` expansion
+ * is off.
  *
  * Without a reachable systemd user manager (macOS, Windows, a container without
  * systemd) the child's process group is the handle, as before, and it is now also
@@ -22,6 +27,7 @@
  */
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { accessSync, constants, readFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -37,6 +43,11 @@ interface ScopeTools {
   readonly bus: NodeJS.ProcessEnv;
   /** `-p` properties binding each scope to revuto's own unit, when that unit is in the user manager. */
   readonly bind: readonly string[];
+  /**
+   * `--expand-environment=no` where systemd-run has it (v254+). It expands
+   * `${VAR}` in a scope's command line by default since v258, and never did before v254.
+   */
+  readonly literal: readonly string[];
 }
 
 let tools: Promise<ScopeTools | undefined> | undefined;
@@ -69,11 +80,11 @@ function executable(path: string): boolean {
   try { accessSync(path, constants.X_OK); return true; } catch { return false; }
 }
 
-function run(file: string, args: readonly string[], env: NodeJS.ProcessEnv, timeout: number): Promise<{ code: number; stderr: string }> {
+function run(file: string, args: readonly string[], env: NodeJS.ProcessEnv, timeout: number): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolveRun) => {
-    execFile(file, args, { env, timeout, encoding: 'utf8' }, (error, _stdout, stderr) => {
+    execFile(file, args, { env, timeout, encoding: 'utf8' }, (error, stdout, stderr) => {
       const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : -1) : 0;
-      resolveRun({ code, stderr: String(stderr ?? '').trim() });
+      resolveRun({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '').trim() });
     });
   });
 }
@@ -90,14 +101,17 @@ async function probe(): Promise<ScopeTools | undefined> {
   let unit: string | undefined;
   try { unit = ownUserUnit(readFileSync('/proc/self/cgroup', 'utf8'), process.getuid?.()); } catch { unit = undefined; }
   const binds = unit ? [['-p', `BindsTo=${unit}`, '-p', `Before=${unit}`], []] : [[]];
+  // Option parsing comes first, so an unknown option fails here without starting anything.
+  const literal = (await run(systemdRun, ['--expand-environment=no', '--version'], { PATH: process.env.PATH }, 10_000)).code === 0
+    ? ['--expand-environment=no'] : [];
   let failure = '';
   for (const bind of binds) {
     // The same command shape a run uses, so a scope that cannot start is found here.
-    const result = await run(systemdRun, ['--user', '--scope', '--quiet', '--collect', ...bind, '--', env, '-u', 'XDG_RUNTIME_DIR', 'true'],
+    const result = await run(systemdRun, ['--user', '--scope', '--quiet', '--collect', ...literal, ...bind, '--', env, '-u', 'XDG_RUNTIME_DIR', 'true'],
       { PATH: process.env.PATH, ...bus }, 10_000);
     if (result.code === 0) {
       if (unit && !bind.length) console.error(`[review] review scopes are not bound to ${unit} (${failure.split('\n')[0]}): a crash of this process leaves them running`);
-      return { systemdRun, systemctl, env, bus, bind };
+      return { systemdRun, systemctl, env, bus, bind, literal };
     }
     failure = result.stderr || `exit ${result.code}`;
   }
@@ -117,9 +131,9 @@ export interface RunProcess {
   /** Signal every process of the run: the whole scope, and the child's process group right away. */
   signal(signal: NodeJS.Signals): void;
   /**
-   * End whatever the run left behind, once the child has exited: stop the scope
-   * (SIGTERM, then SIGKILL after the grace) and wait for it, or SIGKILL the
-   * child's process group on the fallback. Never rejects.
+   * End whatever the run left behind, once the child has exited: signal the
+   * scope (SIGTERM, then SIGKILL after the grace) until its cgroup is empty, or
+   * SIGKILL the child's process group on the fallback. Never rejects.
    */
   reap(): Promise<void>;
 }
@@ -159,30 +173,64 @@ export async function spawnRunProcess(command: string, args: readonly string[], 
   const added = BUS_KEYS.filter((key) => env[key] === undefined && scope.bus[key] !== undefined);
   const props = ['-p', `TimeoutStopSec=${KILL_GRACE_MS}ms`, ...scope.bind,
     ...(runtimeMaxMs && runtimeMaxMs > 0 ? ['-p', `RuntimeMaxSec=${Math.ceil(runtimeMaxMs / 1000)}s`] : [])];
-  const argv = ['--user', '--scope', '--quiet', '--collect', `--unit=${unit}`, `--description=revuto ${label} run (pid ${process.pid})`, ...props, '--',
+  const argv = ['--user', '--scope', '--quiet', '--collect', ...scope.literal, `--unit=${unit}`, `--description=revuto ${label} run (pid ${process.pid})`, ...props, '--',
     ...(added.length ? [scope.env, ...added.flatMap((key) => ['-u', key])] : []), resolved, ...args];
   // systemd-run moves itself into the scope and then execs the command, so the
   // child keeps this pid, its stdio and its cwd, and leads its own process group.
   const child = spawn(scope.systemdRun, argv, { ...spawnOptions, env: { ...env, ...Object.fromEntries(added.map((key) => [key, scope.bus[key]])) }, detached: true });
-  const systemctl = (verb: string[], timeout: number) => run(scope.systemctl, ['--user', ...verb, unit], { PATH: process.env.PATH, ...scope.bus }, timeout);
-  let stopped: Promise<void> | undefined;
+  const systemctl = (verb: string[], timeout = 10_000) => run(scope.systemctl, ['--user', ...verb, unit], { PATH: process.env.PATH, ...scope.bus }, timeout);
+  let reaped: Promise<void> | undefined;
   return {
     child,
     unit,
     signal: (signal) => {
       killGroup(child, signal);
-      void systemctl(['kill', `--signal=${signal}`], 10_000);
+      void systemctl(['kill', `--signal=${signal}`]);
     },
     reap: () => {
-      stopped ??= systemctl(['stop'], KILL_GRACE_MS + 15_000).then((result) => {
-        // 5: the scope is already gone, because nothing was left in it.
-        if (result.code === 0 || result.code === 5) return;
-        console.error(`[review] could not stop ${unit}: ${result.stderr || `exit ${result.code}`}`);
+      reaped ??= reapScope(systemctl).catch((error: unknown) => {
+        console.error(`[review] could not empty ${unit}: ${error instanceof Error ? error.message : String(error)}`);
         try { killGroup(child, 'SIGKILL'); } catch { /* best effort: the run is over */ }
       });
-      return stopped;
+      return reaped;
     },
   };
+}
+
+/** How often reap checks whether a scope's cgroup has emptied. */
+const REAP_POLL_MS = 50;
+/** After SIGKILL the kernel needs no grace, only time to tear the processes down. */
+const SIGKILL_SETTLE_MS = 5000;
+
+/**
+ * Signal what is left in a scope until its cgroup is empty. A scope whose last
+ * process exited is already gone (`--collect`), which is the common case.
+ */
+async function reapScope(systemctl: (verb: string[], timeout?: number) => Promise<{ code: number; stdout: string }>): Promise<void> {
+  // Empty, or a failure (not loaded), when the scope is already gone.
+  const shown = await systemctl(['show', '--value', '--property=ControlGroup']);
+  const cgroup = shown.code === 0 ? shown.stdout.trim() : '';
+  if (!cgroup) return;
+  const events = `/sys/fs/cgroup${cgroup}/cgroup.events`;
+  // cgroup v2 reports emptiness; without it (cgroup v1) each signal gets its full wait.
+  const populated = (): boolean | undefined => {
+    try { return /^populated 1$/m.test(readFileSync(events, 'utf8')); } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT' ? false : undefined;
+    }
+  };
+  const emptied = async (ms: number): Promise<boolean> => {
+    for (let waited = 0; ; waited += REAP_POLL_MS) {
+      const state = populated();
+      if (state === false) return true;
+      if (waited >= ms) return false;
+      await delay(REAP_POLL_MS);
+    }
+  };
+  if (populated() === false) return;
+  await systemctl(['kill', '--signal=SIGTERM']);
+  if (await emptied(KILL_GRACE_MS)) return;
+  await systemctl(['kill', '--signal=SIGKILL']);
+  if (!(await emptied(SIGKILL_SETTLE_MS)) && populated() !== undefined) throw new Error('processes remain after SIGKILL');
 }
 
 /** Signal the child's process group (the child itself on Windows). */

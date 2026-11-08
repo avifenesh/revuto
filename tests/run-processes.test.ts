@@ -7,7 +7,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -36,6 +36,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 writeFileSync(process.argv[1] + '.cli', String(process.pid));
+writeFileSync(process.argv[1] + '.args', JSON.stringify(args));
 if (args[0] === 'debug' && args[1] === 'models') { console.log(JSON.stringify({ models: [{ slug: 'm' }] })); process.exit(0); }
 const runner = args[0] === 'exec' ? 'codex' : args.includes('--setting-sources') ? 'claude' : 'agy';
 const prompt = runner === 'agy' ? args[args.indexOf('-p') + 1] : readFileSync(0, 'utf8');
@@ -167,6 +168,49 @@ await withReviewWorktree(JSON.parse(process.env.TEST_CONFIG),'a/repo',7,(path,ca
     await assertGone(pids);
   } finally {
     if (child.exitCode === null) child.kill('SIGKILL');
+    cleanup(command, dir);
+  }
+});
+
+test('arguments reach the CLI verbatim through the scope', { skip: process.platform === 'win32' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-reap-literal-'));
+  const command = fakeCli(dir);
+  // AGY gets the prompt, PR text included, as an argument; systemd-run would expand these.
+  const prompt = 'review ${HOME} $PATH $$ ${REVUTO_UNSET_VARIABLE} \\$x';
+  try {
+    await runAgyCli({ spec: specs(command).agy, cwd: dir, prompt });
+    const args = JSON.parse(readFileSync(`${command}.args`, 'utf8')) as string[];
+    assert.equal(args[args.indexOf('-p') + 1], prompt);
+  } finally { cleanup(command, dir); }
+});
+
+test('stopping the daemon unit ends a review promptly, after the daemon cleaned up', { skip: !scopes && NO_SCOPES }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-reap-unit-'));
+  const command = fakeCli(dir);
+  const cfg = { vaultPath: dir, review: { workspaceDir: join(dir, 'workspaces'), maxConcurrent: 1, maxConcurrentPerRepo: 1 } } as ReviewerConfig;
+  const worker = join(dir, 'worker.mjs');
+  writeFileSync(worker, `import {withReviewWorktree} from ${JSON.stringify(new URL('../agents/common/src/review-worktree.ts', import.meta.url).href)};
+import {runAgyCli} from ${JSON.stringify(new URL('../agents/common/src/agy-review.ts', import.meta.url).href)};
+await withReviewWorktree(JSON.parse(process.env.TEST_CONFIG),'a/repo',7,(path,cache,signal)=>runAgyCli({spec:JSON.parse(process.env.TEST_SPEC),cwd:process.env.TEST_DIR,prompt:'hang',signal}));`);
+  // The daemon runs as a service, as revuto.service does, so its scopes bind to that unit.
+  const unit = `revuto-test-daemon-${process.pid}-${Date.now()}.service`;
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, TEST_CONFIG: JSON.stringify(cfg), TEST_SPEC: JSON.stringify(specs(command).agy), TEST_DIR: dir };
+  const setenv = Object.entries(env).flatMap(([k, v]) => (v === undefined ? [] : [`--setenv=${k}=${v}`]));
+  const started = spawnSync('systemd-run', ['--user', '--quiet', '--collect', `--unit=${unit}`, `--working-directory=${process.cwd()}`, ...setenv,
+    '--', process.execPath, '--import', 'tsx', worker], { encoding: 'utf8' });
+  try {
+    assert.equal(started.status, 0, started.stderr);
+    const pids = await recorded(command);
+    const t0 = Date.now();
+    const stopped = spawnSync('systemctl', ['--user', 'stop', unit], { encoding: 'utf8', timeout: 60_000 });
+    const elapsed = Date.now() - t0;
+    assert.equal(stopped.status, 0, stopped.stderr);
+    // The daemon force-exits 15 s after SIGTERM: a stop that waits on the scope's stop job only ends there.
+    assert.ok(elapsed < 12_000, `the daemon unit took ${elapsed} ms to stop`);
+    assert.deepEqual(readdirSync(join(cfg.review.workspaceDir, '.review-runs')), [], 'the daemon removed its review worktree itself');
+    await assertGone(pids);
+  } finally {
+    spawnSync('systemctl', ['--user', 'stop', unit], { stdio: 'ignore', timeout: 60_000 });
     cleanup(command, dir);
   }
 });
