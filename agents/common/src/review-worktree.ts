@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { hostname } from 'node:os';
 import type { ReviewerConfig } from './config.js';
-import { KILL_GRACE_MS, spawnRunProcess } from './process-scope.js';
+import { KILL_GRACE_MS, spawnRunProcess, unbindScopes } from './process-scope.js';
 
 export function reviewCachePath(config: ReviewerConfig, repo: string): string {
   return resolve(config.review.workspaceDir, '.review-cache', `${Buffer.from(repo).toString('base64url')}.git`);
@@ -90,6 +90,8 @@ function installShutdown(): void {
   for (const [signal, code] of [['SIGINT',130],['SIGTERM',143]] as const) {
     process.on(signal, () => {
       if (stopping) return; stopping = true;
+      // The daemon's unit may be stopping now: cleanup git must start unbound.
+      unbindScopes();
       for (const entry of active) entry.controller.abort(new Error(`Review cancelled by ${signal}`));
       const forceExit = setTimeout(() => process.exit(code), 15000);
       Promise.allSettled([...active].map(e => e.done)).then(() => { clearTimeout(forceExit); process.exit(code); });

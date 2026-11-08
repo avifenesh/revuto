@@ -14,7 +14,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelSpec, ReviewerConfig } from '../agents/common/src/config.js';
 import { runAgyCli } from '../agents/common/src/agy-review.js';
-import { reviewGit } from '../agents/common/src/review-worktree.js';
+import { reviewCachePath, reviewGit } from '../agents/common/src/review-worktree.js';
+import { agyEnvironment } from '../agents/common/src/agy-review.js';
+import { codexEnvironment } from '../agents/common/src/codex-review.js';
 import { cgroupPopulated, ownUserUnit } from '../agents/common/src/process-scope.js';
 
 /** Whether this host can put a process in a systemd user scope, probed without revuto's code. */
@@ -37,6 +39,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 writeFileSync(process.argv[1] + '.cli', String(process.pid));
 writeFileSync(process.argv[1] + '.args', JSON.stringify(args));
+writeFileSync(process.argv[1] + '.env', JSON.stringify(Object.keys(process.env).sort()));
 if (args[0] === 'debug' && args[1] === 'models') { console.log(JSON.stringify({ models: [{ slug: 'm' }] })); process.exit(0); }
 const runner = args[0] === 'exec' ? 'codex' : args.includes('--setting-sources') ? 'claude' : 'agy';
 const prompt = runner === 'agy' ? args[args.indexOf('-p') + 1] : readFileSync(0, 'utf8');
@@ -45,7 +48,7 @@ const sameGroup = prompt.includes('same-group');
 const marker = process.argv[1] + '.pids';
 const keep = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{});const sid=Number(require('fs').readFileSync('/proc/self/stat','utf8').split(') ')[1].split(' ')[3]);require('fs').writeFileSync(process.argv[1],JSON.stringify([process.pid,sid]));setInterval(()=>{},1000)", marker], { detached: !sameGroup, stdio: 'ignore' });
 keep.unref();
-for (let i = 0; !existsSync(marker) && i < 250; i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+for (let i = 0; !existsSync(marker) && i < 1500; i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
 if (prompt.includes('hang')) setInterval(() => {}, 1000);
 else {
   const verdict = { decision: 'skip_review', reason: 'no concerns', body: '', comments: [] };
@@ -76,7 +79,8 @@ const running = (pid: number) => {
 /** The descendant the fake recorded, after checking which session it runs in. */
 async function recorded(command: string, ownSession = true): Promise<number[]> {
   const marker = `${command}.pids`;
-  for (let i = 0; !existsSync(marker) && i < 250; i++) await delay(20);
+  // Bounds, not speed claims: a worker under a service starts tsx on a loaded host.
+  for (let i = 0; !existsSync(marker) && i < 1500; i++) await delay(20);
   assert.ok(existsSync(marker), 'the fake CLI started its descendant');
   const [pid, sid] = JSON.parse(readFileSync(marker, 'utf8')) as [number, number];
   if (ownSession) assert.equal(sid, pid, 'the descendant leads a session of its own, outside the CLI process group');
@@ -86,7 +90,7 @@ async function recorded(command: string, ownSession = true): Promise<number[]> {
 
 /** Bounded: the reap may land a moment after the run settles, never minutes. */
 async function assertGone(pids: number[]): Promise<void> {
-  for (let i = 0; pids.some(running) && i < 150; i++) await delay(20);
+  for (let i = 0; pids.some(running) && i < 500; i++) await delay(20);
   for (const pid of pids) assert.equal(running(pid), false, `descendant ${pid} outlived the run`);
 }
 
@@ -94,7 +98,7 @@ async function assertGone(pids: number[]): Promise<void> {
 function cleanup(command: string, dir: string): void {
   const read = (file: string) => { try { return JSON.parse(readFileSync(file, 'utf8')) as unknown; } catch { return undefined; } };
   const pids = [read(`${command}.cli`), (read(`${command}.pids`) as number[] | undefined)?.[0]].filter((p): p is number => typeof p === 'number');
-  for (const pid of pids) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+  for (const pid of pids) if (running(pid)) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -192,6 +196,9 @@ test('stopping the daemon unit ends a review promptly, after the daemon cleaned 
   writeFileSync(worker, `import {withReviewWorktree} from ${JSON.stringify(new URL('../agents/common/src/review-worktree.ts', import.meta.url).href)};
 import {runAgyCli} from ${JSON.stringify(new URL('../agents/common/src/agy-review.ts', import.meta.url).href)};
 await withReviewWorktree(JSON.parse(process.env.TEST_CONFIG),'a/repo',7,(path,cache,signal)=>runAgyCli({spec:JSON.parse(process.env.TEST_SPEC),cwd:process.env.TEST_DIR,prompt:'hang',signal}));`);
+  // A real cache, so the daemon's cleanup runs review git while its unit is stopping.
+  mkdirSync(join(cfg.review.workspaceDir, '.review-cache'), { recursive: true });
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', reviewCachePath(cfg, 'a/repo')]).status, 0);
   // The daemon runs as a service, as revuto.service does, so its scopes bind to that unit.
   const unit = `revuto-test-daemon-${process.pid}-${Date.now()}.service`;
   const env = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, TEST_CONFIG: JSON.stringify(cfg), TEST_SPEC: JSON.stringify(specs(command).agy), TEST_DIR: dir };
@@ -207,12 +214,34 @@ await withReviewWorktree(JSON.parse(process.env.TEST_CONFIG),'a/repo',7,(path,ca
     assert.equal(stopped.status, 0, stopped.stderr);
     // The daemon force-exits 15 s after SIGTERM: a stop that waits on the scope's stop job only ends there.
     assert.ok(elapsed < 12_000, `the daemon unit took ${elapsed} ms to stop`);
-    assert.deepEqual(readdirSync(join(cfg.review.workspaceDir, '.review-runs')), [], 'the daemon removed its review worktree itself');
+    assert.deepEqual(readdirSync(join(cfg.review.workspaceDir, '.review-runs')), [], 'the daemon removed its review worktree and manifest itself');
     await assertGone(pids);
   } finally {
     spawnSync('systemctl', ['--user', 'stop', unit], { stdio: 'ignore', timeout: 60_000 });
     cleanup(command, dir);
   }
+});
+
+test('a native CLI sees exactly the environment revuto built for it', { skip: process.platform === 'win32' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-reap-env-'));
+  const command = fakeCli(dir);
+  const keys = async (runner: 'agy' | 'codex' | 'claude') => {
+    await runAgyCli({ spec: specs(command)[runner], cwd: dir, prompt: 'review' });
+    return JSON.parse(readFileSync(`${command}.env`, 'utf8')) as string[];
+  };
+  try {
+    assert.deepEqual(await keys('agy'), Object.keys(agyEnvironment('home', dir)).sort());
+    assert.deepEqual(await keys('codex'), Object.keys(codexEnvironment('home', specs(command).codex, process.env, 'scratch')).sort());
+    // Claude's env also takes keys from ~/.claude/settings.json; the systemd ones must stay out.
+    for (const key of ['INVOCATION_ID', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']) assert.ok(!(await keys('claude')).includes(key), key);
+  } finally { cleanup(command, dir); }
+});
+
+test('a native CLI that is not installed fails to start with ENOENT', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'revuto-reap-missing-'));
+  try {
+    await assert.rejects(runAgyCli({ spec: { api: 'agy', baseURL: 'agy://local', model: 'fake', command: join(dir, 'no-such-cli') }, cwd: dir, prompt: 'review' }), /ENOENT/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('review git never detaches automatic maintenance into a session of its own', async () => {

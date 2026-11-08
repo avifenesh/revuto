@@ -15,20 +15,23 @@
  * being stopped, a scope's stop job waits for the daemon's, so waiting on one
  * from the daemon's shutdown would deadlock. The scope is bound to the unit
  * revuto itself runs in (revuto.service for the daemon), so stopping or crashing
- * the daemon stops it too, after the daemon's own shutdown has run.
- * `RuntimeMaxSec` bounds a run's processes even if revuto's own timer never
- * fires. Arguments reach the command verbatim: systemd-run's `${VAR}` expansion
- * is off.
+ * the daemon stops it too, after the daemon's own shutdown has run. Once that
+ * shutdown starts, new scopes are no longer bound: systemd refuses to start a
+ * unit bound to one that is stopping, and the shutdown's own cleanup still runs
+ * git. `RuntimeMaxSec` bounds a run's processes even if revuto's own timer never
+ * fires. Arguments reach the command verbatim (systemd-run's `${VAR}` expansion is
+ * off), and so does the environment: the bus address systemd-run needs and the
+ * INVOCATION_ID it sets are put back as the caller had them.
  *
- * Without a reachable systemd user manager (macOS, Windows, a container without
- * systemd) the child's process group is the handle, as before, and it is now also
+ * Without a reachable systemd user manager (a warning, once) and on macOS and
+ * Windows, the child's process group is the handle, as before, and it is now also
  * killed when the child exits. A descendant that starts its own session can
  * outlive the run there.
  */
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 /** SIGTERM to SIGKILL, for the scope and for the process-group fallback. */
@@ -43,6 +46,8 @@ interface ScopeTools {
   readonly bus: NodeJS.ProcessEnv;
   /** `-p` properties binding each scope to revuto's own unit, when that unit is in the user manager. */
   readonly bind: readonly string[];
+  /** Whether scopes take RuntimeMaxSec (systemd 244 and later). */
+  readonly runtimeMax: boolean;
   /**
    * `--expand-environment=no` where systemd-run has it (v254+). It expands
    * `${VAR}` in a scope's command line by default since v258, and never did before v254.
@@ -51,6 +56,17 @@ interface ScopeTools {
 }
 
 let tools: Promise<ScopeTools | undefined> | undefined;
+let unbound = false;
+
+/**
+ * Stop binding new scopes to revuto's unit. Call it when revuto's shutdown
+ * starts: the unit is then stopping, and systemd refuses a scope bound to it, so
+ * the shutdown's own cleanup (review git) could not start. Scopes already
+ * running keep their binding.
+ */
+export function unbindScopes(): void {
+  unbound = true;
+}
 
 /** Whether run processes get a systemd scope here, probed once per process. */
 function processScopes(): Promise<ScopeTools | undefined> {
@@ -67,17 +83,17 @@ export function ownUserUnit(cgroup: string, uid: number | undefined): string | u
   return parts.slice(manager + 1).reverse().find((part) => /\.(service|scope)$/.test(part));
 }
 
-/** The executable a spawn would run: a path as given (against `cwd`), a bare name through PATH. */
+/** The executable a spawn would run: a path as given, a bare name through PATH; relative ones against `cwd`. */
 function which(name: string, path = process.env.PATH ?? '', cwd = process.cwd()): string | undefined {
   if (name.includes('/')) {
-    const file = isAbsolute(name) ? name : resolve(cwd, name);
+    const file = resolve(cwd, name);
     return executable(file) ? file : undefined;
   }
-  return path.split(delimiter).filter(Boolean).map((dir) => join(dir, name)).find(executable);
+  return path.split(delimiter).filter(Boolean).map((dir) => resolve(cwd, dir, name)).find(executable);
 }
 
 function executable(path: string): boolean {
-  try { accessSync(path, constants.X_OK); return true; } catch { return false; }
+  try { accessSync(path, constants.X_OK); return statSync(path).isFile(); } catch { return false; }
 }
 
 function run(file: string, args: readonly string[], env: NodeJS.ProcessEnv, timeout: number): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -100,23 +116,30 @@ async function probe(): Promise<ScopeTools | undefined> {
   }
   let unit: string | undefined;
   try { unit = ownUserUnit(readFileSync('/proc/self/cgroup', 'utf8'), process.getuid?.()); } catch { unit = undefined; }
-  const binds = unit ? [['-p', `BindsTo=${unit}`, '-p', `Before=${unit}`], []] : [[]];
+  const bindProps = unit ? ['-p', `BindsTo=${unit}`, '-p', `Before=${unit}`] : [];
   // Option parsing comes first, so an unknown option fails here without starting anything.
   const literal = (await run(systemdRun, ['--expand-environment=no', '--version'], { PATH: process.env.PATH }, 10_000)).code === 0
     ? ['--expand-environment=no'] : [];
+  // The shape a run uses, so a scope that cannot start is found here, not in a review:
+  // binding first, then RuntimeMaxSec (scopes take it since systemd 244).
+  const shapes = [[true, true], [false, true], [true, false], [false, false]].filter(([bind]) => unit || !bind);
   let failure = '';
-  for (const bind of binds) {
-    // The same command shape a run uses, so a scope that cannot start is found here.
-    const result = await run(systemdRun, ['--user', '--scope', '--quiet', '--collect', ...literal, ...bind, '--', env, '-u', 'XDG_RUNTIME_DIR', 'true'],
-      { PATH: process.env.PATH, ...bus }, 10_000);
+  for (const [bind, runtimeMax] of shapes) {
+    const result = await run(systemdRun, ['--user', '--scope', '--quiet', '--collect', ...literal, ...scopeProps(bind ? bindProps : [], runtimeMax ? 60_000 : undefined),
+      '--', env, '-u', 'XDG_RUNTIME_DIR', '-u', 'INVOCATION_ID', 'true'], { PATH: process.env.PATH, ...bus }, 10_000);
     if (result.code === 0) {
-      if (unit && !bind.length) console.error(`[review] review scopes are not bound to ${unit} (${failure.split('\n')[0]}): a crash of this process leaves them running`);
-      return { systemdRun, systemctl, env, bus, bind, literal };
+      if (unit && !bind) console.error(`[review] review scopes are not bound to ${unit} (${failure.split('\n')[0]}): a crash of this process leaves them running`);
+      return { systemdRun, systemctl, env, bus, bind: bind ? bindProps : [], runtimeMax, literal };
     }
     failure = result.stderr || `exit ${result.code}`;
   }
   warn(failure);
   return undefined;
+}
+
+function scopeProps(bind: readonly string[], runtimeMaxMs: number | undefined): string[] {
+  return ['-p', `TimeoutStopSec=${KILL_GRACE_MS}ms`, ...bind,
+    ...(runtimeMaxMs && runtimeMaxMs > 0 ? ['-p', `RuntimeMaxSec=${Math.ceil(runtimeMaxMs / 1000)}s`] : [])];
 }
 
 function warn(reason: string): void {
@@ -171,10 +194,12 @@ export async function spawnRunProcess(command: string, args: readonly string[], 
   }
   const unit = `revuto-${label.replace(/[^A-Za-z0-9_-]/g, '_')}-${process.pid}-${randomBytes(4).toString('hex')}.scope`;
   const added = BUS_KEYS.filter((key) => env[key] === undefined && scope.bus[key] !== undefined);
-  const props = ['-p', `TimeoutStopSec=${KILL_GRACE_MS}ms`, ...scope.bind,
-    ...(runtimeMaxMs && runtimeMaxMs > 0 ? ['-p', `RuntimeMaxSec=${Math.ceil(runtimeMaxMs / 1000)}s`] : [])];
+  const props = scopeProps(unbound ? [] : scope.bind, scope.runtimeMax ? runtimeMaxMs : undefined);
+  // systemd-run sets INVOCATION_ID to the scope's; the command gets the caller's back, or none.
+  const restore = [...added.flatMap((key) => ['-u', key]),
+    ...(env.INVOCATION_ID === undefined ? ['-u', 'INVOCATION_ID'] : [`INVOCATION_ID=${env.INVOCATION_ID}`])];
   const argv = ['--user', '--scope', '--quiet', '--collect', ...scope.literal, `--unit=${unit}`, `--description=revuto ${label} run (pid ${process.pid})`, ...props, '--',
-    ...(added.length ? [scope.env, ...added.flatMap((key) => ['-u', key])] : []), resolved, ...args];
+    scope.env, ...restore, resolved, ...args];
   // systemd-run moves itself into the scope and then execs the command, so the
   // child keeps this pid, its stdio and its cwd, and leads its own process group.
   const child = spawn(scope.systemdRun, argv, { ...spawnOptions, env: { ...env, ...Object.fromEntries(added.map((key) => [key, scope.bus[key]])) }, detached: true });
@@ -184,8 +209,8 @@ export async function spawnRunProcess(command: string, args: readonly string[], 
     child,
     unit,
     signal: (signal) => {
-      killGroup(child, signal);
       void systemctl(['kill', `--signal=${signal}`]);
+      try { killGroup(child, signal); } catch { /* the scope signal above covers the group */ }
     },
     reap: () => {
       reaped ??= reapScope(systemctl).catch((error: unknown) => {

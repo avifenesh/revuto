@@ -103,4 +103,6 @@ Each native reviewer CLI and review git command runs in a transient scope of the
 user manager, `revuto-<runner>-<pid>-<id>.scope`, bound to the daemon's unit and
 stopped when its run ends (see [Native runner processes](providers.md#native-runner-processes)).
 `systemctl --user list-units 'revuto-*.scope'` shows the runs in flight; their
-memory and CPU count under those scopes, not under `revuto.service`.
+memory and CPU count under those scopes, not under `revuto.service`, and cgroup
+limits set on `revuto.service` (`MemoryMax=`, `CPUQuota=`, `TasksMax=`,
+`IPAddressDeny=`) do not reach them.
