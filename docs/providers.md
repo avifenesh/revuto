@@ -19,6 +19,27 @@ Native runners must come before HTTP models in a chain. `revuto doctor` fails on
 when a role has no working model; a dead model with a working one in its chain
 is a `warn`.
 
+## Native runner processes
+
+A native CLI runs commands the model picks, and it may start them in a session
+of their own (Codex's sandbox helper does), outside the process group revuto
+spawned the CLI in. So on Linux with a systemd user manager, each native CLI run
+and each review git command gets its own transient scope,
+`revuto-<runner>-<pid>-<id>.scope`. A cgroup holds every descendant, whatever it
+does with sessions or parents. When the run ends, normally, on a timeout, a
+cancel or a failed start, revuto stops the scope: SIGTERM, then SIGKILL two
+seconds later. The scope is bound to the unit revuto runs in (`BindsTo=` and
+`Before=`), so stopping or crashing the daemon stops it too, after the daemon's
+own shutdown has run. Its `RuntimeMaxSec` is the run's timeout plus a minute, so
+systemd ends the run even if revuto's own timer never fires. Review git runs with
+automatic maintenance in the foreground (`gc.autoDetach=false`), so `git gc
+--auto` never detaches into a session of its own.
+
+Without a reachable user manager (macOS, Windows, a container without systemd),
+revuto logs a warning once and falls back to the CLI's process group, killed
+when the run ends. A command that starts its own session can outlive its run
+there.
+
 ## Claude Code
 
 Revuto runs `claude -p` with streamed JSON, schema validation, restricted mode and
@@ -141,6 +162,12 @@ sub-agents, tool search, `apply_patch` and experimental tools off, and passes it
 as `model_catalog_json`. If the catalog cannot be read, the run fails. The model
 then sees only the sandboxed shell (`exec_command`, `write_stdin`). Any tool item Codex still reports counts toward
 `review.maxSteps`. Codex runs the review tiers only.
+
+Every model in the catalog asks for that shell (`shell_type: unified_exec`), and
+it runs a command in a background terminal: `exec_command` returns after its
+yield time while the command keeps running. Codex has no setting that bounds a
+command's runtime, and `codex exec` can exit with such a command still running.
+The run's scope ends it (see [Native runner processes](#native-runner-processes)).
 
 ### On a ChatGPT plan
 

@@ -1,48 +1,48 @@
-import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { hostname } from 'node:os';
 import type { ReviewerConfig } from './config.js';
+import { KILL_GRACE_MS, spawnRunProcess } from './process-scope.js';
 
 export function reviewCachePath(config: ReviewerConfig, repo: string): string {
   return resolve(config.review.workspaceDir, '.review-cache', `${Buffer.from(repo).toString('base64url')}.git`);
 }
 const runsDir = (config: ReviewerConfig) => resolve(config.review.workspaceDir, '.review-runs');
-export function killReviewChild(child: ReturnType<typeof spawn>, signal: NodeJS.Signals = 'SIGTERM'): void {
-  if (!child.pid) return;
-  // A POSIX process group can outlive its leader. Escalation remains necessary
-  // until stdio closes; callers clear their escalation timers on the close event.
-  try {
-    if (process.platform === 'win32') {
-      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
-    } else process.kill(-child.pid, signal);
-  }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
-}
+/**
+ * Git options every review git command runs with. Automatic maintenance (`git gc
+ * --auto`, which fetch starts) otherwise daemonizes into a session of its own and
+ * keeps running after the command returns; in the foreground it ends with it.
+ */
+export const REVIEW_GIT_OPTIONS = ['-c', 'gc.autoDetach=false', '-c', 'maintenance.autoDetach=false'] as const;
 
-export function reviewGit(args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; discard?: boolean } = {}): Promise<string> {
+export async function reviewGit(args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; discard?: boolean } = {}): Promise<string> {
   opts.signal?.throwIfAborted();
-  return new Promise((resolveGit, reject) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', ...opts.env };
-    for (const key of ['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES']) delete env[key];
-    const child = spawn('git', args, { cwd: opts.cwd, detached: process.platform !== 'win32',
-      env,
-      stdio: ['ignore', opts.discard ? 'ignore' : 'pipe', 'pipe'] });
-    let output = '', errors = '', timeout: ReturnType<typeof setTimeout> | undefined;
-    const abort = () => { killReviewChild(child); timeout = setTimeout(() => killReviewChild(child, 'SIGKILL'), 2000); };
-    opts.signal?.addEventListener('abort', abort, { once: true });
-    child.stdout?.setEncoding('utf8'); child.stdout?.on('data', s => { output += s; });
-    child.stderr!.setEncoding('utf8'); child.stderr!.on('data', (s: string) => { errors += s.slice(0, Math.max(0, 16000-errors.length)); });
-    child.on('error', error => { opts.signal?.removeEventListener('abort', abort); reject(error); });
-    child.on('close', code => {
-      opts.signal?.removeEventListener('abort', abort); if (timeout) clearTimeout(timeout);
-      if (opts.signal?.aborted) reject(opts.signal.reason);
-      else if (code !== 0) reject(new Error(`git ${args[0]} failed (${code}): ${errors}`));
-      else resolveGit(output);
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', ...opts.env };
+  for (const key of ['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES']) delete env[key];
+  // In a scope of its own (process-scope.ts), so nothing it starts outlives it.
+  const git = await spawnRunProcess('git', [...REVIEW_GIT_OPTIONS, ...args], { label: 'git', cwd: opts.cwd, env,
+    stdio: ['ignore', opts.discard ? 'ignore' : 'pipe', 'pipe'] });
+  const child = git.child;
+  try {
+    return await new Promise<string>((resolveGit, reject) => {
+      let output = '', errors = '', timeout: ReturnType<typeof setTimeout> | undefined;
+      const abort = () => { git.signal('SIGTERM'); timeout = setTimeout(() => git.signal('SIGKILL'), KILL_GRACE_MS); };
+      opts.signal?.addEventListener('abort', abort, { once: true });
+      child.stdout?.setEncoding('utf8'); child.stdout?.on('data', s => { output += s; });
+      child.stderr!.setEncoding('utf8'); child.stderr!.on('data', (s: string) => { errors += s.slice(0, Math.max(0, 16000-errors.length)); });
+      child.on('error', error => { opts.signal?.removeEventListener('abort', abort); reject(error); });
+      child.on('close', code => {
+        opts.signal?.removeEventListener('abort', abort); if (timeout) clearTimeout(timeout);
+        if (opts.signal?.aborted) reject(opts.signal.reason);
+        else if (code !== 0) reject(new Error(`git ${args[0]} failed (${code}): ${errors}`));
+        else resolveGit(output);
+      });
+      if (opts.signal?.aborted) abort();
     });
-    if (opts.signal?.aborted) abort();
-  });
+  } finally {
+    await git.reap();
+  }
 }
 
 interface Owner { repo: string; pid: number; host: string; workspace: string; cache: string; }

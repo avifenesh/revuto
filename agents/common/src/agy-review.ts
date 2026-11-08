@@ -6,14 +6,14 @@
  * final GitHub mutation still goes through Revuto's existing post_review tool.
  * Authentication is intentionally delegated to AGY's own OAuth/keyring flow.
  */
-import { execFile, spawn } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
 import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
-import { killReviewChild } from './review-worktree.js';
+import { KILL_GRACE_MS, spawnRunProcess } from './process-scope.js';
 import { claudeEnvironment, claudeSubscriptionIsolation } from './claude-env.js';
 import { rgScopeConfigPath } from './rg-scope.js';
 import { z } from 'zod';
@@ -35,6 +35,11 @@ const AGY_DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const AGY_DOCTOR_TIMEOUT_MS = 90 * 1000;
 /** `codex debug models` refreshes the catalog over the network on a login. */
 const CODEX_CATALOG_TIMEOUT_MS = 60 * 1000;
+/**
+ * A native run's scope stops on its own this long after revuto's timeout. It only
+ * backs up revuto's own timer, so it sits past that timer plus its kill grace.
+ */
+const SCOPE_RUNTIME_SLACK_MS = 60 * 1000;
 const execFileAsync = promisify(execFile);
 const AGY_MAX_STDOUT_CHARS = 16 * 1024 * 1024;
 const AGY_MAX_STDERR_CHARS = 16 * 1024;
@@ -341,7 +346,7 @@ interface ClaudeRun {
   readonly settings?: Record<string, unknown>;
 }
 
-function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string; catalogPath?: string; writableDirs?: string[]; readableDirs?: string[] }, claudeRun?: ClaudeRun, agyHome?: string): Promise<AgyCliRun> {
+async function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; schemaPath?: string; scratchHome?: string; catalogPath?: string; writableDirs?: string[]; readableDirs?: string[] }, claudeRun?: ClaudeRun, agyHome?: string): Promise<AgyCliRun> {
   const runner = runnerOf(opts.spec);
   const claude = runner === 'claude';
   const label = runner === 'claude' ? 'Claude CLI' : runner === 'codex' ? 'Codex CLI' : 'AGY';
@@ -351,10 +356,10 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   const maxOutputTokens = opts.maxOutputTokens ?? CLAUDE_DEFAULT_MAX_OUTPUT_TOKENS;
   const agyStdin = runner === 'agy' && opts.structuredOnly;
   if (claude && (![maxSteps, maxOutputTokens].every(n => Number.isSafeInteger(n) && n > 0))) {
-    return Promise.reject(new Error('Claude review step and output limits must be positive integers'));
+    throw new Error('Claude review step and output limits must be positive integers');
   }
   if (runner === 'codex' && !(Number.isSafeInteger(maxSteps) && maxSteps > 0)) {
-    return Promise.reject(new Error('Codex review step limit must be a positive integer'));
+    throw new Error('Codex review step limit must be a positive integer');
   }
   const args = runner === 'codex' ? codexExecArgs({
     spec: opts.spec,
@@ -393,42 +398,39 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
   }
   if (runner !== 'codex' && opts.schema) args.push('--json-schema', opts.schema);
   if (runner === 'agy' && opts.spec.permissionMode === 'bypass' && !opts.structuredOnly) args.push('--dangerously-skip-permissions');
-  let env: NodeJS.ProcessEnv;
-  try {
-    env = claude
-      ? {
-        ...claudeEnvironment(process.env, undefined, opts.spec.auth === 'subscription'),
-        ...claudeSubscriptionIsolation(claudeRun!.layout.configDir),
-        ...REVIEW_COMMAND_ENV,
-        CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens),
-      }
-      : runner === 'codex' ? codexEnvironment(codex!.codexHome, opts.spec, process.env, codex!.scratchHome) : agyEnvironment(agyHome!, opts.cwd);
-  } catch (err) {
-    return Promise.reject(err);
-  }
+  const env: NodeJS.ProcessEnv = claude
+    ? {
+      ...claudeEnvironment(process.env, undefined, opts.spec.auth === 'subscription'),
+      ...claudeSubscriptionIsolation(claudeRun!.layout.configDir),
+      ...REVIEW_COMMAND_ENV,
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens),
+    }
+    : runner === 'codex' ? codexEnvironment(codex!.codexHome, opts.spec, process.env, codex!.scratchHome) : agyEnvironment(agyHome!, opts.cwd);
   const promptOnStdin = runner !== 'agy' || agyStdin;
 
-  return new Promise((resolve, reject) => {
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(command, args, {
-        detached: process.platform !== 'win32',
-        cwd: opts.cwd,
-        env,
-        stdio: [promptOnStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-      });
-    } catch (err) {
-      reject(err);
-      return;
-    }
+  // The CLI and every command it starts run in one scope (process-scope.ts),
+  // reaped below whichever way the run ends.
+  const proc = await spawnRunProcess(command, args, {
+    label: runner,
+    cwd: opts.cwd,
+    env,
+    stdio: [promptOnStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    runtimeMaxMs: timeoutMs + SCOPE_RUNTIME_SLACK_MS,
+  });
+  try {
+    return await new Promise<AgyCliRun>((resolve, reject) => runNativeChild(proc.child, resolve, reject));
+  } finally {
+    await proc.reap();
+  }
 
+  function runNativeChild(child: ChildProcess, resolve: (run: AgyCliRun) => void, reject: (err: unknown) => void): void {
     let settled = false;
     let aborted = false;
     let pendingError: Error | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const terminate = () => {
-      killReviewChild(child);
-      killTimer ??= setTimeout(() => killReviewChild(child, 'SIGKILL'), 2000);
+      proc.signal('SIGTERM');
+      killTimer ??= setTimeout(() => proc.signal('SIGKILL'), KILL_GRACE_MS);
     };
     const abort = () => { aborted = true; terminate(); };
     opts.signal?.addEventListener('abort', abort, { once: true });
@@ -587,7 +589,7 @@ function spawnNativeCli(opts: RunAgyCliOptions, codex?: { codexHome: string; sch
       child.stdin!.end(agyStdin ? JSON.stringify({ event: 'user', message: { content: opts.prompt } }) + '\n' : opts.prompt);
     }
     if (opts.signal?.aborted) abort();
-  });
+  }
 }
 
 /** Small live probe used by `revuto doctor` without creating a review trace. */

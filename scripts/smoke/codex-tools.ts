@@ -12,17 +12,19 @@
  */
 import assert from 'node:assert/strict';
 import childProcess, { execFileSync, type ExecFileOptions, type SpawnOptions } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 
 // Model ids only: the value is printed and passed to Codex.
 const model = (process.argv[2] ?? 'gpt-6.1-sol').replace(/[^\w.:-]/g, '');
 const configuredCommand = process.env.REVUTO_CODEX_COMMAND?.trim() || 'codex';
-const command = configuredCommand.includes('/') ? resolve(configuredCommand) : configuredCommand;
+// Absolute, as the runner spawns it inside a systemd scope (process-scope.ts).
+const command = configuredCommand.includes('/') ? resolve(configuredCommand)
+  : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((d) => join(d, configuredCommand)).find((p) => existsSync(p)) ?? configuredCommand;
 const bodies: string[] = [];
 const routedStages = new Set<string>();
 const server = createServer((req, res) => {
@@ -85,7 +87,13 @@ try {
   Object.defineProperty(childProcess.execFile, promisify.custom, {
     value: (file: string, args: readonly string[], options: ExecFileOptions) => originalExecFileAsync(file, captureArgs(file, args), options),
   });
-  childProcess.spawn = ((file: string, args: readonly string[], options: SpawnOptions) => originalSpawn(file, captureArgs(file, args), options)) as typeof childProcess.spawn;
+  childProcess.spawn = ((file: string, args: readonly string[], options: SpawnOptions) => {
+    // A scoped run spawns systemd-run, which execs the command given after `--`
+    // (behind `env -u ...` when it removes the user bus address again).
+    const at = file === command ? -1 : args.indexOf(command);
+    if (at > 0 && args.lastIndexOf('--', at) >= 0) return originalSpawn(file, [...args.slice(0, at + 1), ...captureArgs(command, args.slice(at + 1))], options);
+    return originalSpawn(file, captureArgs(file, args), options);
+  }) as typeof childProcess.spawn;
   syncBuiltinESMExports();
   // Load after installing the process fixture so the compiled runner receives it.
   const { runAgyCli, nativeCommand } = await import(new URL('../../dist/agents/common/src/agy-review.js', import.meta.url).href) as typeof import('../../agents/common/src/agy-review.js');

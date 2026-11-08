@@ -98,3 +98,9 @@ Run the daemon as a systemd user service to survive reboots; see
 `deploy/revuto-surreal.service`, `deploy/revuto-embedder.service`, and
 `deploy/revuto-guard.timer` units too; the guard keeps the daemon, store, and
 embedder available for scheduled review/learn/decay runs.
+
+Each native reviewer CLI and review git command runs in a transient scope of the
+user manager, `revuto-<runner>-<pid>-<id>.scope`, bound to the daemon's unit and
+stopped when its run ends (see [Native runner processes](providers.md#native-runner-processes)).
+`systemctl --user list-units 'revuto-*.scope'` shows the runs in flight; their
+memory and CPU count under those scopes, not under `revuto.service`.
