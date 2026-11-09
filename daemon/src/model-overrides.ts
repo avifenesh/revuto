@@ -20,7 +20,7 @@ const DEFAULT_MANTLE_REGION = 'us-east-1';
 const SOL61_MODEL = 'openai.gpt-6.1-sol';
 const BEDROCK_API_KEY_ENV = 'AWS_BEARER_TOKEN_BEDROCK';
 const OPUS_MODEL = 'global.anthropic.claude-opus-5-5';
-const FABLE_MODEL = 'global.anthropic.claude-fable-5-1';
+const FABLE_MODEL = 'global.anthropic.claude-fable-5-2';
 const SONNET_MODEL = 'global.anthropic.claude-sonnet-5-5';
 const ROLE_FLAGS: Record<string, ModelRole> = {
   '--review-model': 'review',
@@ -124,7 +124,7 @@ export function modelPreset(alias: string, defaultRegion?: string): ModelSpec {
   if (compact === 'opus' || compact === 'opus55' || compact === 'claudeopus55' || compact === 'globalanthropicclaudeopus55') {
     return bedrockConverse(OPUS_MODEL, converse);
   }
-  if (compact === 'fable' || compact === 'fable51' || compact === 'claudefable51' || compact === 'globalanthropicclaudefable51') {
+  if (compact === 'fable' || compact === 'fable52' || compact === 'claudefable52' || compact === 'globalanthropicclaudefable52') {
     return bedrockConverse(FABLE_MODEL, converse);
   }
   if (compact === 'sonnet' || compact === 'sonnet55' || compact === 'claudesonnet55' || compact === 'globalanthropicclaudesonnet55') {

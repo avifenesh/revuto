@@ -70,7 +70,7 @@ assert.equal(sol.model, 'openai.gpt-6-sol', 'sol alias uses GPT-6 Sol on Mantle'
 assert.equal(sol.reasoningEffort, 'medium', 'Mantle presets default to medium effort');
 assert.equal(modelPreset('astra').model, 'openai.gpt-6-astra', 'astra alias uses GPT-6 Astra on Mantle');
 const fable = modelPreset('fable');
-assert.equal(fable.model, 'global.anthropic.claude-fable-5-1', 'fable alias uses Fable 5.1');
+assert.equal(fable.model, 'global.anthropic.claude-fable-5-2', 'fable alias uses Fable 5.2');
 assert.equal(modelPreset('opus').reasoningEffort, 'medium', 'Converse presets default to medium effort');
 assert.throws(() => modelPreset('gpt54'), /unknown model alias/, 'retired gpt54 alias is gone');
 const sol61 = modelPreset('sol61');

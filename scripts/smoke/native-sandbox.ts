@@ -17,7 +17,7 @@ const { agyReviewSchema, runAgyCli } = await import(new URL('../../dist/agents/c
 const { codexReviewSchema } = await import(new URL('../../dist/agents/common/src/codex-review.js', import.meta.url).href) as typeof import('../../agents/common/src/codex-review.js');
 
 const runner = process.argv[2] === 'codex' ? 'codex' : 'claude';
-const model = (process.argv[3] ?? (runner === 'codex' ? 'openai.gpt-6.1-sol' : 'global.anthropic.claude-opus-5-5')).replace(/[^\w.:\-[\]]/g, '');
+const model = (process.argv[3] ?? (runner === 'codex' ? 'openai.gpt-6.1-sol' : 'global.anthropic.claude-fable-5-2')).replace(/[^\w.:\-[\]]/g, '');
 const root = mkdtempSync(join(tmpdir(), 'revuto-native-sandbox-'));
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' });
 try {
