@@ -92,7 +92,7 @@
     "surrealdb": {
       "typescript": "$typescript"
     },
-    "@ai-sdk/provider": "4.0.37",
+    "@ai-sdk/provider": "$@ai-sdk/provider",
     "@ai-sdk/provider-utils": "5.0.76"
   }
 }
