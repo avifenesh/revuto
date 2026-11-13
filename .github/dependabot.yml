@@ -11,3 +11,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # codeql-action steps must move together: a mixed init/analyze version
+      # fails the analyze job ("must use the same version").
+      codeql-action:
+        patterns: ["github/codeql-action"]
