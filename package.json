@@ -64,7 +64,7 @@
     "@agent-sh/harness-grep": "^0.9.2",
     "@agent-sh/harness-read": "^0.9.2",
     "@agent-sh/harness-write": "^0.9.2",
-    "@ai-sdk/openai-compatible": "3.0.87",
+    "@ai-sdk/openai-compatible": "3.0.92",
     "@ai-sdk/provider": "4.0.38",
     "@aws-sdk/credential-provider-node": "^3.972.97",
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -73,8 +73,8 @@
     "@smithy/hash-node": "^4.3.6",
     "@smithy/protocol-http": "^5.4.6",
     "@smithy/signature-v4": "^5.4.6",
-    "ai": "7.0.166",
-    "better-sqlite3": "^13.0.3",
+    "ai": "7.0.173",
+    "better-sqlite3": "^13.2.0",
     "gray-matter": "^4.0.3",
     "node-cron": "^4.5.0",
     "surrealdb": "^2.1.1",
@@ -93,6 +93,6 @@
       "typescript": "$typescript"
     },
     "@ai-sdk/provider": "$@ai-sdk/provider",
-    "@ai-sdk/provider-utils": "5.0.76"
+    "@ai-sdk/provider-utils": "5.0.81"
   }
 }
